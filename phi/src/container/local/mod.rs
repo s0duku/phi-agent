@@ -35,6 +35,13 @@ impl JobContainer for LocalShellJobContainer {
         runtime::job_write(handle, data, timeout)
     }
 
+    async fn job_send(
+        handle: JobHandle,
+        data: &str,
+    ) -> Result<crate::container::JobStatus, String> {
+        runtime::job_send(handle, data)
+    }
+
     async fn job_close(handle: JobHandle) -> Result<JobInfo, String> {
         runtime::job_close(handle)
     }

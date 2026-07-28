@@ -13,6 +13,7 @@ use crate::{
 const EXEC_WAIT: Duration = Duration::from_secs(60);
 const JOB_EXPIRATION: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_INTERACT_WAIT_MS: u64 = 60_000;
+const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(20);
 
 pub struct ShellJobExecTool;
 pub struct ShellJobInteractTool;
@@ -30,6 +31,12 @@ pub(crate) struct InteractArgs {
     pub(crate) input: Option<String>,
     #[serde(default = "default_interact_wait_ms")]
     pub(crate) timeout: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum InteractiveInput {
+    Direct(String),
+    Submit(String),
 }
 
 #[derive(Deserialize)]
@@ -144,13 +151,25 @@ impl PhiTool for ShellJobInteractTool {
             return failure(request, self.name(), error);
         }
         let handle_value = args.handle.clone();
-        let data = interactive_input(args.input);
-        let result = <LocalShellJobContainer as JobContainer>::job_write(
-            JobHandle(args.handle),
-            &data,
-            Duration::from_millis(args.timeout),
-        )
-        .await;
+        let handle = JobHandle(args.handle);
+        let timeout = Duration::from_millis(args.timeout);
+        let result = match interactive_input(args.input) {
+            InteractiveInput::Direct(data) => {
+                <LocalShellJobContainer as JobContainer>::job_write(handle, &data, timeout).await
+            }
+            InteractiveInput::Submit(data) => {
+                if let Err(error) = <LocalShellJobContainer as JobContainer>::job_send(
+                    JobHandle(handle.0.clone()),
+                    &data,
+                )
+                .await
+                {
+                    return failure(request, self.name(), error);
+                }
+                tokio::time::sleep(SUBMIT_KEY_DELAY).await;
+                <LocalShellJobContainer as JobContainer>::job_write(handle, "\r", timeout).await
+            }
+        };
 
         match result {
             Ok(info) => response(
@@ -268,20 +287,20 @@ fn failure(request: &ToolCallRequest, name: &str, error: String) -> ToolCallResp
     ToolCallResponse::failure(request, name, error, serde_json::Value::Null)
 }
 
-pub(crate) fn interactive_input(input: Option<String>) -> String {
+pub(crate) fn interactive_input(input: Option<String>) -> InteractiveInput {
     let Some(mut input) = input else {
-        return String::new();
+        return InteractiveInput::Direct(String::new());
     };
     if input.is_empty() {
-        return "\r".to_owned();
+        return InteractiveInput::Direct("\r".to_owned());
     }
     if cfg!(windows) {
         input = input.replace("\r\n", "\r").replace('\n', "\r");
     }
     if input.ends_with('\r') || input.ends_with('\n') {
-        input
+        InteractiveInput::Direct(input)
     } else {
-        input + "\r"
+        InteractiveInput::Submit(input)
     }
 }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::container::{JobContainer, JobHandle, JobStatus, LocalShellJobContainer};
 use crate::executor::PhiTool;
 use crate::executor::tools::shell::job::{
-    InteractArgs, ShellJobExecTool, ShellJobInteractTool, interactive_input,
+    InteractArgs, InteractiveInput, ShellJobExecTool, ShellJobInteractTool, interactive_input,
 };
 
 #[test]
@@ -32,20 +32,30 @@ fn interact_defaults_to_read_with_a_sixty_second_wait() {
 
 #[test]
 fn interact_completes_only_unterminated_nonempty_input() {
-    assert_eq!(interactive_input(None), "");
-    assert_eq!(interactive_input(Some(String::new())), "\r");
-    assert_eq!(interactive_input(Some("hello".into())), "hello\r");
+    assert_eq!(interactive_input(None), InteractiveInput::Direct("".into()));
+    assert_eq!(
+        interactive_input(Some(String::new())),
+        InteractiveInput::Direct("\r".into())
+    );
+    assert_eq!(
+        interactive_input(Some("hello".into())),
+        InteractiveInput::Submit("hello".into())
+    );
     assert_eq!(
         interactive_input(Some("hello\n".into())),
-        if cfg!(windows) { "hello\r" } else { "hello\n" }
+        InteractiveInput::Direct(if cfg!(windows) {
+            "hello\r".into()
+        } else {
+            "hello\n".into()
+        })
     );
     assert_eq!(
         interactive_input(Some("hello\r\n".into())),
-        if cfg!(windows) {
-            "hello\r"
+        InteractiveInput::Direct(if cfg!(windows) {
+            "hello\r".into()
         } else {
-            "hello\r\n"
-        }
+            "hello\r\n".into()
+        })
     );
 
     let legacy: InteractArgs = serde_json::from_value(serde_json::json!({
@@ -74,15 +84,15 @@ fn interact_completes_only_unterminated_nonempty_input() {
 fn windows_interact_submits_each_multiline_input_line_with_enter() {
     assert_eq!(
         interactive_input(Some("x = 10\ny = 20\nprint(x + y)".into())),
-        "x = 10\ry = 20\rprint(x + y)\r"
+        InteractiveInput::Submit("x = 10\ry = 20\rprint(x + y)".into())
     );
     assert_eq!(
         interactive_input(Some("first\r\nsecond\n".into())),
-        "first\rsecond\r"
+        InteractiveInput::Direct("first\rsecond\r".into())
     );
     assert_eq!(
         interactive_input(Some("already\rready\r".into())),
-        "already\rready\r"
+        InteractiveInput::Direct("already\rready\r".into())
     );
 }
 
@@ -184,7 +194,7 @@ async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
 
     let info = <LocalShellJobContainer as JobContainer>::job_write(
         handle.unwrap(),
-        &interactive_input(Some("hello".into())),
+        "hello\r",
         Duration::from_secs(2),
     )
     .await
@@ -209,7 +219,7 @@ async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
 
     let read_only = <LocalShellJobContainer as JobContainer>::job_write(
         JobHandle(handle.0.clone()),
-        &interactive_input(None),
+        "",
         Duration::ZERO,
     )
     .await
@@ -217,13 +227,10 @@ async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
     assert!(matches!(read_only.status(), JobStatus::Running));
     assert!(read_only.outputs().is_empty());
 
-    let entered = <LocalShellJobContainer as JobContainer>::job_write(
-        handle,
-        &interactive_input(Some(String::new())),
-        Duration::from_secs(2),
-    )
-    .await
-    .unwrap();
+    let entered =
+        <LocalShellJobContainer as JobContainer>::job_write(handle, "\r", Duration::from_secs(2))
+            .await
+            .unwrap();
     assert!(matches!(entered.status(), JobStatus::Exited(0)));
     assert!(entered.outputs().contains("value:<>"));
 }
@@ -260,4 +267,48 @@ async fn persistent_job_can_be_read_and_closed() {
         .await
         .unwrap();
     assert!(matches!(missing.status(), JobStatus::NoExist));
+}
+
+#[tokio::test]
+async fn send_preserves_output_for_the_next_terminal_snapshot() {
+    let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
+        line_input_command(),
+        Duration::ZERO,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(initial.status(), JobStatus::Running));
+    let handle = handle.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let status = <LocalShellJobContainer as JobContainer>::job_send(
+        JobHandle(handle.0.clone()),
+        "preserved",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(status, JobStatus::Running));
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let read = <LocalShellJobContainer as JobContainer>::job_write(
+        JobHandle(handle.0.clone()),
+        "\r",
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    assert!(read.outputs().contains("before"));
+    assert!(read.outputs().contains("received:preserved"));
+
+    let _ = <LocalShellJobContainer as JobContainer>::job_close(handle).await;
+}
+
+fn line_input_command() -> &'static str {
+    if cfg!(windows) {
+        "Start-Sleep -Milliseconds 100; Write-Host -NoNewline before; $value = Read-Host; Write-Output \"received:$value\""
+    } else {
+        "sleep 0.1; printf before; IFS= read -r value; printf 'received:%s' \"$value\""
+    }
 }

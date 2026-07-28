@@ -83,6 +83,8 @@ pub trait JobContainer {
         timeout: std::time::Duration,
     ) -> Result<JobInfo, String>;
 
+    async fn job_send(handle: JobHandle, data: &str) -> Result<JobStatus, String>;
+
     async fn job_close(handle: JobHandle) -> Result<JobInfo, String>;
 }
 

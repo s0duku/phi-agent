@@ -71,6 +71,11 @@ fn maximum_wait_value_still_returns_when_the_shell_exits() {
     rpc::write_frame(&mut stream, &request).unwrap();
     let response: Response = rpc::read_frame(&mut stream).unwrap();
 
-    assert!(matches!(response.status, Status::Exited(17)));
-    assert!(response.error.is_none());
+    assert!(matches!(
+        response,
+        Response::Terminal {
+            status: Status::Exited(17),
+            ..
+        }
+    ));
 }

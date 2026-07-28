@@ -17,15 +17,24 @@ const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
+    Write { data: String },
     Interact { data: String, wait_millis: u64 },
     Close,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Response {
-    pub(crate) status: Status,
-    pub(crate) terminal: TerminalSnapshot,
-    pub(crate) error: Option<String>,
+pub(crate) enum Response {
+    Written {
+        status: Status,
+    },
+    Terminal {
+        status: Status,
+        terminal: TerminalSnapshot,
+    },
+    Failed {
+        status: Status,
+        error: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]

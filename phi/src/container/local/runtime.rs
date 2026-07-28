@@ -43,6 +43,15 @@ pub(crate) fn job_write(
     )
 }
 
+pub(crate) fn job_send(handle: JobHandle, data: &str) -> Result<JobStatus, String> {
+    request_status(
+        &handle.0,
+        Request::Write {
+            data: data.to_owned(),
+        },
+    )
+}
+
 pub(crate) fn job_close(handle: JobHandle) -> Result<JobInfo, String> {
     request(&handle.0, Request::Close)
 }
@@ -148,6 +157,15 @@ impl RunningJob {
         }
     }
 
+    fn write(&mut self, input: &[u8]) -> Result<Status, String> {
+        if !input.is_empty() {
+            self.pty.write_all(input)?;
+        }
+        self.refresh_status()?
+            .map(Status::Exited)
+            .map_or(Ok(Status::Running), Ok)
+    }
+
     fn close(&mut self) -> Result<Status, String> {
         self.capture()?;
         if let Some(code) = self.refresh_status()? {
@@ -218,7 +236,9 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
         }
     };
     let close_requested = matches!(request, Request::Close);
+    let writes_only = matches!(request, Request::Write { .. });
     let result = match request {
+        Request::Write { data } => job.write(data.as_bytes()),
         Request::Interact { data, wait_millis } => {
             job.interact(data.as_bytes(), Duration::from_millis(wait_millis))
         }
@@ -234,16 +254,17 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
         }
     };
     job.capture()?;
-    let commits_output = error.is_none();
-    let terminal_response = matches!(status, Status::Exited(_)) && commits_output;
-    let should_exit = close_requested || (terminal_response && job.reached_eof());
-    let prepared = job.pty.prepare_snapshot();
-    let (terminal, commit) = prepared.into_parts();
-    let response = Response {
-        status,
-        terminal,
-        error,
+    let exited = matches!(status, Status::Exited(_));
+    let (response, commit, terminal_response) = match error {
+        Some(error) => (Response::Failed { status, error }, None, false),
+        None if writes_only => (Response::Written { status }, None, false),
+        None => {
+            let prepared = job.pty.prepare_snapshot();
+            let (terminal, commit) = prepared.into_parts();
+            (Response::Terminal { status, terminal }, Some(commit), true)
+        }
     };
+    let should_exit = close_requested || (terminal_response && exited && job.reached_eof());
     if rpc::write_frame(stream, &response).is_err() {
         return Ok(ServeOutcome {
             handled: true,
@@ -251,7 +272,9 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
             terminal_flushed: false,
         });
     }
-    job.pty.commit_snapshot(commit);
+    if let Some(commit) = commit {
+        job.pty.commit_snapshot(commit);
+    }
     Ok(ServeOutcome {
         handled: true,
         should_exit,
@@ -263,47 +286,68 @@ trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
 
 fn request(handle: &str, request: Request) -> Result<JobInfo, String> {
-    let mut stream = match rpc::connect(handle) {
-        Ok(stream) => stream,
-        Err(error) if is_missing_endpoint(&error) => {
-            return Ok(JobInfo::new(
+    send_request(handle, request)?.map_or_else(
+        || {
+            Ok(JobInfo::new(
                 JobStatus::NoExist,
                 TerminalSnapshot::default(),
-            ));
+            ))
+        },
+        response_into_job_info,
+    )
+}
+
+fn request_status(handle: &str, request: Request) -> Result<JobStatus, String> {
+    let Some(response) = send_request(handle, request)? else {
+        return Ok(JobStatus::NoExist);
+    };
+    response_into_status(response)
+}
+
+fn response_into_job_info(response: Response) -> Result<JobInfo, String> {
+    match response {
+        Response::Terminal { status, terminal } => Ok(JobInfo::new(job_status(status), terminal)),
+        Response::Failed { error, .. } => Err(error),
+        Response::Written { .. } => {
+            Err("job protocol returned write acknowledgment for terminal request".to_owned())
         }
+    }
+}
+
+fn response_into_status(response: Response) -> Result<JobStatus, String> {
+    match response {
+        Response::Written { status } => Ok(job_status(status)),
+        Response::Failed { error, .. } => Err(error),
+        Response::Terminal { .. } => {
+            Err("job protocol returned terminal snapshot for write request".to_owned())
+        }
+    }
+}
+
+fn job_status(status: Status) -> JobStatus {
+    match status {
+        Status::Running => JobStatus::Running,
+        Status::Exited(code) => JobStatus::Exited(code),
+    }
+}
+
+fn send_request(handle: &str, request: Request) -> Result<Option<Response>, String> {
+    let mut stream = match rpc::connect(handle) {
+        Ok(stream) => stream,
+        Err(error) if is_missing_endpoint(&error) => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
     if let Err(error) = rpc::write_frame(&mut stream, &request) {
         if is_disconnected_endpoint(&error) {
-            return Ok(JobInfo::new(
-                JobStatus::NoExist,
-                TerminalSnapshot::default(),
-            ));
+            return Ok(None);
         }
         return Err(error.to_string());
     }
-    let response: Response = match rpc::read_frame(&mut stream) {
-        Ok(response) => response,
-        Err(error) if is_disconnected_endpoint(&error) => {
-            return Ok(JobInfo::new(
-                JobStatus::NoExist,
-                TerminalSnapshot::default(),
-            ));
-        }
-        Err(error) => return Err(error.to_string()),
-    };
-    response_into_job_info(response)
-}
-
-fn response_into_job_info(response: Response) -> Result<JobInfo, String> {
-    if let Some(error) = response.error {
-        return Err(error);
+    match rpc::read_frame(&mut stream) {
+        Ok(response) => Ok(Some(response)),
+        Err(error) if is_disconnected_endpoint(&error) => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
-    let status = match response.status {
-        Status::Running => JobStatus::Running,
-        Status::Exited(code) => JobStatus::Exited(code),
-    };
-    Ok(JobInfo::new(status, response.terminal))
 }
 
 fn spawn_container(handle: &JobHandle, command: &str, expiration: Duration) -> Result<(), String> {
