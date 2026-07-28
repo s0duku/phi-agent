@@ -45,7 +45,7 @@ fn startup_grace_only_applies_before_first_interaction() {
 
 #[test]
 fn output_adds_a_shorter_quiet_deadline() {
-    let mut wait = WaitPolicy::new(Duration::from_secs(5), false);
+    let mut wait = WaitPolicy::new(Duration::from_secs(5), None);
     assert!(wait.remaining().unwrap() > Duration::from_secs(4));
 
     wait.observe_output(true);
@@ -56,14 +56,23 @@ fn output_adds_a_shorter_quiet_deadline() {
 
 #[test]
 fn existing_output_starts_the_quiet_deadline() {
-    let wait = WaitPolicy::new(Duration::from_secs(5), true);
+    let wait = WaitPolicy::new(Duration::from_secs(5), Some(Instant::now()));
     let remaining = wait.remaining().unwrap();
     assert!(remaining > Duration::from_millis(1400));
     assert!(remaining <= Duration::from_millis(1500));
 }
 
 #[test]
+fn output_already_quiet_long_enough_returns_immediately() {
+    let wait = WaitPolicy::new(
+        Duration::from_secs(5),
+        Some(Instant::now() - Duration::from_secs(2)),
+    );
+    assert!(wait.remaining().is_none());
+}
+
+#[test]
 fn an_unrepresentable_timeout_does_not_expire_immediately() {
-    let wait = WaitPolicy::new(Duration::MAX, false);
+    let wait = WaitPolicy::new(Duration::MAX, None);
     assert_eq!(wait.remaining(), Some(Duration::MAX));
 }

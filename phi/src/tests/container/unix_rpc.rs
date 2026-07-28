@@ -29,12 +29,26 @@ fn repeated_serial_interactions_keep_one_container_consistent() {
     let final_info =
         job_interact(JobHandle(handle.0.clone()), "\u{4}", Duration::from_secs(2)).unwrap();
     assert!(matches!(final_info.status(), JobStatus::Exited(0)));
-    let output = final_info.outputs();
-    assert!(output.contains("serial-63"));
-    assert!(output.lines().count() <= 24);
+    assert!(final_info.outputs().is_empty());
 
     let missing = job_interact(handle, "", Duration::ZERO).unwrap();
     assert!(matches!(missing.status(), JobStatus::NoExist));
+}
+
+#[test]
+fn initial_response_preserves_output_beyond_the_visible_terminal_page() {
+    let (_, info) = job_exec(
+        "for i in $(seq 1 100); do printf 'line-%s\\n' \"$i\"; done",
+        Duration::from_secs(2),
+        EXPIRATION,
+    )
+    .unwrap();
+
+    assert!(matches!(info.status(), JobStatus::Exited(0)));
+    assert!(info.outputs().contains("line-1\n"));
+    assert!(info.outputs().contains("line-100"));
+    assert_eq!(info.outputs().lines().count(), 100);
+    assert!(!info.terminal().truncated());
 }
 
 #[test]

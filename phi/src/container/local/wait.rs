@@ -65,11 +65,11 @@ pub(crate) struct WaitPolicy {
 }
 
 impl WaitPolicy {
-    pub(crate) fn new(timeout: Duration, has_output: bool) -> Self {
+    pub(crate) fn new(timeout: Duration, last_output_at: Option<Instant>) -> Self {
         let now = Instant::now();
         Self {
             deadline: now.checked_add(timeout),
-            quiet_deadline: has_output.then(|| now + OUTPUT_QUIET_PERIOD),
+            quiet_deadline: last_output_at.and_then(|at| at.checked_add(OUTPUT_QUIET_PERIOD)),
         }
     }
 

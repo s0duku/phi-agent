@@ -134,7 +134,7 @@ impl RunningJob {
         if !input.is_empty() {
             self.pty.write_all(input)?;
         }
-        let mut wait = WaitPolicy::new(timeout, self.pty.revision() > 0);
+        let mut wait = WaitPolicy::new(timeout, self.pty.pending_output_at());
         loop {
             wait.observe_output(self.capture()?);
             if let Some(code) = self.refresh_status()? {
@@ -237,9 +237,11 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
     let commits_output = error.is_none();
     let terminal_response = matches!(status, Status::Exited(_)) && commits_output;
     let should_exit = close_requested || (terminal_response && job.reached_eof());
+    let prepared = job.pty.prepare_snapshot();
+    let (terminal, commit) = prepared.into_parts();
     let response = Response {
         status,
-        terminal: job.pty.snapshot(),
+        terminal,
         error,
     };
     if rpc::write_frame(stream, &response).is_err() {
@@ -249,6 +251,7 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
             terminal_flushed: false,
         });
     }
+    job.pty.commit_snapshot(commit);
     Ok(ServeOutcome {
         handled: true,
         should_exit,

@@ -229,6 +229,8 @@ fn response(
 ) -> ToolCallResponse {
     let (status, terminal) = info.into_parts();
     let output = terminal.text().to_owned();
+    let output_truncated = terminal.truncated();
+    let screen = terminal.screen().to_owned();
     let (status_name, exit_code, running, exists) = match status {
         JobStatus::Running => ("running", None, true, true),
         JobStatus::Exited(code) => ("exited", Some(code), false, true),
@@ -243,6 +245,8 @@ fn response(
         "status": status_name,
         "exit_code": exit_code,
         "output": output,
+        "output_truncated": output_truncated,
+        "screen": screen,
         "handle": handle,
     });
 

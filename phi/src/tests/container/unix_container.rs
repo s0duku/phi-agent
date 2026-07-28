@@ -33,7 +33,7 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
         .await
         .unwrap();
         assert!(matches!(read.status(), JobStatus::Running));
-        assert_eq!(read.outputs(), "ready");
+        assert!(read.outputs().is_empty());
 
         let closed = <crate::container::LocalShellJobContainer as JobContainer>::job_close(handle)
             .await

@@ -1,6 +1,6 @@
-
 <div align="center">
-  <h1>PHI</h1>
+  <img alt="Phi logo" src="assets/phi-logo.svg" width="96" />
+  <p><strong>A pure CLI agent for persistent interactive terminal workflows</strong></p>
 </div>
 <div align="center">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg" />
@@ -9,20 +9,16 @@
   </a>
 </div>
 <div align="center">
-  <h2>Literally A CLI Agent</h2>
-  <img alt="Phi logo" src="assets/phi-logo.svg" width="96" />
-</div>
-<div align="center">
   <img alt="Phi demo" src="assets/demo.gif" />
 </div>
 
 ---
 
-Phi is a cli agent without heavy TUI, simply take everyhing from command arguments and enviroment variables, work with session through stdin and stdout.
+**Phi** is a cli agent without heavy TUI, simply take everyhing from command arguments and enviroment variables, work with session through **stdin** and **stdout**.
 
 Phi reads input from command arguments, environment variables, `PhiHome`, and optional session JSON on stdin, then writes the updated session back to stdout or a session file.
 
-# Usage
+## Usage
 
 Phi treats agent execution as step-by-step session evaluation.
 

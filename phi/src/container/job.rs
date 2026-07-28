@@ -12,6 +12,12 @@ pub enum JobStatus {
 pub struct TerminalSnapshot {
     revision: u64,
     text: String,
+    #[serde(default)]
+    stream: String,
+    #[serde(default)]
+    screen: String,
+    #[serde(default)]
+    truncated: bool,
     rows: u16,
     columns: u16,
     cursor_row: u16,
@@ -106,6 +112,9 @@ impl TerminalSnapshot {
     pub(crate) fn new(
         revision: u64,
         text: String,
+        stream: String,
+        screen: String,
+        truncated: bool,
         rows: u16,
         columns: u16,
         cursor_row: u16,
@@ -114,6 +123,9 @@ impl TerminalSnapshot {
         Self {
             revision,
             text,
+            truncated,
+            stream,
+            screen,
             rows,
             columns,
             cursor_row,
@@ -127,6 +139,18 @@ impl TerminalSnapshot {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub fn stream(&self) -> &str {
+        &self.stream
+    }
+
+    pub fn screen(&self) -> &str {
+        &self.screen
     }
 
     pub fn size(&self) -> (u16, u16) {

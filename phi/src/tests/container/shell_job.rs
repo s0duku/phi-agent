@@ -86,6 +86,23 @@ fn windows_interact_submits_each_multiline_input_line_with_enter() {
     );
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_linear_output_beyond_one_screen_remains_complete() {
+    let (_, info) = <LocalShellJobContainer as JobContainer>::job_exec(
+        "1..100 | ForEach-Object { Write-Output \"line-$_\" }",
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(info.status(), JobStatus::Exited(0)));
+    assert_eq!(info.outputs().lines().count(), 100);
+    assert!(info.outputs().contains("line-1\n"));
+    assert!(info.outputs().contains("line-100"));
+}
+
 #[tokio::test]
 async fn running_job_expires_without_interaction() {
     let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
@@ -233,7 +250,7 @@ async fn persistent_job_can_be_read_and_closed() {
     .await
     .unwrap();
     assert!(matches!(read.status(), JobStatus::Running));
-    assert_eq!(read.outputs(), "ready");
+    assert!(read.outputs().is_empty());
 
     let closed = <LocalShellJobContainer as JobContainer>::job_close(JobHandle(handle.0.clone()))
         .await

@@ -2,19 +2,31 @@ use vte::{Params, Perform};
 
 use crate::container::job::TerminalSnapshot;
 
+mod output;
+use output::{OutputCommit, TerminalOutput};
+
 const ROWS: u16 = 24;
 const COLS: u16 = 80;
 const SCROLLBACK_ROWS: usize = 1_000;
+const OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) struct HeadlessTerminal {
     parser: vte::Parser,
     dispatcher: Dispatcher,
     screen: vt100::Parser,
     revision: u64,
+    output: TerminalOutput,
 }
 
+pub(crate) struct PreparedTerminalSnapshot {
+    snapshot: TerminalSnapshot,
+    commit: TerminalSnapshotCommit,
+}
+
+pub(crate) struct TerminalSnapshotCommit(OutputCommit);
+
 pub(crate) struct TerminalUpdate {
-    pub(crate) changed: bool,
+    pub(crate) output: bool,
     pub(crate) replies: Vec<Vec<u8>>,
 }
 
@@ -25,6 +37,7 @@ impl HeadlessTerminal {
             dispatcher: Dispatcher::default(),
             screen: vt100::Parser::new(ROWS, COLS, SCROLLBACK_ROWS),
             revision: 0,
+            output: TerminalOutput::new(),
         }
     }
 
@@ -33,9 +46,14 @@ impl HeadlessTerminal {
         self.parser.advance(&mut self.dispatcher, bytes);
 
         let mut replies = Vec::new();
-        for event in self.dispatcher.events.drain(..) {
+        let mut output = false;
+        let events: Vec<_> = self.dispatcher.events.drain(..).collect();
+        for event in events {
             match event {
                 TerminalEvent::Display(bytes) => {
+                    output |= !bytes.is_empty();
+                    self.output
+                        .append(&bytes, SCROLLBACK_ROWS, OUTPUT_MAX_BYTES);
                     self.screen.process(&bytes);
                 }
                 TerminalEvent::Query(query) => {
@@ -47,24 +65,90 @@ impl HeadlessTerminal {
         if changed {
             self.revision = self.revision.saturating_add(1);
         }
-        TerminalUpdate { changed, replies }
+        TerminalUpdate { output, replies }
     }
 
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision
+    pub(crate) fn has_output(&self) -> bool {
+        self.output.has_pending()
     }
 
-    pub(crate) fn snapshot(&self) -> TerminalSnapshot {
+    fn rendered_rows(&self) -> Vec<String> {
+        let mut screen = self.screen.screen().clone();
+        screen.set_scrollback(usize::MAX);
+        let mut offset = screen.scrollback();
+        let mut rows = Vec::with_capacity(offset + usize::from(ROWS));
+        while offset > 0 {
+            screen.set_scrollback(offset);
+            let count = offset.min(usize::from(ROWS));
+            rows.extend(
+                (0..count).map(|row| screen.contents_between(row as u16, 0, row as u16, COLS)),
+            );
+            offset -= count;
+        }
+        screen.set_scrollback(0);
+        rows.extend((0..ROWS).map(|row| screen.contents_between(row, 0, row, COLS)));
+        rows
+    }
+
+    pub(crate) fn prepare_snapshot(&self) -> PreparedTerminalSnapshot {
+        let prepared = self.output.prepare(self.rendered_rows());
         let screen = self.screen.screen();
         let (cursor_row, cursor_column) = screen.cursor_position();
-        TerminalSnapshot::new(
+        let snapshot = TerminalSnapshot::new(
             self.revision,
+            prepared.text,
+            prepared.stream,
             screen.contents(),
+            prepared.truncated,
             ROWS,
             COLS,
             cursor_row,
             cursor_column,
+        );
+        PreparedTerminalSnapshot {
+            snapshot,
+            commit: TerminalSnapshotCommit(prepared.commit),
+        }
+    }
+
+    pub(crate) fn commit_snapshot(&mut self, commit: TerminalSnapshotCommit) {
+        self.output.commit(commit.0);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> TerminalSnapshot {
+        self.prepare_snapshot().snapshot().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn output(&self) -> (String, bool) {
+        let prepared = self.prepare_snapshot();
+        (
+            prepared.snapshot().stream().to_owned(),
+            prepared.snapshot().truncated(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rendered_output(&self) -> String {
+        self.prepare_snapshot().snapshot().text().to_owned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_output(&mut self) {
+        let (_, commit) = self.prepare_snapshot().into_parts();
+        self.commit_snapshot(commit);
+    }
+}
+
+impl PreparedTerminalSnapshot {
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> &TerminalSnapshot {
+        &self.snapshot
+    }
+
+    pub(crate) fn into_parts(self) -> (TerminalSnapshot, TerminalSnapshotCommit) {
+        (self.snapshot, self.commit)
     }
 }
 
