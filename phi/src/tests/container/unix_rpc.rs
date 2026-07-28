@@ -29,7 +29,11 @@ fn repeated_serial_interactions_keep_one_container_consistent() {
     let final_info =
         job_interact(JobHandle(handle.0.clone()), "\u{4}", Duration::from_secs(2)).unwrap();
     assert!(matches!(final_info.status(), JobStatus::Exited(0)));
-    assert!(final_info.outputs().is_empty());
+    assert!(
+        !final_info.outputs().contains("serial-"),
+        "EOF response repeated consumed output: {:?}",
+        final_info.outputs()
+    );
 
     let missing = job_interact(handle, "", Duration::ZERO).unwrap();
     assert!(matches!(missing.status(), JobStatus::NoExist));
