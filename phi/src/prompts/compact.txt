@@ -1,0 +1,13 @@
+You are performing a CONTEXT CHECKPOINT COMPACTION.
+
+Write a handoff summary for the next model that will resume the task.
+
+Include:
+- current progress and key decisions
+- important user goals, preferences, constraints
+- unresolved problems and next useful actions
+- critical facts, values, paths, commands, or results that must not be lost
+
+Be concise, structured, and focused on continuity.
+Do not answer the user directly.
+Assume recent retained messages may still appear after this summary.

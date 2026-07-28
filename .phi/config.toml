@@ -1,0 +1,11 @@
+PHI_PROVIDER = "openai_chat"
+PHI_API = "https://your-endpoint.example.com/v1"
+PHI_MODEL = "gpt-5"
+PHI_KEY = "your_api_key"
+
+PHI_TEMPERATURE = 1.0
+
+PHI_SYSTEM = """
+"""
+
+

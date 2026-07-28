@@ -1,0 +1,194 @@
+name: phi-agent CI
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing version tag to publish, for example v0.1.0"
+        required: false
+        type: string
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x64-static:
+    name: Linux x64 Static
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test-linux-x64-static
+
+      - name: Build release binary
+        run: cargo build-linux-x64-static
+
+      - name: Package archive
+        shell: bash
+        run: |
+          mkdir -p dist/phi/assets
+          cp target/x86_64-unknown-linux-musl/release/phi dist/phi/phi
+          cp README.md dist/phi/README.md
+          cp assets/phi-logo.svg dist/phi/assets/phi-logo.svg
+          if [[ -d .phi ]]; then
+            cp -R .phi dist/phi/.phi
+          fi
+          tar -C dist -czf dist/phi-agent-linux-x64.tar.gz phi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phi-agent-linux-x64
+          path: dist/phi-agent-linux-x64.tar.gz
+
+  windows-x64-static:
+    name: Windows x64 Static
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test-windows-x64-static
+
+      - name: Build release binary
+        run: cargo build-windows-x64-static
+
+      - name: Package archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/phi/assets" | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/phi.exe" "dist/phi/phi.exe"
+          Copy-Item "README.md" "dist/phi/README.md"
+          Copy-Item "assets/phi-logo.svg" "dist/phi/assets/phi-logo.svg"
+          if (Test-Path ".phi") {
+            Copy-Item ".phi" "dist/phi/.phi" -Recurse -Force
+          }
+          Compress-Archive -Path @("dist/phi") -DestinationPath "dist/phi-agent-windows-x64.zip" -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phi-agent-windows-x64
+          path: dist/phi-agent-windows-x64.zip
+
+  macos-arm64-release:
+    name: macOS arm64 Release
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test-macos-arm64-release
+
+      - name: Build release binary
+        run: cargo build-macos-arm64-release
+
+      - name: Package archive
+        shell: bash
+        run: |
+          mkdir -p dist/phi/assets
+          cp target/aarch64-apple-darwin/release/phi dist/phi/phi
+          cp README.md dist/phi/README.md
+          cp assets/phi-logo.svg dist/phi/assets/phi-logo.svg
+          if [[ -d .phi ]]; then
+            cp -R .phi dist/phi/.phi
+          fi
+          tar -C dist -czf dist/phi-agent-macos-arm64.tar.gz phi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phi-agent-macos-arm64
+          path: dist/phi-agent-macos-arm64.tar.gz
+
+  release:
+    name: Publish GitHub Release
+    if: |
+      success() && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+      )
+    needs:
+      - linux-x64-static
+      - windows-x64-static
+      - macos-arm64-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Check for packaged release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-artifacts/*)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No release artifacts were produced."
+            exit 1
+          fi
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          files: release-artifacts/*

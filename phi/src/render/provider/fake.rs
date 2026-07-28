@@ -1,0 +1,136 @@
+use async_trait::async_trait;
+
+use crate::{
+    config::ProviderConfig,
+    error::{PhiRuntimeError, PhiRuntimeResult},
+    message::{PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage},
+};
+
+use super::{DynProvider, PhiProviderCall};
+use crate::render::PhiRenderedMessages;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FakeProfile {
+    AssistantText,
+    ReasoningText,
+    ToolCall,
+    ProviderError,
+}
+
+impl FakeProfile {
+    fn parse(value: &str) -> PhiRuntimeResult<Self> {
+        match value.trim() {
+            "assistant_text" => Ok(Self::AssistantText),
+            "reasoning_text" => Ok(Self::ReasoningText),
+            "tool_call" => Ok(Self::ToolCall),
+            "provider_error" => Ok(Self::ProviderError),
+            other => Err(PhiRuntimeError::provider_request(format!(
+                "unsupported fake provider profile: {other}"
+            ))),
+        }
+    }
+}
+
+pub struct FakeClient {
+    profile: FakeProfile,
+}
+
+impl FakeClient {
+    pub fn new(config: ProviderConfig) -> PhiRuntimeResult<Self> {
+        Ok(Self {
+            profile: FakeProfile::parse(&config.fake_profile)?,
+        })
+    }
+
+    fn assistant_text(
+        &self,
+        _request: &PhiProviderCall,
+        messages: &PhiRenderedMessages,
+    ) -> Vec<PhiMessage> {
+        vec![PhiMessage::assistant(format!(
+            "fake assistant reply to: {}",
+            last_user_text(messages).unwrap_or(""),
+        ))]
+    }
+
+    fn reasoning_text(
+        &self,
+        _request: &PhiProviderCall,
+        messages: &PhiRenderedMessages,
+    ) -> Vec<PhiMessage> {
+        vec![
+            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
+                id: Some("fake-reasoning-1".to_string()),
+                content: vec![PhiReasoningContent::Text {
+                    text: format!(
+                        "fake reasoning about: {}",
+                        last_user_text(messages).unwrap_or("")
+                    ),
+                    signature: None,
+                }],
+            }),
+            PhiMessage::assistant(format!(
+                "fake assistant reply to: {}",
+                last_user_text(messages).unwrap_or(""),
+            )),
+        ]
+    }
+
+    fn tool_call(
+        &self,
+        request: &PhiProviderCall,
+        messages: &PhiRenderedMessages,
+    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+        if messages
+            .iter()
+            .any(|message| matches!(message, PhiMessage::Tool(PhiToolMessage::ToolResult { .. })))
+        {
+            return Ok(vec![PhiMessage::assistant(
+                "fake tool flow completed successfully",
+            )]);
+        }
+
+        let Some(tool) = request.tools.first() else {
+            return Err(PhiRuntimeError::provider_response(
+                "fake tool_call profile requires at least one available tool",
+            ));
+        };
+
+        let arguments = if tool.name == "bash_job" || tool.name == "powershell_job" {
+            serde_json::json!({ "cmd": "printf fake-provider-tool" })
+        } else {
+            serde_json::json!({})
+        };
+
+        Ok(vec![PhiMessage::tool_call(
+            Some("fake-call-1".to_string()),
+            tool.name.clone(),
+            arguments,
+        )])
+    }
+}
+
+#[async_trait]
+impl DynProvider for FakeClient {
+    async fn complete(
+        &self,
+        request: &PhiProviderCall,
+        messages: PhiRenderedMessages,
+    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+        match self.profile {
+            FakeProfile::AssistantText => Ok(self.assistant_text(request, &messages)),
+            FakeProfile::ReasoningText => Ok(self.reasoning_text(request, &messages)),
+            FakeProfile::ToolCall => self.tool_call(request, &messages),
+            FakeProfile::ProviderError => Err(PhiRuntimeError::provider_request(
+                "fake provider generated a configured request error",
+            )),
+        }
+    }
+}
+
+fn last_user_text(messages: &PhiRenderedMessages) -> Option<&str> {
+    messages.iter_rev().find_map(|message| match message {
+        PhiMessage::User(crate::message::PhiUserMessage::Text(text)) => Some(text.as_str()),
+        _ => None,
+    })
+}

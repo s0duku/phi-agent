@@ -1,0 +1,219 @@
+pub mod builtins;
+pub mod sanitizer;
+pub mod tools;
+
+use std::sync::Arc;
+
+use crate::agent::PhiAgentRuntime;
+use crate::error::{PhiRuntimeError, PhiRuntimeResult};
+use async_trait::async_trait;
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PhiToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ToolExecutionLimits {
+    pub timeout_ms: u64,
+    pub output_threshold_tokens: usize,
+    pub preview_bytes: usize,
+}
+
+impl ToolExecutionLimits {
+    pub const fn new(
+        timeout_ms: u64,
+        output_threshold_tokens: usize,
+        preview_bytes: usize,
+    ) -> Self {
+        Self {
+            timeout_ms,
+            output_threshold_tokens,
+            preview_bytes,
+        }
+    }
+
+    pub fn stricter(self, other: Self) -> Self {
+        Self {
+            timeout_ms: self.timeout_ms.min(other.timeout_ms),
+            output_threshold_tokens: self
+                .output_threshold_tokens
+                .min(other.output_threshold_tokens),
+            preview_bytes: self.preview_bytes.min(other.preview_bytes),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct ToolCallRequest {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct ToolCallOutput {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub value: serde_json::Value,
+}
+
+impl ToolCallOutput {
+    pub fn success(value: serde_json::Value) -> Self {
+        Self {
+            ok: true,
+            error: None,
+            value,
+        }
+    }
+
+    pub fn failure(error: impl Into<String>, value: serde_json::Value) -> Self {
+        Self {
+            ok: false,
+            error: Some(error.into()),
+            value,
+        }
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.ok
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn as_value(&self) -> &serde_json::Value {
+        &self.value
+    }
+
+    pub fn into_value(self) -> serde_json::Value {
+        self.value
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct ToolCallResponse {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub name: String,
+    pub output: ToolCallOutput,
+}
+
+impl ToolCallResponse {
+    pub fn success(
+        request: &ToolCallRequest,
+        name: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: request.id.clone(),
+            call_id: request.call_id.clone(),
+            name: name.into(),
+            output: ToolCallOutput::success(value),
+        }
+    }
+
+    pub fn failure(
+        request: &ToolCallRequest,
+        name: impl Into<String>,
+        error: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: request.id.clone(),
+            call_id: request.call_id.clone(),
+            name: name.into(),
+            output: ToolCallOutput::failure(error, value),
+        }
+    }
+}
+
+#[async_trait]
+pub(crate) trait PhiTool: Send + Sync {
+    fn name(&self) -> &str;
+
+    fn description(&self) -> &str;
+
+    fn parameters(&self) -> serde_json::Value;
+
+    fn definition(&self) -> PhiToolDefinition {
+        PhiToolDefinition {
+            name: self.name().to_string(),
+            description: self.description().to_string(),
+            parameters: self.parameters(),
+        }
+    }
+
+    // Tool execution crosses the same runtime boundary as providers: if a tool
+    // fails semantically, the tool should encode that as ToolCallOutput rather
+    // than escaping through PhiRuntimeResult. The runtime result channel here
+    // is reserved for executor-level dispatch failures outside the tool's own
+    // response semantics.
+    async fn call(
+        &self,
+        request: &mut ToolCallRequest,
+        limits: ToolExecutionLimits,
+        runtime: &PhiAgentRuntime,
+    ) -> ToolCallResponse;
+}
+
+pub struct PhiExecutor {
+    tools: IndexMap<String, Arc<dyn PhiTool>>,
+}
+
+impl PhiExecutor {
+    pub(crate) fn from_tools(tools: Vec<Arc<dyn PhiTool>>) -> PhiRuntimeResult<Self> {
+        let mut registered = IndexMap::new();
+
+        for tool in tools {
+            let definition = tool.definition();
+            let name = definition.name;
+            if name.trim().is_empty() {
+                return Err(PhiRuntimeError::internal("tool name cannot be empty"));
+            }
+            if registered.contains_key(&name) {
+                return Err(PhiRuntimeError::internal(format!(
+                    "tool {name} is already registered on this executor"
+                )));
+            }
+            registered.insert(name, tool);
+        }
+
+        Ok(Self { tools: registered })
+    }
+
+    pub fn definitions(&self) -> Vec<PhiToolDefinition> {
+        self.tools.values().map(|tool| tool.definition()).collect()
+    }
+
+    pub(crate) fn tool(&self, name: &str) -> Option<&Arc<dyn PhiTool>> {
+        self.tools.get(name)
+    }
+
+    pub(crate) async fn call_tool(
+        &self,
+        mut request: ToolCallRequest,
+        limits: ToolExecutionLimits,
+        runtime: &PhiAgentRuntime,
+    ) -> PhiRuntimeResult<(ToolCallRequest, ToolCallResponse)> {
+        let name = request.name.clone();
+        let tool = self.tool(name.as_str()).ok_or_else(|| {
+            PhiRuntimeError::tool_not_found(
+                format!("assistant requested unknown tool: {name}"),
+                request.clone(),
+            )
+        })?;
+        let mut response = tool.call(&mut request, limits, runtime).await;
+        response.output = sanitizer::sanitize_tool_call_output(response.output, limits);
+        Ok((request, response))
+    }
+}

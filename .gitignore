@@ -1,0 +1,17 @@
+/target/
+/third/
+/infra/rootfs/out/
+/infra/vmm/out/
+/.venv/
+/artifacts/
+/notes/
+/templates/
+/session
+/looper/build/
+/looper/dist/
+/looper/src/*.egg-info/
+__pycache__/
+*.pyc
+/.codex
+/.agents
+DESIGN.md

@@ -1,0 +1,13 @@
+[alias]
+build-linux-x64-static = "build --workspace --release --target x86_64-unknown-linux-musl"
+test-linux-x64-static = "test --workspace --all-targets --target x86_64-unknown-linux-musl"
+install-linux-x64-static = "run --quiet --package xtask -- install --target x86_64-unknown-linux-musl --offline"
+build-windows-x64-static = "run --quiet --package xtask -- windows build --target x86_64-pc-windows-msvc"
+test-windows-x64-static = "run --quiet --package xtask -- windows test --target x86_64-pc-windows-msvc"
+install-windows-x64-static = "run --quiet --package xtask -- install --target x86_64-pc-windows-msvc --offline"
+build-macos-arm64-release = "build --workspace --release --target aarch64-apple-darwin"
+test-macos-arm64-release = "test --workspace --all-targets --target aarch64-apple-darwin"
+install-macos-arm64-release = "run --quiet --package xtask -- install --target aarch64-apple-darwin --offline"
+
+[target.'cfg(target_os = "windows")']
+rustflags = ["-C", "target-feature=+crt-static"]
