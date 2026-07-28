@@ -269,6 +269,7 @@ async fn persistent_job_can_be_read_and_closed() {
     assert!(matches!(missing.status(), JobStatus::NoExist));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn send_preserves_output_for_the_next_terminal_snapshot() {
     let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
@@ -280,8 +281,6 @@ async fn send_preserves_output_for_the_next_terminal_snapshot() {
     .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let status = <LocalShellJobContainer as JobContainer>::job_send(
         JobHandle(handle.0.clone()),
@@ -305,10 +304,7 @@ async fn send_preserves_output_for_the_next_terminal_snapshot() {
     let _ = <LocalShellJobContainer as JobContainer>::job_close(handle).await;
 }
 
+#[cfg(unix)]
 fn line_input_command() -> &'static str {
-    if cfg!(windows) {
-        "Start-Sleep -Milliseconds 100; Write-Host -NoNewline before; $value = Read-Host; Write-Output \"received:$value\""
-    } else {
-        "sleep 0.1; printf before; IFS= read -r value; printf 'received:%s' \"$value\""
-    }
+    "stty raw -echo; value=$(dd bs=1 count=9 2>/dev/null); printf before; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf 'received:%s' \"$value\""
 }
