@@ -57,7 +57,7 @@ fn initial_response_preserves_output_beyond_the_visible_terminal_page() {
 
 #[test]
 fn maximum_wait_value_still_returns_when_the_shell_exits() {
-    let (handle, info) = job_exec("sleep 0.2; exit 17", Duration::ZERO, EXPIRATION).unwrap();
+    let (handle, info) = job_exec("sleep 2; exit 17", Duration::ZERO, EXPIRATION).unwrap();
     assert!(matches!(info.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
