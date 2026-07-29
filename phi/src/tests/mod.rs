@@ -3,6 +3,7 @@ mod agent_step;
 mod cli_help;
 mod container;
 mod home_config;
+mod interruption;
 mod module;
 mod plugin;
 mod render;

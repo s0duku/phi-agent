@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -17,7 +17,7 @@ pub(crate) struct PhiStepExpr {
     #[serde(default, skip_serializing_if = "PhiExprDelta::is_empty")]
     pub(crate) delta: PhiExprDelta,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) expr: Option<Box<PhiStepExpr>>,
+    pub(crate) expr: Option<Arc<PhiStepExpr>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
@@ -152,7 +152,7 @@ impl PhiStepExpr {
         Self {
             step,
             delta: delta.into(),
-            expr: Some(Box::new(expr)),
+            expr: Some(Arc::new(expr)),
         }
     }
 
@@ -165,8 +165,8 @@ impl PhiStepExpr {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn into_expr(self) -> Option<PhiStepExpr> {
-        self.expr.map(|expr| *expr)
+    pub(crate) fn into_expr(self) -> Option<Arc<PhiStepExpr>> {
+        self.expr
     }
 
     pub(crate) fn delta(&self) -> &PhiExprDelta {
@@ -273,7 +273,11 @@ impl PhiStepExpr {
         let mut messages = if matches!(step, PhiAgentStep::Compacted) {
             Vec::new()
         } else if let Some(expr) = expr {
-            expr.into_history().into_messages()
+            match Arc::try_unwrap(expr) {
+                Ok(expr) => expr.into_history(),
+                Err(expr) => expr.history(),
+            }
+            .into_messages()
         } else {
             Vec::new()
         };
@@ -298,6 +302,22 @@ mod step_expr_tests {
     use crate::session::serde_default_request_complete_step;
 
     #[test]
+    fn clone_shares_parent_expr() {
+        let expr = PhiStepExpr::branch(
+            PhiStepExpr::empty_root(),
+            serde_default_request_complete_step(),
+            PhiExprDelta::default(),
+        );
+
+        let cloned = expr.clone();
+
+        assert!(Arc::ptr_eq(
+            expr.expr.as_ref().expect("parent expr should exist"),
+            cloned.expr.as_ref().expect("cloned parent should exist"),
+        ));
+    }
+
+    #[test]
     fn store_writes_into_current_delta_store() {
         let expr = PhiStepExpr::empty_root()
             .with_store("first", 1)
@@ -318,7 +338,7 @@ mod step_expr_tests {
         let mut expr = PhiStepExpr {
             step: serde_default_request_complete_step(),
             delta: PhiExprDelta::default(),
-            expr: Some(Box::new(base)),
+            expr: Some(Arc::new(base)),
         };
 
         expr = expr.with_store("answer", "world");
@@ -355,7 +375,7 @@ mod step_expr_tests {
         let mut expr = PhiStepExpr {
             step: serde_default_request_complete_step(),
             delta: PhiExprDelta::default(),
-            expr: Some(Box::new(base)),
+            expr: Some(Arc::new(base)),
         };
 
         expr = expr.with_store("name", "current");
@@ -379,7 +399,7 @@ mod step_expr_tests {
         let mut expr = PhiStepExpr {
             step: serde_default_request_complete_step(),
             delta: PhiExprDelta::default(),
-            expr: Some(Box::new(base)),
+            expr: Some(Arc::new(base)),
         };
 
         expr = expr.without_store("retry_state");
@@ -401,7 +421,7 @@ mod step_expr_tests {
         let mut expr = PhiStepExpr {
             step: serde_default_request_complete_step(),
             delta: PhiExprDelta::default(),
-            expr: Some(Box::new(base)),
+            expr: Some(Arc::new(base)),
         };
 
         expr = expr.with_store("count", "wrong-type");

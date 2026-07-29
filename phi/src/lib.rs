@@ -41,13 +41,11 @@ use clap::{
     Parser, Subcommand,
 };
 
-use agent::{
-    PhiAgentCommand, build_agent, run_agent_steps, run_single_agent_step, yolo_agent_steps,
-};
-use features::pretty_info;
+use agent::{PhiAgent, PhiAgentCommand, build_agent};
+use features::{pretty_info, pretty_warning};
 use home::{command::HomeArgs, load_home};
 use message::PhiMessage;
-use session::Session;
+use session::{PhiAgentStep, Session};
 
 enum SessionInput {
     Pipeline(Session),
@@ -140,20 +138,7 @@ async fn step_agent(
     let session = session_input.session().clone();
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
 
-    if input_messages.is_empty() {
-        let outcome = run_single_agent_step(
-            session,
-            PhiAgentCommand::try_from(agent::StepCommandInput {
-                args: agent::StepCommandArgs::from(&args),
-                input_messages: Vec::new(),
-            })?,
-            home.clone(),
-        )
-        .await?;
-        persist_outcome_session(&outcome.session, &session_input)?;
-        return finalize_agent_outcome(outcome.error, args.base.quiet);
-    }
-    let outcome = run_single_agent_step(
+    let (session, interrupted) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::StepCommandInput {
             args: agent::StepCommandArgs::from(&args),
@@ -162,8 +147,7 @@ async fn step_agent(
         home,
     )
     .await?;
-    persist_outcome_session(&outcome.session, &session_input)?;
-    finalize_agent_outcome(outcome.error, args.base.quiet)
+    persist_cli_agent_session(session, interrupted, &session_input, args.base.quiet)
 }
 
 async fn run_agent_with_step_limit(
@@ -178,21 +162,7 @@ async fn run_agent_with_step_limit(
     let max_steps = forced_max_steps.or(args.max_steps);
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
 
-    if input_messages.is_empty() {
-        let outcome = run_agent_steps(
-            session,
-            PhiAgentCommand::try_from(agent::RunCommandInput {
-                args: agent::RunCommandArgs::from(&args),
-                forced_max_steps: max_steps,
-                input_messages: Vec::new(),
-            })?,
-            home.clone(),
-        )
-        .await?;
-        persist_outcome_session(&outcome.session, &session_input)?;
-        return finalize_agent_outcome(outcome.error, args.base.quiet);
-    }
-    let outcome = run_agent_steps(
+    let (session, interrupted) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::RunCommandInput {
             args: agent::RunCommandArgs::from(&args),
@@ -202,8 +172,7 @@ async fn run_agent_with_step_limit(
         home,
     )
     .await?;
-    persist_outcome_session(&outcome.session, &session_input)?;
-    finalize_agent_outcome(outcome.error, args.base.quiet)
+    persist_cli_agent_session(session, interrupted, &session_input, args.base.quiet)
 }
 
 async fn yolo_agent_with_step_limit(
@@ -218,21 +187,7 @@ async fn yolo_agent_with_step_limit(
     let max_steps = forced_max_steps.or(args.max_steps);
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
 
-    if input_messages.is_empty() {
-        let outcome = yolo_agent_steps(
-            session,
-            PhiAgentCommand::try_from(agent::YoloCommandInput {
-                args: agent::RunCommandArgs::from(&args),
-                forced_max_steps: max_steps,
-                input_messages: Vec::new(),
-            })?,
-            home.clone(),
-        )
-        .await?;
-        persist_outcome_session(&outcome.session, &session_input)?;
-        return finalize_agent_outcome(outcome.error, args.base.quiet);
-    }
-    let outcome = yolo_agent_steps(
+    let (session, interrupted) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::YoloCommandInput {
             args: agent::RunCommandArgs::from(&args),
@@ -242,8 +197,83 @@ async fn yolo_agent_with_step_limit(
         home,
     )
     .await?;
-    persist_outcome_session(&outcome.session, &session_input)?;
-    finalize_agent_outcome(outcome.error, args.base.quiet)
+    persist_cli_agent_session(session, interrupted, &session_input, args.base.quiet)
+}
+
+async fn run_cli_agent(
+    session: Session,
+    command: PhiAgentCommand,
+    home: std::sync::Arc<dyn home::PhiHome>,
+) -> Result<(Session, bool), Box<dyn std::error::Error>> {
+    let step_once = matches!(&command, PhiAgentCommand::Step(_));
+    let yolo = matches!(&command, PhiAgentCommand::Yolo(_));
+    let mut agent = build_agent(session, command, home)?;
+    let mut previous_was_failed = false;
+    loop {
+        let checkpoint = agent.session();
+        if step_or_ctrl_c(&mut agent).await? {
+            return Ok((checkpoint, true));
+        }
+        let session = agent.session();
+        let completed = if step_once {
+            true
+        } else if yolo {
+            match session.step() {
+                PhiAgentStep::Completed { .. } => true,
+                PhiAgentStep::Failed { .. } if previous_was_failed => true,
+                PhiAgentStep::Failed { .. } => {
+                    previous_was_failed = true;
+                    false
+                }
+                _ => {
+                    previous_was_failed = false;
+                    false
+                }
+            }
+        } else {
+            session.step().is_terminal() || matches!(session.step(), PhiAgentStep::RequestCompact)
+        };
+        if completed {
+            return Ok((agent.into_session(), false));
+        }
+    }
+}
+
+async fn step_or_ctrl_c(agent: &mut PhiAgent) -> Result<bool, std::io::Error> {
+    step_or_interrupt(agent, tokio::signal::ctrl_c()).await
+}
+
+async fn step_or_interrupt<I>(agent: &mut PhiAgent, interrupt: I) -> Result<bool, std::io::Error>
+where
+    I: std::future::Future<Output = Result<(), std::io::Error>>,
+{
+    tokio::select! {
+        biased;
+        signal = interrupt => {
+            signal?;
+            Ok(true)
+        }
+        () = agent.step() => Ok(false),
+    }
+}
+
+fn persist_cli_agent_session(
+    session: Session,
+    interrupted: bool,
+    session_input: &SessionInput,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    persist_outcome_session(&session, session_input)?;
+    if interrupted {
+        if !quiet {
+            eprintln!(
+                "{}",
+                pretty_warning("interrupted; persisted the last committed session state")
+            );
+        }
+        return Ok(());
+    }
+    finalize_agent_outcome(session.step().error().cloned(), quiet)
 }
 
 fn probe_session_command(

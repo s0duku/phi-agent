@@ -26,7 +26,7 @@ use governance::loop_guard::{
 #[allow(unused_imports)]
 pub(crate) use governance::model_retry::ModelRetryPolicy;
 pub use observers::echo::pretty_history;
-pub(crate) use observers::echo::pretty_message;
+pub(crate) use observers::echo::{pretty_message, pretty_warning};
 pub use plugin::PluginRuntimeStatus;
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/system.txt");

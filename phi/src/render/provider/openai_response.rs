@@ -1,7 +1,4 @@
-use std::{
-    sync::{Mutex, OnceLock},
-    vec,
-};
+use std::vec;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -21,7 +18,6 @@ use crate::{
 pub struct ResponsesClient {
     http: reqwest::Client,
     config: ProviderConfig,
-    reasoning_format: &'static OnceLock<Mutex<ResponsesReasoningFormat>>,
 }
 
 impl ResponsesClient {
@@ -29,31 +25,7 @@ impl ResponsesClient {
         Self {
             http: reqwest::Client::new(),
             config,
-            reasoning_format: reasoning_format_state(),
         }
-    }
-
-    fn current_reasoning_format(&self) -> PhiResult<ResponsesReasoningFormat> {
-        let guard = self
-            .reasoning_format
-            .get_or_init(|| Mutex::new(ResponsesReasoningFormat::Summary))
-            .lock()
-            .map_err(|_| {
-                PhiRuntimeError::internal("responses reasoning format mutex was poisoned")
-            })?;
-        Ok(*guard)
-    }
-
-    fn observe_reasoning_format(&self, _response: &ResponsesCreateResponse) -> PhiResult<()> {
-        let mut guard = self
-            .reasoning_format
-            .get_or_init(|| Mutex::new(ResponsesReasoningFormat::Summary))
-            .lock()
-            .map_err(|_| {
-                PhiRuntimeError::internal("responses reasoning format mutex was poisoned")
-            })?;
-        *guard = ResponsesReasoningFormat::Summary;
-        Ok(())
     }
 }
 
@@ -66,10 +38,7 @@ impl PhiProvider for ResponsesClient {
         &self,
         messages: &PhiRenderedMessages,
     ) -> PhiResult<Vec<Self::ProviderMessage>> {
-        Ok(messages
-            .iter()
-            .flat_map(ProviderMessage::from_phi_message)
-            .collect())
+        Ok(ResponsesPrompt::from_phi_messages(messages).input)
     }
 
     fn phi_messages(&self, response: Vec<Self::ProviderMessage>) -> PhiResult<Vec<PhiMessage>> {
@@ -89,19 +58,14 @@ impl PhiProvider for ResponsesClient {
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
     ) -> PhiResult<PhiModelResponse> {
-        let provider_messages = self.provider_messages(messages)?;
+        let prompt = ResponsesPrompt::from_phi_messages(messages);
         let provider_tools = request
             .tools
             .iter()
             .map(|tool| self.provider_tool(tool))
             .collect::<Vec<_>>();
 
-        let request = ResponsesRequest::from_provider_messages(
-            request,
-            &provider_messages,
-            &provider_tools,
-            self.current_reasoning_format()?,
-        );
+        let request = ResponsesRequest::from_prompt(request, &prompt, &provider_tools);
 
         let response = self
             .http
@@ -138,16 +102,11 @@ impl PhiProvider for ResponsesClient {
                     "openai_response response decode failed: {error}"
                 ))
             })?;
-        self.observe_reasoning_format(&response)?;
+        response.validate_status()?;
         let turn_state = response.turn_state();
         let messages = self.phi_messages(response.into_provider_messages())?;
         Ok(PhiModelResponse::new(messages, turn_state))
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ResponsesReasoningFormat {
-    Summary,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -162,7 +121,13 @@ pub enum ProviderMessage {
         output: String,
     },
     Reasoning {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         summary: Vec<ResponsesReasoningSummary>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<ResponsesReasoningContent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
     },
     FunctionCall {
         call_id: String,
@@ -183,15 +148,37 @@ impl ProviderMessage {
                 role: "assistant".to_string(),
                 content: vec![ResponsesContentPart::OutputText { text: text.clone() }],
             }],
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => {
+            PhiMessage::Assistant(PhiAssistantMessage::Reasoning { id, content }) => {
                 vec![Self::Reasoning {
+                    id: id.clone(),
                     summary: content
                         .iter()
-                        .filter_map(PhiReasoningContent::display_text)
-                        .map(|text: &str| ResponsesReasoningSummary::SummaryText {
-                            text: text.to_string(),
+                        .filter_map(|part| match part {
+                            PhiReasoningContent::Summary(text)
+                            | PhiReasoningContent::Redacted { data: text } => {
+                                Some(ResponsesReasoningSummary::SummaryText { text: text.clone() })
+                            }
+                            PhiReasoningContent::Text { .. }
+                            | PhiReasoningContent::Encrypted(_) => None,
                         })
                         .collect(),
+                    content: content
+                        .iter()
+                        .filter_map(|part| match part {
+                            PhiReasoningContent::Text { text, .. } => {
+                                Some(ResponsesReasoningContent::ReasoningText {
+                                    text: text.clone(),
+                                })
+                            }
+                            PhiReasoningContent::Summary(_)
+                            | PhiReasoningContent::Redacted { .. }
+                            | PhiReasoningContent::Encrypted(_) => None,
+                        })
+                        .collect(),
+                    encrypted_content: content.iter().find_map(|part| match part {
+                        PhiReasoningContent::Encrypted(data) => Some(data.clone()),
+                        _ => None,
+                    }),
                 }]
             }
             PhiMessage::Tool(PhiToolMessage::ToolCall {
@@ -236,21 +223,39 @@ impl ProviderMessage {
                 None,
                 serde_json::from_str(&output).unwrap_or_else(|_| serde_json::Value::String(output)),
             )],
-            Self::Reasoning { summary } => {
-                let reasoning_summary = summary
+            Self::Reasoning {
+                id,
+                summary,
+                content,
+                encrypted_content,
+            } => {
+                let mut reasoning = summary
                     .into_iter()
                     .filter_map(|item| match item {
-                        ResponsesReasoningSummary::SummaryText { text } => Some(text),
+                        ResponsesReasoningSummary::SummaryText { text } => {
+                            Some(PhiReasoningContent::Summary(text))
+                        }
                         ResponsesReasoningSummary::Other => None,
                     })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if reasoning_summary.is_empty() {
+                    .chain(content.into_iter().filter_map(|item| match item {
+                        ResponsesReasoningContent::ReasoningText { text } => {
+                            Some(PhiReasoningContent::Text {
+                                text,
+                                signature: None,
+                            })
+                        }
+                        ResponsesReasoningContent::Other => None,
+                    }))
+                    .collect::<Vec<_>>();
+                if let Some(encrypted_content) = encrypted_content {
+                    reasoning.push(PhiReasoningContent::Encrypted(encrypted_content));
+                }
+                if reasoning.is_empty() {
                     vec![]
                 } else {
                     vec![PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                        id: None,
-                        content: vec![PhiReasoningContent::Summary(reasoning_summary)],
+                        id,
+                        content: reasoning,
                     })]
                 }
             }
@@ -272,6 +277,31 @@ impl ProviderMessage {
     }
 }
 
+struct ResponsesPrompt {
+    instructions: Option<String>,
+    input: Vec<ProviderMessage>,
+}
+
+impl ResponsesPrompt {
+    fn from_phi_messages(messages: &PhiRenderedMessages) -> Self {
+        let mut instructions = Vec::new();
+        let mut input = Vec::new();
+        for message in messages.iter() {
+            match message {
+                PhiMessage::System(content) if !content.is_empty() => {
+                    instructions.push(content.as_str());
+                }
+                _ => input.extend(ProviderMessage::from_phi_message(message)),
+            }
+        }
+        let instructions = instructions.join("\n\n");
+        Self {
+            instructions: (!instructions.is_empty()).then_some(instructions),
+            input,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ResponsesRequest {
     model: String,
@@ -289,21 +319,24 @@ struct ResponsesRequest {
     max_output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ResponsesReasoningRequest>,
+    tool_choice: String,
+    parallel_tool_calls: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    include: Vec<String>,
 }
 
 impl ResponsesRequest {
-    fn from_provider_messages(
+    fn from_prompt(
         request: &PhiProviderCall,
-        messages: &[ProviderMessage],
+        prompt: &ResponsesPrompt,
         tools: &[ResponsesToolDefinition],
-        reasoning_format: ResponsesReasoningFormat,
     ) -> Self {
         Self {
             model: request.model.clone(),
-            input: messages.to_vec(),
-            instructions: None,
+            input: prompt.input.clone(),
+            instructions: prompt.instructions.clone(),
             previous_response_id: None,
-            store: true,
+            store: false,
             tools: if tools.is_empty() {
                 None
             } else {
@@ -312,14 +345,19 @@ impl ResponsesRequest {
             temperature: request.temperature,
             max_output_tokens: Some(request.max_tokens),
             reasoning: if request.enable_reasoning {
-                Some(ResponsesReasoningRequest::from_reasoning_format(
-                    reasoning_format,
-                    request.thinking_token_budget,
+                Some(ResponsesReasoningRequest::new(
                     request.reasoning_effort.as_str(),
                 ))
             } else {
                 None
             },
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: false,
+            include: request
+                .enable_reasoning
+                .then(|| "reasoning.encrypted_content".to_string())
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -330,9 +368,44 @@ struct ResponsesCreateResponse {
     output: Vec<ResponsesOutputItem>,
     #[serde(default)]
     end_turn: Option<bool>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    error: Option<ResponsesError>,
+    #[serde(default)]
+    incomplete_details: Option<ResponsesIncompleteDetails>,
 }
 
 impl ResponsesCreateResponse {
+    fn validate_status(&self) -> PhiResult<()> {
+        match self.status.as_deref() {
+            None | Some("completed") => Ok(()),
+            Some("failed") => {
+                let detail = self
+                    .error
+                    .as_ref()
+                    .map(ResponsesError::detail)
+                    .unwrap_or_else(|| "response failed without error details".to_string());
+                Err(PhiRuntimeError::provider_response(format!(
+                    "openai_response failed: {detail}"
+                )))
+            }
+            Some("incomplete") => {
+                let reason = self
+                    .incomplete_details
+                    .as_ref()
+                    .and_then(|details| details.reason.as_deref())
+                    .unwrap_or("unknown reason");
+                Err(PhiRuntimeError::provider_response(format!(
+                    "openai_response incomplete: {reason}"
+                )))
+            }
+            Some(status) => Err(PhiRuntimeError::provider_response(format!(
+                "openai_response returned non-terminal status: {status}"
+            ))),
+        }
+    }
+
     fn turn_state(&self) -> PhiModelTurnState {
         match self.end_turn {
             Some(true) => PhiModelTurnState::Complete,
@@ -362,19 +435,26 @@ impl ResponsesCreateResponse {
                         .collect(),
                 }),
                 ResponsesOutputItem::FunctionCall {
-                    id,
                     call_id,
                     name,
                     arguments,
                     ..
                 } => Some(ProviderMessage::FunctionCall {
-                    call_id: id.unwrap_or(call_id),
+                    call_id,
                     name,
                     arguments,
                 }),
-                ResponsesOutputItem::Reasoning { summary } => {
-                    Some(ProviderMessage::Reasoning { summary })
-                }
+                ResponsesOutputItem::Reasoning {
+                    id,
+                    summary,
+                    content,
+                    encrypted_content,
+                } => Some(ProviderMessage::Reasoning {
+                    id,
+                    summary,
+                    content,
+                    encrypted_content,
+                }),
                 ResponsesOutputItem::Other => None,
             })
             .collect()
@@ -391,8 +471,8 @@ enum ResponsesOutputItem {
         content: Vec<ResponsesOutputContent>,
     },
     FunctionCall {
-        #[serde(default)]
-        id: Option<String>,
+        #[serde(default, rename = "id")]
+        _id: Option<String>,
         call_id: String,
         name: String,
         arguments: String,
@@ -401,7 +481,13 @@ enum ResponsesOutputItem {
     },
     Reasoning {
         #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
         summary: Vec<ResponsesReasoningSummary>,
+        #[serde(default)]
+        content: Vec<ResponsesReasoningContent>,
+        #[serde(default)]
+        encrypted_content: Option<String>,
     },
     #[serde(other)]
     Other,
@@ -421,6 +507,7 @@ pub struct ResponsesToolDefinition {
     name: String,
     description: String,
     parameters: serde_json::Value,
+    strict: bool,
 }
 
 impl ResponsesToolDefinition {
@@ -430,6 +517,7 @@ impl ResponsesToolDefinition {
             name: function.name,
             description: function.description,
             parameters: function.parameters,
+            strict: false,
         }
     }
 }
@@ -438,18 +526,25 @@ impl ResponsesToolDefinition {
 struct ResponsesReasoningRequest {
     effort: String,
     summary: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_output_tokens: Option<u64>,
 }
 
 impl ResponsesReasoningRequest {
-    fn from_reasoning_format(_format: ResponsesReasoningFormat, budget: u64, effort: &str) -> Self {
+    fn new(effort: &str) -> Self {
         Self {
             effort: effort.to_string(),
             summary: "auto".to_string(),
-            max_output_tokens: Some(budget),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponsesReasoningContent {
+    ReasoningText {
+        text: String,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -478,14 +573,67 @@ pub enum ResponsesReasoningSummary {
     Other,
 }
 
-fn reasoning_format_state() -> &'static OnceLock<Mutex<ResponsesReasoningFormat>> {
-    static STATE: OnceLock<Mutex<ResponsesReasoningFormat>> = OnceLock::new();
-    &STATE
+#[derive(Clone, Debug, Deserialize)]
+struct ResponsesError {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+impl ResponsesError {
+    fn detail(&self) -> String {
+        match (&self.code, &self.message) {
+            (Some(code), Some(message)) => format!("{code}: {message}"),
+            (Some(code), None) => code.clone(),
+            (None, Some(message)) => message.clone(),
+            (None, None) => "response failed without error details".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ResponsesIncompleteDetails {
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::ModelRequestDefaults, render::test_rendered_messages};
+
+    fn default_request() -> PhiProviderCall {
+        PhiProviderCall::from_parts(&ModelRequestDefaults::defaults(), Vec::new())
+    }
+
+    #[test]
+    fn maps_system_messages_to_instructions_and_not_input() {
+        let messages = test_rendered_messages(vec![
+            PhiMessage::system("base instructions"),
+            PhiMessage::user("hello"),
+            PhiMessage::system("additional instructions"),
+        ]);
+        let prompt = ResponsesPrompt::from_phi_messages(&messages);
+        let request = ResponsesRequest::from_prompt(&default_request(), &prompt, &[]);
+
+        let json = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(
+            json["instructions"],
+            "base instructions\n\nadditional instructions"
+        );
+        assert_eq!(json["input"].as_array().expect("input array").len(), 1);
+        assert_eq!(json["input"][0]["role"], "user");
+        assert_eq!(json["store"], false);
+        assert_eq!(json["tool_choice"], "auto");
+        assert_eq!(json["parallel_tool_calls"], false);
+        assert_eq!(
+            json["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        assert!(json["reasoning"].get("max_output_tokens").is_none());
+    }
 
     #[test]
     fn maps_response_end_turn_to_model_turn_state() {
@@ -507,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_function_call_without_id() {
+    fn function_call_uses_call_id_instead_of_item_id() {
         let response = serde_json::from_str::<ResponsesCreateResponse>(
             r#"{
                 "id": "resp_test",
@@ -515,6 +663,7 @@ mod tests {
                 "output": [
                     {
                         "type": "function_call",
+                        "id": "fc_456",
                         "call_id": "call_123",
                         "name": "bash",
                         "arguments": "{\"command\":\"ls\"}"
@@ -542,6 +691,89 @@ mod tests {
                 serde_json::json!({ "command": "ls" }),
             )]
         );
+    }
+
+    #[test]
+    fn reasoning_state_round_trips_through_phi_history() {
+        let response = serde_json::from_str::<ResponsesCreateResponse>(
+            r#"{
+                "status": "completed",
+                "output": [{
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "summary": [{"type":"summary_text","text":"summary"}],
+                    "content": [{"type":"reasoning_text","text":"reasoning"}],
+                    "encrypted_content": "encrypted-state"
+                }]
+            }"#,
+        )
+        .expect("response should deserialize");
+        let provider_message = response
+            .into_provider_messages()
+            .into_iter()
+            .next()
+            .expect("reasoning item should exist");
+        let phi_message = provider_message
+            .into_phi_messages()
+            .expect("reasoning should map into Phi")
+            .into_iter()
+            .next()
+            .expect("Phi reasoning should exist");
+
+        assert_eq!(
+            phi_message,
+            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
+                id: Some("rs_123".to_string()),
+                content: vec![
+                    PhiReasoningContent::Summary("summary".to_string()),
+                    PhiReasoningContent::Text {
+                        text: "reasoning".to_string(),
+                        signature: None,
+                    },
+                    PhiReasoningContent::Encrypted("encrypted-state".to_string()),
+                ],
+            })
+        );
+        assert_eq!(
+            ProviderMessage::from_phi_message(&phi_message),
+            vec![ProviderMessage::Reasoning {
+                id: Some("rs_123".to_string()),
+                summary: vec![ResponsesReasoningSummary::SummaryText {
+                    text: "summary".to_string(),
+                }],
+                content: vec![ResponsesReasoningContent::ReasoningText {
+                    text: "reasoning".to_string(),
+                }],
+                encrypted_content: Some("encrypted-state".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_failed_and_incomplete_responses() {
+        for (json, expected_detail) in [
+            (
+                r#"{
+                    "status":"failed",
+                    "error":{"code":"rate_limit_exceeded","message":"try later"}
+                }"#,
+                "openai_response failed: rate_limit_exceeded: try later",
+            ),
+            (
+                r#"{
+                    "status":"incomplete",
+                    "incomplete_details":{"reason":"max_output_tokens"}
+                }"#,
+                "openai_response incomplete: max_output_tokens",
+            ),
+        ] {
+            let response = serde_json::from_str::<ResponsesCreateResponse>(json)
+                .expect("response should deserialize");
+            let error = response
+                .validate_status()
+                .expect_err("non-completed response should fail");
+            assert_eq!(error.detail(), expected_detail);
+        }
     }
 
     #[test]

@@ -102,18 +102,19 @@ struct SubprocessWorker {
 impl SubprocessWorker {
     fn spawn(executable: &Path) -> Result<Self, String> {
         let worker_script = worker_script();
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .args(["-u", "-c", &worker_script])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|error| {
-                format!(
-                    "failed to spawn python worker '{}': {error}",
-                    executable.display()
-                )
-            })?;
+            .stderr(Stdio::inherit());
+        isolate_worker_from_terminal_interrupt(&mut command);
+        let mut child = command.spawn().map_err(|error| {
+            format!(
+                "failed to spawn python worker '{}': {error}",
+                executable.display()
+            )
+        })?;
 
         let stdin = child
             .stdin
@@ -225,6 +226,26 @@ impl SubprocessWorker {
         serde_json::from_str::<PythonRuntimeResponse>(line.trim_end())
             .map_err(|error| format!("failed to decode python worker response: {error}"))
     }
+}
+
+#[cfg(unix)]
+fn isolate_worker_from_terminal_interrupt(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+}
+
+#[cfg(windows)]
+fn isolate_worker_from_terminal_interrupt(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
 }
 
 fn detect_python_executable() -> Result<PathBuf, String> {

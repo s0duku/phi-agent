@@ -1,7 +1,6 @@
 use std::io::{self, IsTerminal, Write};
 
 use owo_colors::{OwoColorize, Stream, Style};
-use serde::Serialize;
 
 use crate::{
     error::{PhiRuntimeError, PhiRuntimeResult},
@@ -80,7 +79,7 @@ impl PhiModule for EchoModule {
     }
 }
 
-fn pretty_warning(message: &str) -> String {
+pub(crate) fn pretty_warning(message: &str) -> String {
     pretty_warning_for_stream(message, Stream::Stderr)
 }
 
@@ -243,14 +242,98 @@ fn pretty_tool_output(output: &ToolCallOutput) -> String {
 }
 
 fn pretty_json_value(value: &serde_json::Value) -> String {
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
-    let mut bytes = Vec::new();
-    let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
-    value
-        .serialize(&mut serializer)
-        .ok()
-        .and_then(|()| String::from_utf8(bytes).ok())
-        .unwrap_or_else(|| value.to_string())
+    let mut output = String::new();
+    render_structured_value(value, 0, &mut output);
+    output
+}
+
+fn render_structured_value(value: &serde_json::Value, depth: usize, output: &mut String) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (index, (name, value)) in fields.iter().enumerate() {
+                if index > 0 {
+                    output.push('\n');
+                }
+                push_indent(output, depth);
+                output.push_str(name);
+                output.push(':');
+                render_nested_value(value, depth, output);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, value) in items.iter().enumerate() {
+                if index > 0 {
+                    output.push('\n');
+                }
+                push_indent(output, depth);
+                output.push('-');
+                render_nested_value(value, depth, output);
+            }
+        }
+        serde_json::Value::String(value) if is_multiline(value) => {
+            render_text_block(value, depth, output);
+        }
+        _ => {
+            push_indent(output, depth);
+            output.push_str(&render_scalar(value));
+        }
+    }
+}
+
+fn render_nested_value(value: &serde_json::Value, depth: usize, output: &mut String) {
+    if is_block_value(value) {
+        output.push('\n');
+        render_structured_value(value, depth + 1, output);
+        return;
+    }
+
+    let rendered = render_scalar(value);
+    if !rendered.is_empty() {
+        output.push(' ');
+        output.push_str(&rendered);
+    }
+}
+
+fn is_block_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => !fields.is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        serde_json::Value::String(value) => is_multiline(value),
+        _ => false,
+    }
+}
+
+fn is_multiline(value: &str) -> bool {
+    value.contains(['\n', '\r'])
+}
+
+fn render_scalar(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Array(items) if items.is_empty() => "[]".to_string(),
+        serde_json::Value::Object(fields) if fields.is_empty() => "{}".to_string(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => String::new(),
+    }
+}
+
+fn render_text_block(value: &str, depth: usize, output: &mut String) {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    for (index, line) in normalized.lines().enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+        push_indent(output, depth);
+        output.push_str(line);
+    }
+}
+
+fn push_indent(output: &mut String, depth: usize) {
+    for _ in 0..depth {
+        output.push('\t');
+    }
 }
 
 fn style_header(role: &str, stream: Stream) -> String {
@@ -326,7 +409,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:call]\nbash #call_123\n{\n\t\"command\": \"pwd\"\n}"
+            "\n[tool:call]\nbash #call_123\ncommand: pwd"
         );
     }
 
@@ -340,7 +423,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:call]\njob_close #call_123\n{\n\t\"handle\": \"mira-kest\"\n}"
+            "\n[tool:call]\njob_close #call_123\nhandle: mira-kest"
         );
         assert!(!rendered.contains("status: unknown"));
     }
@@ -378,7 +461,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"duration_ms\": 12,\n\t\t\"status\": 0,\n\t\t\"stderr\": \"\",\n\t\t\"stdout\": \"hello\\n\",\n\t\t\"timed_out\": false\n\t}\n}"
+            "\n[tool:result]\nbash call_123\ntool_error: null\ntool_ok: true\nvalue:\n\tduration_ms: 12\n\tstatus: 0\n\tstderr:\n\tstdout:\n\t\thello\n\ttimed_out: false"
         );
     }
 
@@ -398,7 +481,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash_job call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"exit_code\": null,\n\t\t\"handle\": \"mira-kest\",\n\t\t\"output\": \"ready\\r\\n\",\n\t\t\"status\": \"running\",\n\t\t\"waited_ms\": 1500\n\t}\n}"
+            "\n[tool:result]\nbash_job call_123\ntool_error: null\ntool_ok: true\nvalue:\n\texit_code: null\n\thandle: mira-kest\n\toutput:\n\t\tready\n\tstatus: running\n\twaited_ms: 1500"
         );
     }
 
@@ -417,7 +500,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\njob_interact call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"handle\": \"mira-kest\",\n\t\t\"output\": \"\",\n\t\t\"status\": \"running\",\n\t\t\"waited_ms\": 60000\n\t}\n}"
+            "\n[tool:result]\njob_interact call_123\ntool_error: null\ntool_ok: true\nvalue:\n\thandle: mira-kest\n\toutput:\n\tstatus: running\n\twaited_ms: 60000"
         );
     }
 
@@ -473,7 +556,21 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&pretty_history(&history)),
-            "\n[user]\nhello\n\n[tool:call]\nbash #call_123\n{\n\t\"command\": \"pwd\"\n}\n\n[tool:result]\nbash call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"status\": 0,\n\t\t\"stdout\": \"ok\\n\"\n\t}\n}\n\n[assistant]\ndone"
+            "\n[user]\nhello\n\n[tool:call]\nbash #call_123\ncommand: pwd\n\n[tool:result]\nbash call_123\ntool_error: null\ntool_ok: true\nvalue:\n\tstatus: 0\n\tstdout:\n\t\tok\n\n[assistant]\ndone"
+        );
+    }
+
+    #[test]
+    fn formats_structured_values_without_tool_specific_field_knowledge() {
+        assert_eq!(
+            pretty_json_value(&serde_json::json!({
+                "handle": "a",
+                "value": {
+                    "items": ["first", { "ok": true }],
+                    "ok": true
+                }
+            })),
+            "handle: a\nvalue:\n\titems:\n\t\t- first\n\t\t-\n\t\t\tok: true\n\tok: true"
         );
     }
 }
