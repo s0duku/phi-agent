@@ -162,14 +162,17 @@ impl PhiProvider for OpenAiCompatClient {
                 "openai_chat HTTP {status}: {body}"
             )));
         }
-        let response = response
-            .json::<ChatCompletionResponse>()
-            .await
-            .map_err(|error| {
-                PhiRuntimeError::provider_response(format!(
-                    "openai_chat response decode failed: {error}"
-                ))
-            })?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            PhiRuntimeError::provider_response(format!(
+                "openai_chat response body read failed (HTTP {status}): {error}"
+            ))
+        })?;
+        let response = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|error| {
+            PhiRuntimeError::provider_response(format!(
+                "openai_chat response decode failed (HTTP {status}): {error}; response body: {body}"
+            ))
+        })?;
 
         let choice = response.choices.into_iter().next().ok_or_else(|| {
             PhiRuntimeError::provider_response("openai_chat provider returned no choices")

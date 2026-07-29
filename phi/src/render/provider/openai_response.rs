@@ -94,14 +94,17 @@ impl PhiProvider for ResponsesClient {
             )));
         }
 
-        let response = response
-            .json::<ResponsesCreateResponse>()
-            .await
-            .map_err(|error| {
-                PhiRuntimeError::provider_response(format!(
-                    "openai_response response decode failed: {error}"
-                ))
-            })?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            PhiRuntimeError::provider_response(format!(
+                "openai_response response body read failed (HTTP {status}): {error}"
+            ))
+        })?;
+        let response = serde_json::from_str::<ResponsesCreateResponse>(&body).map_err(|error| {
+            PhiRuntimeError::provider_response(format!(
+                "openai_response response decode failed (HTTP {status}): {error}; response body: {body}"
+            ))
+        })?;
         response.validate_status()?;
         let turn_state = response.turn_state();
         let messages = self.phi_messages(response.into_provider_messages())?;
