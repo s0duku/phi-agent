@@ -186,11 +186,9 @@ impl PhiAgentRuntime {
                         bounce = runtime.continue_failed(error, "bounce_transition");
                         continue;
                     }
-                    let parent = runtime.base.expr.clone();
-                    runtime.base = PhiStepExpr {
-                        step,
-                        delta,
-                        expr: parent,
+                    runtime.base = match runtime.base.expr().cloned() {
+                        Some(parent) => PhiStepExpr::branch(parent, step, delta),
+                        None => PhiStepExpr::new(step, delta),
                     };
                     runtime.delta = PhiExprDelta::default();
                     if let Some(error) = runtime.base.step().error() {

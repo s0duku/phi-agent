@@ -270,10 +270,8 @@ impl PhiStepExpr {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_loop_guard_rejected_attempts(mut self, rejected_attempts: usize) -> Self {
-        self.delta
-            .bind_loop_guard_rejected_attempts(rejected_attempts);
-        self
+    pub(crate) fn with_loop_guard_rejected_attempts(self, rejected_attempts: usize) -> Self {
+        self.with_store(LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY, rejected_attempts)
     }
 }
 

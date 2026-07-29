@@ -94,23 +94,20 @@ impl PhiAgentBuildContext {
         let defaults = ModelRequestDefaults::from_config(&self.config)
             .map_err(|error| PhiRuntimeError::session(error.to_string()))?;
         let expr = std::mem::replace(&mut self.session, Session::empty()).into_expr();
-        let PhiStepExpr {
-            delta,
-            expr: parent,
-            ..
-        } = expr;
-        let mut delta = delta;
+        let mut delta = expr.delta().clone();
+        let parent = expr.expr().cloned();
         for message in messages {
             if verbose {
                 eprintln!("{}", crate::features::pretty_message(&message));
             }
             delta.push_message(message);
         }
-        self.session = Session::from_expr(PhiStepExpr {
-            step: PhiAgentStep::request_complete("ready to request the model", &defaults),
-            delta,
-            expr: parent,
-        });
+        let step = PhiAgentStep::request_complete("ready to request the model", &defaults);
+        let expr = match parent {
+            Some(parent) => PhiStepExpr::branch(parent, step, delta),
+            None => PhiStepExpr::new(step, delta),
+        };
+        self.session = Session::from_expr(expr);
         Ok(())
     }
 }

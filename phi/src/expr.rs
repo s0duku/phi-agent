@@ -13,11 +13,11 @@ use crate::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct PhiStepExpr {
     #[serde(default = "crate::session::serde_default_request_complete_step")]
-    pub(crate) step: PhiAgentStep,
+    step: PhiAgentStep,
     #[serde(default, skip_serializing_if = "PhiExprDelta::is_empty")]
-    pub(crate) delta: PhiExprDelta,
+    delta: PhiExprDelta,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) expr: Option<Arc<PhiStepExpr>>,
+    expr: Option<Arc<PhiStepExpr>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]

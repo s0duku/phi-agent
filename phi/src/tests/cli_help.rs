@@ -35,3 +35,16 @@ fn nested_home_subcommand_help_starts_with_banner() {
 
     assert!(help.starts_with(banner::startup_banner()));
 }
+
+#[test]
+fn container_help_exposes_launch_local() {
+    let mut command = Cli::command();
+    let help = command
+        .find_subcommand_mut("container")
+        .expect("container subcommand should exist")
+        .render_help()
+        .to_string();
+
+    assert!(help.contains("launch-local"));
+    assert!(help.contains("Launch a detached local shell container process"));
+}

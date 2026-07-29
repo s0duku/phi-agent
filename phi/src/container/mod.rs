@@ -52,7 +52,10 @@ enum ContainerCommand {
     },
     #[command(about = "Close a running shell job and release its container resources")]
     Close { handle: String },
-    #[command(name = "launch-local", hide = true)]
+    #[command(
+        name = "launch-local",
+        about = "Launch a detached local shell container process"
+    )]
     LaunchLocal {
         handle: String,
         expiration_ms: u64,

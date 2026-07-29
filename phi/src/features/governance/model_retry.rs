@@ -166,9 +166,8 @@ impl PhiStepExpr {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_model_retry_state(mut self, retry: PhiModelRetryState) -> Self {
-        self.delta.bind_model_retry_state(retry);
-        self
+    pub(crate) fn with_model_retry_state(self, retry: PhiModelRetryState) -> Self {
+        self.with_store(MODEL_RETRY_STATE_STORE_KEY, retry)
     }
 }
 
