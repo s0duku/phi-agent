@@ -8,15 +8,14 @@
     <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/s0duku/phi-agent/ci.yml?label=CI" />
   </a>
 </div>
-<div align="center">
-  <img alt="Phi demo" src="assets/demo.gif" />
-</div>
 
 ---
 
 **Phi** is a cli agent without heavy TUI, simply take everyhing from command arguments and enviroment variables, work with session through **stdin** and **stdout**.
 
 Phi reads input from command arguments, environment variables, `PhiHome`, and optional session JSON on stdin, then writes the updated session back to stdout or a session file.
+
+![Phi demo 1](assets/demo1.gif) ![Phi demo 2](assets/demo2.gif)
 
 ## Usage
 
