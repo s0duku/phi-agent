@@ -22,8 +22,24 @@ impl EchoModule {
     }
 
     fn echo_message(&mut self, message: &PhiMessage) {
+        if is_display_empty(message) {
+            return;
+        }
         self.printed_any = true;
         eprintln!("{}", pretty_message(message));
+    }
+}
+
+fn is_display_empty(message: &PhiMessage) -> bool {
+    match message {
+        PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => text.trim().is_empty(),
+        PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => {
+            content.iter().all(|part| {
+                part.display_text()
+                    .is_none_or(|text| text.trim().is_empty())
+            })
+        }
+        _ => false,
     }
 }
 
@@ -436,6 +452,16 @@ mod tests {
         }));
 
         assert_eq!(strip_ansi(&rendered), "\n[assistant:reasoning]\nthinking");
+    }
+
+    #[test]
+    fn encrypted_only_reasoning_has_no_visible_echo() {
+        let message = PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
+            id: Some("r1".to_string()),
+            content: vec![PhiReasoningContent::Encrypted("opaque".to_string())],
+        });
+
+        assert!(is_display_empty(&message));
     }
 
     #[test]
