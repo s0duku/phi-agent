@@ -1,12 +1,12 @@
 use std::{future::Future, pin::Pin};
 
 use crate::{
-    agent::{PhiAgentRuntime, default_tool_limits},
+    agent::PhiAgentRuntime,
     executor::ToolCallRequest,
     expr::{PhiExprDelta, PhiStepExpr},
     message::{PhiHistory, PhiMessage, PhiToolMessage},
     module::PhiAgentStepEvent,
-    render::PhiProviderCall,
+    render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall},
     session::PhiAgentStep,
 };
 
@@ -335,7 +335,10 @@ impl PhiAgentRuntime {
             self,
             StepCont::new(move |mut runtime| {
                 Box::pin(async move {
-                    let mut response_messages = match runtime
+                    let PhiModelResponse {
+                        messages: mut response_messages,
+                        turn_state,
+                    } = match runtime
                         .render
                         .complete(
                             runtime.home.as_ref(),
@@ -424,6 +427,12 @@ impl PhiAgentRuntime {
                         runtime.modules.observe(&committed_event);
                     }
                     let delta = runtime.cur_delta().clone();
+                    if turn_state == PhiModelTurnState::Continue {
+                        let step = runtime.request_complete_step(
+                            "provider response requires another model request",
+                        );
+                        return StepBounce::CreateNextStep(runtime, step, delta);
+                    }
                     StepBounce::CreateNextStep(
                         runtime,
                         PhiAgentStep::completed(
@@ -453,14 +462,12 @@ impl PhiAgentRuntime {
             return StepBounce::ReplaceBaseStep(self, step, delta);
         };
         let remaining_tool_calls = tool_calls.collect::<Vec<_>>();
-        let mut limits = default_tool_limits();
         let step = self.base_step().clone();
         let expr = self.base_expr().clone();
         let mut before_event = PhiAgentStepEvent::BeforeToolCall {
             step: &step,
             expr: &expr,
             request: &mut request,
-            limits: &mut limits,
         };
         if let Err(failure) = self.modules.handle(&mut before_event) {
             return self.continue_failed(failure, "step_tool");
@@ -470,26 +477,23 @@ impl PhiAgentRuntime {
             self,
             StepCont::new(move |mut runtime| {
                 Box::pin(async move {
-                    let (request, mut response) = match runtime
-                        .executor
-                        .call_tool(request.clone(), limits, &runtime)
-                        .await
-                    {
-                        Ok(outcome) => outcome,
-                        Err(failure) => {
-                            let failure = if matches!(
-                                failure.kind(),
-                                crate::error::PhiErrorKind::ToolNotFound
-                            ) {
-                                failure
-                                    .with_pending_messages(pending_messages.clone())
-                                    .with_remaining_tool_requests(remaining_tool_calls.clone())
-                            } else {
-                                failure
-                            };
-                            return runtime.continue_failed(failure, "step_tool");
-                        }
-                    };
+                    let (request, mut response) =
+                        match runtime.executor.call_tool(request.clone(), &runtime).await {
+                            Ok(outcome) => outcome,
+                            Err(failure) => {
+                                let failure = if matches!(
+                                    failure.kind(),
+                                    crate::error::PhiErrorKind::ToolNotFound
+                                ) {
+                                    failure
+                                        .with_pending_messages(pending_messages.clone())
+                                        .with_remaining_tool_requests(remaining_tool_calls.clone())
+                                } else {
+                                    failure
+                                };
+                                return runtime.continue_failed(failure, "step_tool");
+                            }
+                        };
 
                     let mut after_event = PhiAgentStepEvent::AfterToolCall {
                         request: &request,

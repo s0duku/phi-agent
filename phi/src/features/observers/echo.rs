@@ -261,6 +261,7 @@ fn pretty_json_value(value: &serde_json::Value) -> String {
     let duration_ms = object
         .get("duration_ms")
         .and_then(serde_json::Value::as_u64);
+    let waited_ms = object.get("waited_ms").and_then(serde_json::Value::as_u64);
     let stderr = object
         .get("stderr")
         .and_then(serde_json::Value::as_str)
@@ -269,10 +270,7 @@ fn pretty_json_value(value: &serde_json::Value) -> String {
         .get("stdout")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    let output = object
-        .get("output")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
+    let output = object.get("output").and_then(serde_json::Value::as_str);
     let exit_code = object.get("exit_code").and_then(serde_json::Value::as_i64);
     let handle = object.get("handle").and_then(serde_json::Value::as_str);
     let stdout_artifact = object.get("stdout_artifact");
@@ -281,6 +279,7 @@ fn pretty_json_value(value: &serde_json::Value) -> String {
     if object.contains_key("status")
         || object.contains_key("timed_out")
         || object.contains_key("duration_ms")
+        || object.contains_key("waited_ms")
         || object.contains_key("stdout")
         || object.contains_key("stderr")
         || object.contains_key("output")
@@ -292,6 +291,9 @@ fn pretty_json_value(value: &serde_json::Value) -> String {
         if let Some(duration_ms) = duration_ms {
             parts.push(format!("duration_ms: {duration_ms}"));
         }
+        if let Some(waited_ms) = waited_ms {
+            parts.push(format!("waited_ms: {waited_ms}"));
+        }
         if timed_out {
             parts.push("timed_out: true".to_string());
         }
@@ -301,8 +303,15 @@ fn pretty_json_value(value: &serde_json::Value) -> String {
         if let Some(handle) = handle {
             parts.push(format!("handle: {handle}"));
         }
-        if !output.trim().is_empty() {
-            parts.push(format!("output:\n{}", output.trim_end()));
+        if let Some(output) = output {
+            if output.trim().is_empty() {
+                parts.push(format!(
+                    "output: {}",
+                    serde_json::to_string(output).unwrap_or_else(|_| "\"\"".to_string())
+                ));
+            } else {
+                parts.push(format!("output:\n{}", output.trim_end()));
+            }
         }
         if !stdout.trim().is_empty() {
             parts.push(format!("stdout:\n{}", stdout.trim_end()));
@@ -466,13 +475,33 @@ mod tests {
                 "status": "running",
                 "exit_code": null,
                 "handle": "mira-kest",
+                "waited_ms": 1500,
                 "output": "ready\r\n"
             })),
         );
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash_job call_123\nok: true\nvalue:\nstatus: \"running\"\nhandle: mira-kest\noutput:\nready"
+            "\n[tool:result]\nbash_job call_123\nok: true\nvalue:\nstatus: \"running\"\nwaited_ms: 1500\nhandle: mira-kest\noutput:\nready"
+        );
+    }
+
+    #[test]
+    fn shows_empty_job_output_field() {
+        let rendered = pretty_tool_result_event(
+            "job_interact",
+            "call_123",
+            &ToolCallOutput::success(serde_json::json!({
+                "status": "running",
+                "handle": "mira-kest",
+                "waited_ms": 60000,
+                "output": ""
+            })),
+        );
+
+        assert_eq!(
+            strip_ansi(&rendered),
+            "\n[tool:result]\njob_interact call_123\nok: true\nvalue:\nstatus: \"running\"\nwaited_ms: 60000\nhandle: mira-kest\noutput: \"\""
         );
     }
 

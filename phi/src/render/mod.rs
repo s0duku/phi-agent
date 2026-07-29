@@ -13,7 +13,7 @@ use crate::{
 };
 
 use provider::DynProvider;
-pub(crate) use provider::PhiProviderCall;
+pub(crate) use provider::{PhiModelResponse, PhiModelTurnState, PhiProviderCall};
 pub(crate) use utils::{approx_history_token_count, approx_text_token_count};
 
 #[derive(Clone, Debug)]
@@ -63,7 +63,7 @@ impl PhiRender {
         template: Option<&str>,
         request: &PhiProviderCall,
         history: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
         let rendered_messages = self.render_messages(history);
         let rendered_messages =
             template::render_template(home, template, request, &rendered_messages)?;
@@ -91,7 +91,7 @@ impl PhiRender {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
         self.provider.complete(request, messages).await
     }
 
@@ -120,7 +120,7 @@ pub(crate) trait TestClient: Send + Sync {
         &self,
         request: &PhiProviderCall,
         messages: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>>;
+    ) -> PhiRuntimeResult<PhiModelResponse>;
 }
 
 #[cfg(test)]
@@ -135,7 +135,7 @@ impl DynProvider for TestClientAdapter {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
         self.client.complete(request, &messages.to_history()).await
     }
 }

@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::{PhiProvider, PhiProviderCall};
+use super::{PhiModelResponse, PhiModelTurnState, PhiProvider, PhiProviderCall};
 use crate::{
     config::ProviderConfig,
     error::{PhiResult, PhiRuntimeError},
@@ -88,7 +88,7 @@ impl PhiProvider for ResponsesClient {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiResult<Vec<PhiMessage>> {
+    ) -> PhiResult<PhiModelResponse> {
         let provider_messages = self.provider_messages(messages)?;
         let provider_tools = request
             .tools
@@ -139,7 +139,9 @@ impl PhiProvider for ResponsesClient {
                 ))
             })?;
         self.observe_reasoning_format(&response)?;
-        self.phi_messages(response.into_provider_messages())
+        let turn_state = response.turn_state();
+        let messages = self.phi_messages(response.into_provider_messages())?;
+        Ok(PhiModelResponse::new(messages, turn_state))
     }
 }
 
@@ -326,9 +328,19 @@ impl ResponsesRequest {
 struct ResponsesCreateResponse {
     #[serde(default)]
     output: Vec<ResponsesOutputItem>,
+    #[serde(default)]
+    end_turn: Option<bool>,
 }
 
 impl ResponsesCreateResponse {
+    fn turn_state(&self) -> PhiModelTurnState {
+        match self.end_turn {
+            Some(true) => PhiModelTurnState::Complete,
+            Some(false) => PhiModelTurnState::Continue,
+            None => PhiModelTurnState::Unspecified,
+        }
+    }
+
     fn into_provider_messages(self) -> Vec<ProviderMessage> {
         self.output
             .into_iter()
@@ -474,6 +486,25 @@ fn reasoning_format_state() -> &'static OnceLock<Mutex<ResponsesReasoningFormat>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_response_end_turn_to_model_turn_state() {
+        for (json, expected) in [
+            (
+                r#"{"output":[],"end_turn":true}"#,
+                PhiModelTurnState::Complete,
+            ),
+            (
+                r#"{"output":[],"end_turn":false}"#,
+                PhiModelTurnState::Continue,
+            ),
+            (r#"{"output":[]}"#, PhiModelTurnState::Unspecified),
+        ] {
+            let response = serde_json::from_str::<ResponsesCreateResponse>(json)
+                .expect("response should deserialize");
+            assert_eq!(response.turn_state(), expected);
+        }
+    }
 
     #[test]
     fn parses_function_call_without_id() {

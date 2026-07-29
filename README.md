@@ -41,7 +41,6 @@ Common environment variables:
 - `PHI_SYSTEM`: override system prompt
 - `PHI_CONTEXT_TOKENS`: target provider context window for auto-compact
 - `PHI_MAX_STEPS`: default scheduler step budget
-- `PHI_TOOL_TIMEOUT_MS`
 - `PHI_TOOL_THRESHOLD_TOKENS`
 - `PHI_TOOL_PREVIEW_BYTES`
 - `PHI_TEMPLATE`: default render template name

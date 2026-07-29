@@ -6,8 +6,11 @@ use serde::Deserialize;
 
 use crate::{
     agent::PhiAgentRuntime,
-    container::{JobContainer, JobHandle, JobInfo, JobStatus, LocalShellJobContainer},
-    executor::{PhiTool, ToolCallRequest, ToolCallResponse, ToolExecutionLimits},
+    container::{
+        JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus,
+        LocalShellJobContainer,
+    },
+    executor::{PhiTool, ToolCallRequest, ToolCallResponse},
 };
 
 const EXEC_WAIT: Duration = Duration::from_secs(60);
@@ -25,12 +28,13 @@ struct ExecArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct InteractArgs {
     handle: String,
     #[serde(default, alias = "data")]
     pub(crate) input: Option<String>,
     #[serde(default = "default_interact_wait_ms")]
-    pub(crate) timeout: u64,
+    pub(crate) wait_ms: u64,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -79,7 +83,6 @@ impl PhiTool for ShellJobExecTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _limits: ToolExecutionLimits,
         _runtime: &PhiAgentRuntime,
     ) -> ToolCallResponse {
         let args = match parse_args::<ExecArgs>(request, self.name()) {
@@ -125,11 +128,11 @@ impl PhiTool for ShellJobInteractTool {
                     "type": "string",
                     "description": "Optional input for the running program. Omit it to only read newly available output. Provide an empty string to press Enter once. Non-empty input without a trailing CR or LF is automatically followed by one CR, equivalent to pressing Enter once"
                 },
-                "timeout": {
+                "wait_ms": {
                     "type": "integer",
                     "minimum": 0,
                     "default": DEFAULT_INTERACT_WAIT_MS,
-                    "description": "Maximum wait in milliseconds"
+                    "description": "Maximum time to wait, in milliseconds, for the job to exit or for terminal output activity to settle. Output activity is used as a heuristic that meaningful new output is ready, so the call returns after the activity is followed by a quiet period. With no output activity, it waits for the full duration"
                 }
             },
             "required": ["handle"],
@@ -140,7 +143,6 @@ impl PhiTool for ShellJobInteractTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _limits: ToolExecutionLimits,
         _runtime: &PhiAgentRuntime,
     ) -> ToolCallResponse {
         let args = match parse_args::<InteractArgs>(request, self.name()) {
@@ -152,22 +154,28 @@ impl PhiTool for ShellJobInteractTool {
         }
         let handle_value = args.handle.clone();
         let handle = JobHandle(args.handle);
-        let timeout = Duration::from_millis(args.timeout);
+        let wait = Duration::from_millis(args.wait_ms);
         let result = match interactive_input(args.input) {
-            InteractiveInput::Direct(data) => {
-                <LocalShellJobContainer as JobContainer>::job_write(handle, &data, timeout).await
-            }
+            InteractiveInput::Direct(data) => interact(handle, data, wait).await,
             InteractiveInput::Submit(data) => {
-                if let Err(error) = <LocalShellJobContainer as JobContainer>::job_send(
+                let written = <LocalShellJobContainer as JobContainer>::job_access(
                     JobHandle(handle.0.clone()),
-                    &data,
+                    JobAccess::Write { data },
                 )
-                .await
-                {
-                    return failure(request, self.name(), error);
+                .await;
+                match written {
+                    Ok(JobAccessResult::Written(_)) => {}
+                    Ok(JobAccessResult::Interacted(_)) => {
+                        return failure(
+                            request,
+                            self.name(),
+                            "job access returned a terminal snapshot for write request".into(),
+                        );
+                    }
+                    Err(error) => return failure(request, self.name(), error),
                 }
                 tokio::time::sleep(SUBMIT_KEY_DELAY).await;
-                <LocalShellJobContainer as JobContainer>::job_write(handle, "\r", timeout).await
+                interact(handle, "\r".into(), wait).await
             }
         };
 
@@ -180,6 +188,20 @@ impl PhiTool for ShellJobInteractTool {
                 false,
             ),
             Err(error) => failure(request, self.name(), error),
+        }
+    }
+}
+
+async fn interact(handle: JobHandle, data: String, wait: Duration) -> Result<JobInfo, String> {
+    let result = <LocalShellJobContainer as JobContainer>::job_access(
+        handle,
+        JobAccess::Interact { data, wait },
+    )
+    .await?;
+    match result {
+        JobAccessResult::Interacted(info) => Ok(info),
+        JobAccessResult::Written(_) => {
+            Err("job access returned a write acknowledgment for interact request".into())
         }
     }
 }
@@ -211,7 +233,6 @@ impl PhiTool for ShellJobCloseTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _limits: ToolExecutionLimits,
         _runtime: &PhiAgentRuntime,
     ) -> ToolCallResponse {
         let args = match parse_args::<CloseArgs>(request, self.name()) {
@@ -246,7 +267,7 @@ fn response(
     handle: Option<JobHandle>,
     closing: bool,
 ) -> ToolCallResponse {
-    let (status, terminal) = info.into_parts();
+    let (status, terminal, waited) = info.into_parts();
     let output = terminal.text().to_owned();
     let output_truncated = terminal.truncated();
     let screen = terminal.screen().to_owned();
@@ -267,6 +288,7 @@ fn response(
         "output_truncated": output_truncated,
         "screen": screen,
         "handle": handle,
+        "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
     });
 
     if !exists {
@@ -320,4 +342,35 @@ fn install_local_jobs() -> Result<(), String> {
 
 const fn default_interact_wait_ms() -> u64 {
     DEFAULT_INTERACT_WAIT_MS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::TerminalSnapshot;
+
+    #[test]
+    fn tool_response_reports_actual_wait_duration() {
+        let request = ToolCallRequest {
+            id: "call-1".into(),
+            call_id: None,
+            name: "job_interact".into(),
+            arguments: serde_json::json!({}),
+        };
+        let info = JobInfo::new(
+            JobStatus::Running,
+            TerminalSnapshot::default(),
+            Duration::from_millis(123),
+        );
+
+        let response = response(
+            &request,
+            "job_interact",
+            info,
+            Some(JobHandle("mira-kest".into())),
+            false,
+        );
+
+        assert_eq!(response.output.as_value()["waited_ms"], 123);
+    }
 }

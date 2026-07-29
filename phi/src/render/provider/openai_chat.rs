@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::{PhiProvider, PhiProviderCall};
+use super::{PhiModelResponse, PhiProvider, PhiProviderCall};
 use crate::{
     config::ProviderConfig,
     error::{PhiResult, PhiRuntimeError},
@@ -106,7 +106,7 @@ impl PhiProvider for OpenAiCompatClient {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiResult<Vec<PhiMessage>> {
+    ) -> PhiResult<PhiModelResponse> {
         let provider_messages = self.provider_messages(messages)?;
         let provider_tools = request
             .tools
@@ -176,13 +176,14 @@ impl PhiProvider for OpenAiCompatClient {
         })?;
         self.observe_reasoning_format(&choice.message)?;
 
-        self.phi_messages(
+        let messages = self.phi_messages(
             if choice.message.has_content() || !choice.message.tool_calls.is_empty() {
                 vec![ProviderMessage::Assistant(choice.message)]
             } else {
                 vec![]
             },
-        )
+        )?;
+        Ok(PhiModelResponse::unspecified(messages))
     }
 }
 

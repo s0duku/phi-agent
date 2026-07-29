@@ -15,6 +15,36 @@ use crate::{
 use self::{fake::FakeClient, openai_chat::OpenAiCompatClient, openai_response::ResponsesClient};
 use super::PhiRenderedMessages;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum PhiModelTurnState {
+    Complete,
+    Continue,
+    #[default]
+    Unspecified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PhiModelResponse {
+    pub(crate) messages: Vec<PhiMessage>,
+    pub(crate) turn_state: PhiModelTurnState,
+}
+
+impl PhiModelResponse {
+    pub(crate) fn unspecified(messages: Vec<PhiMessage>) -> Self {
+        Self {
+            messages,
+            turn_state: PhiModelTurnState::Unspecified,
+        }
+    }
+
+    pub(crate) fn new(messages: Vec<PhiMessage>, turn_state: PhiModelTurnState) -> Self {
+        Self {
+            messages,
+            turn_state,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PhiProviderCall {
     pub model: String,
@@ -63,7 +93,7 @@ pub(in crate::render) trait PhiProvider: Send + Sync {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>>;
+    ) -> PhiRuntimeResult<PhiModelResponse>;
 }
 
 #[async_trait]
@@ -72,7 +102,7 @@ pub(in crate::render) trait DynProvider: Send + Sync {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>>;
+    ) -> PhiRuntimeResult<PhiModelResponse>;
 }
 
 #[async_trait]
@@ -84,7 +114,7 @@ where
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
         PhiProvider::complete(self, request, &messages).await
     }
 }

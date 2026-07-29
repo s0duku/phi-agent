@@ -27,9 +27,33 @@ pub struct TerminalSnapshot {
 pub struct JobInfo {
     status: JobStatus,
     terminal: TerminalSnapshot,
+    waited: std::time::Duration,
 }
 
 pub struct JobHandle(pub String);
+
+/// An access request for a running job.
+#[derive(serde::Deserialize, serde::Serialize)]
+pub enum JobAccess {
+    /// Write input without waiting for or acquiring an output snapshot.
+    Write { data: String },
+    /// Write input and acquire an output snapshot.
+    ///
+    /// `wait` is the maximum duration to wait for the job to exit or for terminal
+    /// output activity to settle. Output activity is used as a heuristic that
+    /// meaningful new output is ready, so the request returns after the activity
+    /// is followed by the configured quiet period. With no output activity, it
+    /// waits for the full duration.
+    Interact {
+        data: String,
+        wait: std::time::Duration,
+    },
+}
+
+pub enum JobAccessResult {
+    Written(JobStatus),
+    Interacted(JobInfo),
+}
 
 impl JobHandle {
     const LETTER_COUNT: usize = 8;
@@ -72,25 +96,35 @@ impl JobHandle {
 
 #[async_trait::async_trait]
 pub trait JobContainer {
+    /// Start a command and acquire its initial output snapshot.
+    ///
+    /// `wait` bounds only the initial wait for output activity to settle or for
+    /// the process to exit. Output activity acts as a heuristic that meaningful
+    /// initial output is ready.
+    /// `expiration` is the inactivity lifetime of a still-running container;
+    /// once it elapses without another access, the container terminates the job
+    /// and releases its resources.
     async fn job_exec(
         cmd: &str,
-        timeout: std::time::Duration,
+        wait: std::time::Duration,
         expiration: std::time::Duration,
     ) -> Result<(Option<JobHandle>, JobInfo), String>;
-    async fn job_write(
-        handle: JobHandle,
-        data: &str,
-        timeout: std::time::Duration,
-    ) -> Result<JobInfo, String>;
-
-    async fn job_send(handle: JobHandle, data: &str) -> Result<JobStatus, String>;
+    async fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String>;
 
     async fn job_close(handle: JobHandle) -> Result<JobInfo, String>;
 }
 
 impl JobInfo {
-    pub(crate) fn new(status: JobStatus, terminal: TerminalSnapshot) -> Self {
-        Self { status, terminal }
+    pub(crate) fn new(
+        status: JobStatus,
+        terminal: TerminalSnapshot,
+        waited: std::time::Duration,
+    ) -> Self {
+        Self {
+            status,
+            terminal,
+            waited,
+        }
     }
 
     pub fn status(&self) -> &JobStatus {
@@ -105,8 +139,14 @@ impl JobInfo {
         self.terminal.text()
     }
 
-    pub fn into_parts(self) -> (JobStatus, TerminalSnapshot) {
-        (self.status, self.terminal)
+    /// Time spent waiting for process exit or terminal output to settle.
+    /// Non-interactive access paths report zero.
+    pub fn waited(&self) -> std::time::Duration {
+        self.waited
+    }
+
+    pub fn into_parts(self) -> (JobStatus, TerminalSnapshot, std::time::Duration) {
+        (self.status, self.terminal, self.waited)
     }
 }
 

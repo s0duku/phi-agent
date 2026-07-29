@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::{
     error::PhiRuntimeResult,
     message::{PhiHistory, PhiMessage},
-    render::{PhiProviderCall, TestClient},
+    render::{PhiModelResponse, PhiProviderCall, TestClient},
     session::{PhiAgentStep, Session},
     tests::support::{env_lock, isolated_step_agent_builder, test_model_defaults},
 };
@@ -24,12 +24,12 @@ impl TestClient for CaptureProvider {
         &self,
         _request: &PhiProviderCall,
         messages: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
         *self
             .seen_messages
             .lock()
             .expect("capture lock should be healthy") = messages.to_messages();
-        Ok(self.response.clone())
+        Ok(PhiModelResponse::unspecified(self.response.clone()))
     }
 }
 

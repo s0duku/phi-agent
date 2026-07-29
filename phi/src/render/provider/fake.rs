@@ -6,7 +6,7 @@ use crate::{
     message::{PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage},
 };
 
-use super::{DynProvider, PhiProviderCall};
+use super::{DynProvider, PhiModelResponse, PhiProviderCall};
 use crate::render::PhiRenderedMessages;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,15 +116,16 @@ impl DynProvider for FakeClient {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
-        match self.profile {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
+        let messages = match self.profile {
             FakeProfile::AssistantText => Ok(self.assistant_text(request, &messages)),
             FakeProfile::ReasoningText => Ok(self.reasoning_text(request, &messages)),
             FakeProfile::ToolCall => self.tool_call(request, &messages),
             FakeProfile::ProviderError => Err(PhiRuntimeError::provider_request(
                 "fake provider generated a configured request error",
             )),
-        }
+        }?;
+        Ok(PhiModelResponse::unspecified(messages))
     }
 }
 

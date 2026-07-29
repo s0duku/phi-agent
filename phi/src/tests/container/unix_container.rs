@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::container::job::{JobContainer, JobHandle, JobStatus};
+use crate::container::job::{JobAccess, JobAccessResult, JobContainer, JobHandle, JobStatus};
 
 const EXPIRATION: Duration = Duration::from_secs(5);
 
@@ -25,13 +25,18 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
         assert_eq!(initial.outputs(), "ready");
         let handle = handle.unwrap();
 
-        let read = <crate::container::LocalShellJobContainer as JobContainer>::job_write(
+        let read = <crate::container::LocalShellJobContainer as JobContainer>::job_access(
             JobHandle(handle.0.clone()),
-            "",
-            Duration::ZERO,
+            JobAccess::Interact {
+                data: String::new(),
+                wait: Duration::ZERO,
+            },
         )
         .await
         .unwrap();
+        let JobAccessResult::Interacted(read) = read else {
+            panic!("interact returned write acknowledgment");
+        };
         assert!(matches!(read.status(), JobStatus::Running));
         assert!(read.outputs().is_empty());
 

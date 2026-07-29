@@ -21,7 +21,7 @@ use crate::module::PhiModule;
 use crate::{
     config::{ModelRequestDefaults, PhiConfig, ProviderConfig},
     error::PhiRuntimeError,
-    executor::{PhiExecutor, PhiToolDefinition, ToolExecutionLimits},
+    executor::{PhiExecutor, PhiToolDefinition},
     features::{build_default_modules, build_init_modules, build_runtime_modules},
     home::{PhiHome, PhiHomeDoctorReport},
     message::{PhiHistory, PhiMessage},
@@ -259,7 +259,9 @@ impl PreparedPhiAgentBuilder {
 
         let mut tools = crate::executor::builtins::default_tools();
         crate::module::module_tools(&mut modules, &self.builder.context, &mut tools);
-        let executor = PhiExecutor::from_tools(tools)?;
+        let output_limits =
+            crate::config::tool_output_limits_from_config(&self.builder.context.config);
+        let executor = PhiExecutor::from_tools(tools, output_limits)?;
 
         let model_defaults = if let Some(model_defaults) = self.builder.model_defaults.take() {
             model_defaults
@@ -622,8 +624,4 @@ pub(crate) fn build_agent(
     builder = builder.with_module_layout(runtime_modules);
 
     builder.build()
-}
-
-pub(super) fn default_tool_limits() -> ToolExecutionLimits {
-    ToolExecutionLimits::new(30_000, (24 * 1024) / 4, 2 * 1024)
 }

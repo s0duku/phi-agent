@@ -11,7 +11,7 @@ use crate::{
     error::PhiRuntimeResult,
     home::LocalPhiHome,
     message::{PhiHistory, PhiMessage},
-    render::{PhiProviderCall, TestClient},
+    render::{PhiModelResponse, PhiProviderCall, TestClient},
     session::Session,
 };
 
@@ -36,8 +36,8 @@ impl TestClient for StubProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
-        Ok(self.response.clone())
+    ) -> PhiRuntimeResult<PhiModelResponse> {
+        Ok(PhiModelResponse::unspecified(self.response.clone()))
     }
 }
 

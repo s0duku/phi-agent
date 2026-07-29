@@ -198,7 +198,7 @@ mod tests {
         error::PhiRuntimeError,
         expr::PhiStepExpr,
         message::{PhiHistory, PhiMessage},
-        render::{PhiProviderCall, TestClient},
+        render::{PhiModelResponse, PhiProviderCall, TestClient},
         session::Session,
         tests::support::test_model_defaults,
     };
@@ -214,7 +214,7 @@ mod tests {
             &self,
             _request: &PhiProviderCall,
             _messages: &PhiHistory,
-        ) -> crate::error::PhiRuntimeResult<Vec<PhiMessage>> {
+        ) -> crate::error::PhiRuntimeResult<PhiModelResponse> {
             let mut attempts = self.attempts.lock().expect("attempt lock should succeed");
             *attempts += 1;
             if *attempts == 1 {
@@ -223,7 +223,9 @@ mod tests {
                         .with_source_step("request_complete"),
                 )
             } else {
-                Ok(vec![PhiMessage::assistant("ok")])
+                Ok(PhiModelResponse::unspecified(vec![PhiMessage::assistant(
+                    "ok",
+                )]))
             }
         }
     }

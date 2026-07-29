@@ -1,10 +1,28 @@
 use std::time::Duration;
 
-use crate::container::{JobContainer, JobHandle, JobStatus, LocalShellJobContainer};
+use crate::container::{
+    JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus, LocalShellJobContainer,
+};
 use crate::executor::PhiTool;
 use crate::executor::tools::shell::job::{
     InteractArgs, InteractiveInput, ShellJobExecTool, ShellJobInteractTool, interactive_input,
 };
+
+async fn access_interact(handle: JobHandle, data: &str, wait: Duration) -> JobInfo {
+    let result = <LocalShellJobContainer as JobContainer>::job_access(
+        handle,
+        JobAccess::Interact {
+            data: data.to_owned(),
+            wait,
+        },
+    )
+    .await
+    .unwrap();
+    match result {
+        JobAccessResult::Interacted(info) => info,
+        JobAccessResult::Written(_) => panic!("interact returned write acknowledgment"),
+    }
+}
 
 #[test]
 fn shell_job_definition_is_platform_specific() {
@@ -27,7 +45,21 @@ fn interact_defaults_to_read_with_a_sixty_second_wait() {
     }))
     .unwrap();
     assert!(args.input.is_none());
-    assert_eq!(args.timeout, 60_000);
+    assert_eq!(args.wait_ms, 60_000);
+
+    let tool = ShellJobInteractTool;
+    assert_eq!(
+        tool.parameters()["properties"]["wait_ms"]["default"],
+        serde_json::json!(60_000)
+    );
+    assert!(tool.parameters()["properties"].get("timeout").is_none());
+    assert!(
+        serde_json::from_value::<InteractArgs>(serde_json::json!({
+            "handle": "mira-kest",
+            "timeout": 1
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -126,9 +158,7 @@ async fn running_job_expires_without_interaction() {
     let handle = handle.unwrap();
 
     tokio::time::sleep(Duration::from_millis(700)).await;
-    let expired = <LocalShellJobContainer as JobContainer>::job_write(handle, "", Duration::ZERO)
-        .await
-        .unwrap();
+    let expired = access_interact(handle, "", Duration::ZERO).await;
     assert!(matches!(expired.status(), JobStatus::NoExist));
 }
 
@@ -146,29 +176,15 @@ async fn interaction_restarts_running_job_expiration() {
     let handle = handle.unwrap();
 
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let refreshed = <LocalShellJobContainer as JobContainer>::job_write(
-        JobHandle(handle.0.clone()),
-        "",
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+    let refreshed = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
     assert!(matches!(refreshed.status(), JobStatus::Running));
 
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let still_running = <LocalShellJobContainer as JobContainer>::job_write(
-        JobHandle(handle.0.clone()),
-        "",
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+    let still_running = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
     assert!(matches!(still_running.status(), JobStatus::Running));
 
     tokio::time::sleep(Duration::from_millis(800)).await;
-    let expired = <LocalShellJobContainer as JobContainer>::job_write(handle, "", Duration::ZERO)
-        .await
-        .unwrap();
+    let expired = access_interact(handle, "", Duration::ZERO).await;
     assert!(matches!(expired.status(), JobStatus::NoExist));
 }
 
@@ -192,13 +208,7 @@ async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
     .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
 
-    let info = <LocalShellJobContainer as JobContainer>::job_write(
-        handle.unwrap(),
-        "hello\r",
-        Duration::from_secs(2),
-    )
-    .await
-    .unwrap();
+    let info = access_interact(handle.unwrap(), "hello\r", Duration::from_secs(2)).await;
     assert!(matches!(info.status(), JobStatus::Exited(0)));
     assert!(info.outputs().contains("received:hello"));
     assert!(!info.outputs().contains("extra:"));
@@ -217,20 +227,11 @@ async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
-    let read_only = <LocalShellJobContainer as JobContainer>::job_write(
-        JobHandle(handle.0.clone()),
-        "",
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+    let read_only = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
     assert!(matches!(read_only.status(), JobStatus::Running));
     assert!(read_only.outputs().is_empty());
 
-    let entered =
-        <LocalShellJobContainer as JobContainer>::job_write(handle, "\r", Duration::from_secs(2))
-            .await
-            .unwrap();
+    let entered = access_interact(handle, "\r", Duration::from_secs(2)).await;
     assert!(matches!(entered.status(), JobStatus::Exited(0)));
     assert!(entered.outputs().contains("value:<>"));
 }
@@ -249,13 +250,7 @@ async fn persistent_job_can_be_read_and_closed() {
     assert_eq!(initial.outputs(), "ready");
     let handle = handle.unwrap();
 
-    let read = <LocalShellJobContainer as JobContainer>::job_write(
-        JobHandle(handle.0.clone()),
-        "",
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+    let read = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
     assert!(matches!(read.status(), JobStatus::Running));
     assert!(read.outputs().is_empty());
 
@@ -263,15 +258,13 @@ async fn persistent_job_can_be_read_and_closed() {
         .await
         .unwrap();
     assert!(matches!(closed.status(), JobStatus::Exited(_)));
-    let missing = <LocalShellJobContainer as JobContainer>::job_write(handle, "", Duration::ZERO)
-        .await
-        .unwrap();
+    let missing = access_interact(handle, "", Duration::ZERO).await;
     assert!(matches!(missing.status(), JobStatus::NoExist));
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn send_preserves_output_for_the_next_terminal_snapshot() {
+async fn write_preserves_output_for_the_next_interact_snapshot() {
     let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
         line_input_command(),
         Duration::ZERO,
@@ -282,22 +275,21 @@ async fn send_preserves_output_for_the_next_terminal_snapshot() {
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
-    let status = <LocalShellJobContainer as JobContainer>::job_send(
+    let result = <LocalShellJobContainer as JobContainer>::job_access(
         JobHandle(handle.0.clone()),
-        "preserved",
+        JobAccess::Write {
+            data: "preserved".into(),
+        },
     )
     .await
     .unwrap();
+    let JobAccessResult::Written(status) = result else {
+        panic!("write returned terminal snapshot");
+    };
     assert!(matches!(status, JobStatus::Running));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let read = <LocalShellJobContainer as JobContainer>::job_write(
-        JobHandle(handle.0.clone()),
-        "\r",
-        Duration::from_secs(2),
-    )
-    .await
-    .unwrap();
+    let read = access_interact(JobHandle(handle.0.clone()), "\r", Duration::from_secs(2)).await;
     assert!(read.outputs().contains("before"));
     assert!(read.outputs().contains("received:preserved"));
 

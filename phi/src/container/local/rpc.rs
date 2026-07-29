@@ -1,7 +1,6 @@
 use std::io;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions, Name,
@@ -9,16 +8,14 @@ use interprocess::local_socket::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::container::job::JobHandle;
-use crate::container::job::TerminalSnapshot;
+use crate::container::job::{JobAccess, JobHandle, TerminalSnapshot};
 
 const ENDPOINT_PREFIX: &str = "phi-container-";
 const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
-    Write { data: String },
-    Interact { data: String, wait_millis: u64 },
+    Access(JobAccess),
     Close,
 }
 
@@ -30,6 +27,7 @@ pub(crate) enum Response {
     Terminal {
         status: Status,
         terminal: TerminalSnapshot,
+        waited_ms: u64,
     },
     Failed {
         status: Status,
@@ -91,10 +89,6 @@ pub(crate) fn read_frame<R: Read, T: DeserializeOwned>(stream: &mut R) -> io::Re
     let mut data = vec![0; length];
     stream.read_exact(&mut data)?;
     serde_json::from_slice(&data).map_err(io::Error::other)
-}
-
-pub(crate) fn duration_millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn endpoint_name(handle: &str) -> io::Result<Name<'static>> {

@@ -5,7 +5,7 @@ mod runtime;
 pub(crate) mod terminal;
 pub(crate) mod wait;
 
-use crate::container::job::{JobContainer, JobHandle, JobInfo};
+use crate::container::job::{JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo};
 
 pub struct LocalShellJobContainer;
 
@@ -21,25 +21,14 @@ pub(crate) fn container_entry(
 impl JobContainer for LocalShellJobContainer {
     async fn job_exec(
         cmd: &str,
-        timeout: std::time::Duration,
+        wait: std::time::Duration,
         expiration: std::time::Duration,
     ) -> Result<(Option<JobHandle>, JobInfo), String> {
-        runtime::job_exec(cmd, timeout, expiration)
+        runtime::job_exec(cmd, wait, expiration)
     }
 
-    async fn job_write(
-        handle: JobHandle,
-        data: &str,
-        timeout: std::time::Duration,
-    ) -> Result<JobInfo, String> {
-        runtime::job_write(handle, data, timeout)
-    }
-
-    async fn job_send(
-        handle: JobHandle,
-        data: &str,
-    ) -> Result<crate::container::JobStatus, String> {
-        runtime::job_send(handle, data)
+    async fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
+        runtime::job_access(handle, access)
     }
 
     async fn job_close(handle: JobHandle) -> Result<JobInfo, String> {

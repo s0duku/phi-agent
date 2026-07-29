@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use clap::{Args, Subcommand};
 
-pub use job::{JobContainer, JobHandle, JobInfo, JobStatus, TerminalSnapshot};
+pub use job::{
+    JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus, TerminalSnapshot,
+};
 pub use local::LocalShellJobContainer;
 
 #[derive(Args)]
@@ -22,9 +24,17 @@ enum ContainerCommand {
         about = "Start a shell job through the container backend and print its initial output"
     )]
     Exec {
-        #[arg(long, default_value_t = 1000)]
-        timeout_ms: u64,
-        #[arg(long, default_value_t = 300_000)]
+        #[arg(
+            long,
+            default_value_t = 1000,
+            help = "Maximum initial wait for output activity or process exit, in milliseconds"
+        )]
+        wait_ms: u64,
+        #[arg(
+            long,
+            default_value_t = 300_000,
+            help = "Container inactivity lifetime before automatic termination and cleanup, in milliseconds"
+        )]
         expiration_ms: u64,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -35,8 +45,12 @@ enum ContainerCommand {
     Write {
         handle: String,
         data: Option<String>,
-        #[arg(long, default_value_t = 1000)]
-        timeout_ms: u64,
+        #[arg(
+            long,
+            default_value_t = 1000,
+            help = "Maximum wait for output activity or process exit, in milliseconds"
+        )]
+        wait_ms: u64,
     },
     #[command(about = "Close a running shell job and release its container resources")]
     Close { handle: String },
@@ -46,6 +60,9 @@ enum ContainerCommand {
     )]
     Local {
         handle: String,
+        #[arg(
+            help = "Container inactivity lifetime before automatic termination and cleanup, in milliseconds"
+        )]
         expiration_ms: u64,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -55,14 +72,14 @@ enum ContainerCommand {
 pub async fn run(args: ContainerArgs) -> Result<(), String> {
     match args.command {
         ContainerCommand::Exec {
-            timeout_ms,
+            wait_ms,
             expiration_ms,
             command,
         } => {
             let command = command.join(" ");
             let (handle, info) = <LocalShellJobContainer as JobContainer>::job_exec(
                 &command,
-                Duration::from_millis(timeout_ms),
+                Duration::from_millis(wait_ms),
                 Duration::from_millis(expiration_ms),
             )
             .await?;
@@ -71,14 +88,21 @@ pub async fn run(args: ContainerArgs) -> Result<(), String> {
         ContainerCommand::Write {
             handle,
             data,
-            timeout_ms,
+            wait_ms,
         } => {
-            let info = <LocalShellJobContainer as JobContainer>::job_write(
+            let result = <LocalShellJobContainer as JobContainer>::job_access(
                 JobHandle(handle),
-                data.as_deref().unwrap_or_default(),
-                Duration::from_millis(timeout_ms),
+                JobAccess::Interact {
+                    data: data.unwrap_or_default(),
+                    wait: Duration::from_millis(wait_ms),
+                },
             )
             .await?;
+            let JobAccessResult::Interacted(info) = result else {
+                return Err(
+                    "job access returned a write acknowledgment for interact request".into(),
+                );
+            };
             render(info, None)?;
         }
         ContainerCommand::Close { handle } => {

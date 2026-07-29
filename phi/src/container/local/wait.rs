@@ -65,10 +65,10 @@ pub(crate) struct WaitPolicy {
 }
 
 impl WaitPolicy {
-    pub(crate) fn new(timeout: Duration, last_output_at: Option<Instant>) -> Self {
+    pub(crate) fn new(wait: Duration, last_output_at: Option<Instant>) -> Self {
         let now = Instant::now();
         Self {
-            deadline: now.checked_add(timeout),
+            deadline: now.checked_add(wait),
             quiet_deadline: last_output_at.and_then(|at| at.checked_add(OUTPUT_QUIET_PERIOD)),
         }
     }
@@ -80,9 +80,9 @@ impl WaitPolicy {
     }
 
     pub(crate) fn remaining(&self) -> Option<Duration> {
-        let timeout = remaining(self.deadline)?;
+        let wait = remaining(self.deadline)?;
         let quiet = remaining(self.quiet_deadline)?;
-        Some(timeout.min(quiet))
+        Some(wait.min(quiet))
     }
 }
 

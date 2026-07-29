@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::executor::{
-    PhiTool, ToolCallOutput, ToolCallRequest, ToolCallResponse, ToolExecutionLimits,
-};
+use crate::executor::{PhiTool, ToolCallOutput, ToolCallRequest, ToolCallResponse};
 use crate::module::PhiModule;
 
 use super::python::PhiPythonRuntime;
@@ -97,7 +95,6 @@ impl PhiTool for PythonPluginTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _limits: ToolExecutionLimits,
         _runtime: &crate::agent::PhiAgentRuntime,
     ) -> ToolCallResponse {
         let request_snapshot = request.clone();
@@ -444,6 +441,7 @@ def badreturn():
                 .into_iter()
                 .chain(crate::module::PhiModule::module_tools(middleware, context))
                 .collect(),
+            crate::config::tool_output_limits_from_config(context.config()),
         )
     }
 
@@ -517,7 +515,6 @@ def badreturn():
                     name: "adder".to_string(),
                     arguments: serde_json::json!({ "value": "hello" }),
                 },
-                crate::executor::ToolExecutionLimits::new(1_000, 1024, 256),
                 agent.runtime(),
             )
             .await
@@ -565,7 +562,6 @@ def badreturn():
                     name: "explode".to_string(),
                     arguments: serde_json::json!({ "name": "alice" }),
                 },
-                crate::executor::ToolExecutionLimits::new(1_000, 1024, 256),
                 agent.runtime(),
             )
             .await
@@ -622,7 +618,6 @@ def badreturn():
                     name: "badreturn".to_string(),
                     arguments: serde_json::json!({}),
                 },
-                crate::executor::ToolExecutionLimits::new(1_000, 1024, 256),
                 agent.runtime(),
             )
             .await

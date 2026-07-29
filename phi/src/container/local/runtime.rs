@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Listener as _;
 
-use crate::container::job::{JobHandle, JobInfo, JobStatus, TerminalSnapshot};
+use crate::container::job::{
+    JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, TerminalSnapshot,
+};
 
 use super::pty::PtySession;
 use super::rpc::{self, Request, Response, Status};
@@ -19,37 +21,33 @@ const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(250);
 
 pub(crate) fn job_exec(
     command: &str,
-    timeout: Duration,
+    wait: Duration,
     expiration: Duration,
 ) -> Result<(Option<JobHandle>, JobInfo), String> {
     let handle = JobHandle::random()?;
     spawn_container(&handle, command, expiration)?;
-    let info = job_write(JobHandle(handle.0.clone()), "", timeout)?;
+    let result = job_access(
+        JobHandle(handle.0.clone()),
+        JobAccess::Interact {
+            data: String::new(),
+            wait,
+        },
+    )?;
+    let JobAccessResult::Interacted(info) = result else {
+        return Err("job access returned a write acknowledgment for interact request".into());
+    };
     let live_handle = matches!(info.status(), JobStatus::Running).then_some(handle);
     Ok((live_handle, info))
 }
 
-pub(crate) fn job_write(
-    handle: JobHandle,
-    data: &str,
-    timeout: Duration,
-) -> Result<JobInfo, String> {
-    request(
-        &handle.0,
-        Request::Interact {
-            data: data.to_owned(),
-            wait_millis: rpc::duration_millis(timeout),
-        },
-    )
-}
-
-pub(crate) fn job_send(handle: JobHandle, data: &str) -> Result<JobStatus, String> {
-    request_status(
-        &handle.0,
-        Request::Write {
-            data: data.to_owned(),
-        },
-    )
+pub(crate) fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
+    let interacts = matches!(access, JobAccess::Interact { .. });
+    let response = send_request(&handle.0, Request::Access(access))?;
+    if interacts {
+        response_into_job_info(response).map(JobAccessResult::Interacted)
+    } else {
+        response_into_status(response).map(JobAccessResult::Written)
+    }
 }
 
 pub(crate) fn job_close(handle: JobHandle) -> Result<JobInfo, String> {
@@ -139,18 +137,18 @@ impl RunningJob {
         Ok(())
     }
 
-    fn interact(&mut self, input: &[u8], timeout: Duration) -> Result<Status, String> {
+    fn interact(&mut self, input: &[u8], wait: Duration) -> Result<Status, String> {
         if !input.is_empty() {
             self.pty.write_all(input)?;
         }
-        let mut wait = WaitPolicy::new(timeout, self.pty.pending_output_at());
+        let mut policy = WaitPolicy::new(wait, self.pty.pending_output_at());
         loop {
-            wait.observe_output(self.capture()?);
+            policy.observe_output(self.capture()?);
             if let Some(code) = self.refresh_status()? {
                 self.capture_after_exit()?;
                 return Ok(Status::Exited(code));
             }
-            let Some(remaining) = wait.remaining() else {
+            let Some(remaining) = policy.remaining() else {
                 return Ok(Status::Running);
             };
             std::thread::sleep(remaining.min(IDLE_POLL));
@@ -236,13 +234,15 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
         }
     };
     let close_requested = matches!(request, Request::Close);
-    let writes_only = matches!(request, Request::Write { .. });
-    let result = match request {
-        Request::Write { data } => job.write(data.as_bytes()),
-        Request::Interact { data, wait_millis } => {
-            job.interact(data.as_bytes(), Duration::from_millis(wait_millis))
+    let writes_only = matches!(request, Request::Access(JobAccess::Write { .. }));
+    let (result, waited) = match request {
+        Request::Access(JobAccess::Write { data }) => (job.write(data.as_bytes()), Duration::ZERO),
+        Request::Access(JobAccess::Interact { data, wait }) => {
+            let started_at = Instant::now();
+            let result = job.interact(data.as_bytes(), wait);
+            (result, started_at.elapsed())
         }
-        Request::Close => job.close(),
+        Request::Close => (job.close(), Duration::ZERO),
     };
     let (status, error) = match result {
         Ok(status) => (status, None),
@@ -261,7 +261,15 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
         None => {
             let prepared = job.pty.prepare_snapshot();
             let (terminal, commit) = prepared.into_parts();
-            (Response::Terminal { status, terminal }, Some(commit), true)
+            (
+                Response::Terminal {
+                    status,
+                    terminal,
+                    waited_ms: duration_millis(waited),
+                },
+                Some(commit),
+                true,
+            )
         }
     };
     let should_exit = close_requested || (terminal_response && exited && job.reached_eof());
@@ -286,39 +294,38 @@ trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
 
 fn request(handle: &str, request: Request) -> Result<JobInfo, String> {
-    send_request(handle, request)?.map_or_else(
-        || {
-            Ok(JobInfo::new(
-                JobStatus::NoExist,
-                TerminalSnapshot::default(),
-            ))
-        },
-        response_into_job_info,
-    )
+    response_into_job_info(send_request(handle, request)?)
 }
 
-fn request_status(handle: &str, request: Request) -> Result<JobStatus, String> {
-    let Some(response) = send_request(handle, request)? else {
-        return Ok(JobStatus::NoExist);
-    };
-    response_into_status(response)
-}
-
-fn response_into_job_info(response: Response) -> Result<JobInfo, String> {
+fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, String> {
     match response {
-        Response::Terminal { status, terminal } => Ok(JobInfo::new(job_status(status), terminal)),
-        Response::Failed { error, .. } => Err(error),
-        Response::Written { .. } => {
+        None => Ok(JobInfo::new(
+            JobStatus::NoExist,
+            TerminalSnapshot::default(),
+            Duration::ZERO,
+        )),
+        Some(Response::Terminal {
+            status,
+            terminal,
+            waited_ms,
+        }) => Ok(JobInfo::new(
+            job_status(status),
+            terminal,
+            Duration::from_millis(waited_ms),
+        )),
+        Some(Response::Failed { error, .. }) => Err(error),
+        Some(Response::Written { .. }) => {
             Err("job protocol returned write acknowledgment for terminal request".to_owned())
         }
     }
 }
 
-fn response_into_status(response: Response) -> Result<JobStatus, String> {
+fn response_into_status(response: Option<Response>) -> Result<JobStatus, String> {
     match response {
-        Response::Written { status } => Ok(job_status(status)),
-        Response::Failed { error, .. } => Err(error),
-        Response::Terminal { .. } => {
+        None => Ok(JobStatus::NoExist),
+        Some(Response::Written { status }) => Ok(job_status(status)),
+        Some(Response::Failed { error, .. }) => Err(error),
+        Some(Response::Terminal { .. }) => {
             Err("job protocol returned terminal snapshot for write request".to_owned())
         }
     }
@@ -372,7 +379,7 @@ fn spawn_container(handle: &JobHandle, command: &str, expiration: Duration) -> R
                 "container",
                 "local",
                 &handle.0,
-                &rpc::duration_millis(expiration).to_string(),
+                &duration_millis(expiration).to_string(),
                 command,
             ])
             .stdin(Stdio::null())
@@ -382,6 +389,10 @@ fn spawn_container(handle: &JobHandle, command: &str, expiration: Duration) -> R
             .map_err(|error| format!("unable to start phi local container: {error}"))?;
         wait_until_ready(&handle.0, CLIENT_IO_GRACE)
     }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn wait_until_ready(handle: &str, timeout: Duration) -> Result<(), String> {

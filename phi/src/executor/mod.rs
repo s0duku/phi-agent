@@ -18,20 +18,14 @@ pub struct PhiToolDefinition {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ToolExecutionLimits {
-    pub timeout_ms: u64,
+pub struct ToolOutputLimits {
     pub output_threshold_tokens: usize,
     pub preview_bytes: usize,
 }
 
-impl ToolExecutionLimits {
-    pub const fn new(
-        timeout_ms: u64,
-        output_threshold_tokens: usize,
-        preview_bytes: usize,
-    ) -> Self {
+impl ToolOutputLimits {
+    pub const fn new(output_threshold_tokens: usize, preview_bytes: usize) -> Self {
         Self {
-            timeout_ms,
             output_threshold_tokens,
             preview_bytes,
         }
@@ -39,7 +33,6 @@ impl ToolExecutionLimits {
 
     pub fn stricter(self, other: Self) -> Self {
         Self {
-            timeout_ms: self.timeout_ms.min(other.timeout_ms),
             output_threshold_tokens: self
                 .output_threshold_tokens
                 .min(other.output_threshold_tokens),
@@ -161,17 +154,20 @@ pub(crate) trait PhiTool: Send + Sync {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        limits: ToolExecutionLimits,
         runtime: &PhiAgentRuntime,
     ) -> ToolCallResponse;
 }
 
 pub struct PhiExecutor {
     tools: IndexMap<String, Arc<dyn PhiTool>>,
+    output_limits: ToolOutputLimits,
 }
 
 impl PhiExecutor {
-    pub(crate) fn from_tools(tools: Vec<Arc<dyn PhiTool>>) -> PhiRuntimeResult<Self> {
+    pub(crate) fn from_tools(
+        tools: Vec<Arc<dyn PhiTool>>,
+        output_limits: ToolOutputLimits,
+    ) -> PhiRuntimeResult<Self> {
         let mut registered = IndexMap::new();
 
         for tool in tools {
@@ -188,7 +184,10 @@ impl PhiExecutor {
             registered.insert(name, tool);
         }
 
-        Ok(Self { tools: registered })
+        Ok(Self {
+            tools: registered,
+            output_limits,
+        })
     }
 
     pub fn definitions(&self) -> Vec<PhiToolDefinition> {
@@ -202,7 +201,6 @@ impl PhiExecutor {
     pub(crate) async fn call_tool(
         &self,
         mut request: ToolCallRequest,
-        limits: ToolExecutionLimits,
         runtime: &PhiAgentRuntime,
     ) -> PhiRuntimeResult<(ToolCallRequest, ToolCallResponse)> {
         let name = request.name.clone();
@@ -212,8 +210,8 @@ impl PhiExecutor {
                 request.clone(),
             )
         })?;
-        let mut response = tool.call(&mut request, limits, runtime).await;
-        response.output = sanitizer::sanitize_tool_call_output(response.output, limits);
+        let mut response = tool.call(&mut request, runtime).await;
+        response.output = sanitizer::sanitize_tool_call_output(response.output, self.output_limits);
         Ok((request, response))
     }
 }

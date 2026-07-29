@@ -3,14 +3,14 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     error::{PhiErrorKind, PhiRuntimeError, PhiRuntimeResult},
-    executor::{PhiTool, ToolCallRequest, ToolCallResponse, ToolExecutionLimits},
+    executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     home::LocalPhiHome,
     message::{
         PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolMessage,
         PhiUserMessage,
     },
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
-    render::{PhiProviderCall, TestClient},
+    render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, Session},
 };
 
@@ -39,6 +39,9 @@ struct RegisterRewriteArgumentsToolModule;
 struct CaptureRequestToolsProvider {
     request: Arc<Mutex<Option<PhiProviderCall>>>,
     response: Vec<PhiMessage>,
+}
+struct ModelResponseProvider {
+    response: PhiModelResponse,
 }
 
 impl PhiModule for RewriteToolCallModule {
@@ -199,7 +202,6 @@ impl PhiTool for RewriteArgumentsInsideTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _limits: ToolExecutionLimits,
         _runtime: &crate::agent::PhiAgentRuntime,
     ) -> ToolCallResponse {
         request.arguments = serde_json::json!({ "value": "rewritten-inside-tool" });
@@ -215,12 +217,12 @@ impl TestClient for CaptureRequestToolsProvider {
         &self,
         request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiRuntimeResult<PhiModelResponse> {
         *self
             .request
             .lock()
             .expect("request capture mutex should be healthy") = Some(request.clone());
-        Ok(self.response.clone())
+        Ok(PhiModelResponse::unspecified(self.response.clone()))
     }
 }
 
@@ -230,8 +232,19 @@ impl TestClient for EmptyProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
-        Ok(Vec::new())
+    ) -> PhiRuntimeResult<PhiModelResponse> {
+        Ok(PhiModelResponse::unspecified(Vec::new()))
+    }
+}
+
+#[async_trait]
+impl TestClient for ModelResponseProvider {
+    async fn complete(
+        &self,
+        _request: &PhiProviderCall,
+        _messages: &PhiHistory,
+    ) -> PhiRuntimeResult<PhiModelResponse> {
+        Ok(self.response.clone())
     }
 }
 
@@ -315,6 +328,38 @@ async fn request_complete_commits_assistant_response_before_completion() {
         outcome.session.step(),
         PhiAgentStep::Completed { detail }
         if detail == "model response committed; no tool execution is pending"
+    ));
+}
+
+#[tokio::test]
+async fn provider_continue_response_commits_assistant_and_requests_another_completion() {
+    let session = Session::from_root(
+        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        vec![PhiMessage::user("inspect files")],
+    );
+    let outcome = step_agent_builder(session)
+        .with_client(Arc::new(ModelResponseProvider {
+            response: PhiModelResponse::new(
+                vec![PhiMessage::assistant("I will inspect the files now.")],
+                PhiModelTurnState::Continue,
+            ),
+        }))
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await;
+
+    assert_eq!(
+        outcome.session.history(),
+        &[
+            PhiMessage::user("inspect files"),
+            PhiMessage::assistant("I will inspect the files now."),
+        ]
+    );
+    assert!(matches!(
+        outcome.session.step(),
+        PhiAgentStep::RequestComplete { detail, .. }
+        if detail == "provider response requires another model request"
     ));
 }
 

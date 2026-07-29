@@ -3,7 +3,7 @@ use crate::{
         PhiAgentBuildContext, PhiAgentRuntime, StepCont, StepInterveneNext, StepInterveneResult,
     },
     error::{PhiRuntimeError, PhiRuntimeResult},
-    executor::{PhiTool, ToolCallRequest, ToolCallResponse, ToolExecutionLimits},
+    executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     expr::{PhiExprDelta, PhiStepExpr},
     message::{PhiHistory, PhiMessage},
     render::PhiProviderCall,
@@ -59,7 +59,6 @@ pub(crate) enum PhiAgentStepEvent<'a> {
         step: &'a crate::session::PhiAgentStep,
         expr: &'a PhiStepExpr,
         request: &'a mut ToolCallRequest,
-        limits: &'a mut ToolExecutionLimits,
     },
     BeforeCreateNextStep {
         base_expr: &'a PhiStepExpr,

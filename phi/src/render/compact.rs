@@ -96,6 +96,7 @@ pub(super) async fn compact_history(
     let summary = render
         .complete_rendered(&summary_request, render.render_messages(&summary_input))
         .await?
+        .messages
         .into_iter()
         .filter_map(|message| match message {
             PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => Some(text),
@@ -142,7 +143,7 @@ mod tests {
     use crate::{
         config::ModelRequestDefaults,
         message::{PhiMessage, PhiUserMessage},
-        render::{PhiProviderCall, PhiRender, TestClient},
+        render::{PhiModelResponse, PhiProviderCall, PhiRender, TestClient},
     };
 
     use super::compact_history;
@@ -155,8 +156,10 @@ mod tests {
             &self,
             _request: &PhiProviderCall,
             _messages: &crate::message::PhiHistory,
-        ) -> crate::error::PhiRuntimeResult<Vec<PhiMessage>> {
-            Ok(vec![PhiMessage::assistant("summary from provider")])
+        ) -> crate::error::PhiRuntimeResult<PhiModelResponse> {
+            Ok(PhiModelResponse::unspecified(vec![PhiMessage::assistant(
+                "summary from provider",
+            )]))
         }
     }
 

@@ -4,17 +4,12 @@ pub(crate) mod plugin;
 
 use std::io::IsTerminal;
 
-use crate::executor::ToolExecutionLimits;
 use crate::{
     agent::{
         PhiAgentBuildContext, PhiAgentCommand, PhiAgentRuntime, StepBounce, StepCont,
         StepInterveneNext,
     },
-    config::{
-        default_max_steps, default_tool_preview_bytes, default_tool_threshold_tokens,
-        default_tool_timeout_ms, optional_public_u64_from_config,
-        optional_public_usize_from_config,
-    },
+    config::{default_max_steps, optional_public_usize_from_config},
     error::PhiErrorKind,
     error::PhiRuntimeResult,
     executor::ToolCallOutput,
@@ -44,31 +39,10 @@ pub(crate) fn build_default_modules(context: &PhiAgentBuildContext) -> PhiModule
                 .flatten(),
         )
         .unwrap_or(default_max_steps());
-    let default_tool_limits = ToolExecutionLimits::new(
-        optional_public_u64_from_config(context.config(), "PHI_TOOL_TIMEOUT_MS")
-            .ok()
-            .flatten()
-            .unwrap_or(default_tool_timeout_ms()),
-        optional_public_usize_from_config(context.config(), "PHI_TOOL_THRESHOLD_TOKENS")
-            .ok()
-            .flatten()
-            .unwrap_or(default_tool_threshold_tokens()),
-        optional_public_usize_from_config(context.config(), "PHI_TOOL_PREVIEW_BYTES")
-            .ok()
-            .flatten()
-            .unwrap_or(default_tool_preview_bytes()),
-    );
-
     let mut modules = PhiModuleLayout::default();
     modules.push_governance(Box::new(governance::step_budget::StepBudgetPolicy::new(
         max_steps,
     )));
-    modules.push_governance(Box::new(
-        governance::tool_limits::ToolRuntimePolicy::builder()
-            .default_limits(default_tool_limits)
-            .build(),
-    ));
-
     if let Some(max_model_request_retries) = command_max_model_request_retries(&context.command) {
         modules.push_governance(Box::new(governance::model_retry::ModelRetryPolicy::new(
             max_model_request_retries,

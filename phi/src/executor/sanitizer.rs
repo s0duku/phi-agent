@@ -1,5 +1,5 @@
 use crate::{
-    executor::{ToolCallOutput, ToolExecutionLimits},
+    executor::{ToolCallOutput, ToolOutputLimits},
     utils::{APPROX_BYTES_PER_TOKEN, approx_token_count},
 };
 
@@ -39,7 +39,7 @@ pub fn maybe_truncate_text(text: &str, threshold_tokens: usize, preview_bytes: u
 
 pub fn sanitize_tool_call_output(
     mut output: ToolCallOutput,
-    limits: ToolExecutionLimits,
+    limits: ToolOutputLimits,
 ) -> ToolCallOutput {
     if let Some(error) = output.error.as_mut() {
         *error = maybe_truncate_text(error, limits.output_threshold_tokens, limits.preview_bytes);
@@ -197,7 +197,7 @@ mod tests {
         format_truncated_text, maybe_truncate_text, sanitize_json_string_leaves,
         sanitize_tool_call_output, truncate_middle_text,
     };
-    use crate::executor::{ToolCallOutput, ToolExecutionLimits};
+    use crate::executor::{ToolCallOutput, ToolOutputLimits};
 
     #[test]
     fn middle_truncation_keeps_head_and_tail() {
@@ -269,7 +269,7 @@ mod tests {
             }),
         );
 
-        let sanitized = sanitize_tool_call_output(output, ToolExecutionLimits::new(1_000, 64, 48));
+        let sanitized = sanitize_tool_call_output(output, ToolOutputLimits::new(64, 48));
 
         assert!(
             sanitized

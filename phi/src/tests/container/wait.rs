@@ -72,7 +72,7 @@ fn output_already_quiet_long_enough_returns_immediately() {
 }
 
 #[test]
-fn an_unrepresentable_timeout_does_not_expire_immediately() {
+fn an_unrepresentable_wait_does_not_expire_immediately() {
     let wait = WaitPolicy::new(Duration::MAX, None);
     assert_eq!(wait.remaining(), Some(Duration::MAX));
 }

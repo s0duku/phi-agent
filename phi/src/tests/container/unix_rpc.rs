@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::container::job::{JobHandle, JobStatus};
+use crate::container::job::{JobAccess, JobHandle, JobStatus};
 use crate::container::local::rpc::{self, Response, Status};
 use crate::tests::container::support::{connect, job_exec, job_interact};
 
@@ -61,21 +61,21 @@ fn maximum_wait_value_still_returns_when_the_shell_exits() {
     assert!(matches!(info.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
-    let request = serde_json::json!({
-        "Interact": {
-            "data": "",
-            "wait_millis": u64::MAX,
-        }
+    let request = rpc::Request::Access(JobAccess::Interact {
+        data: String::new(),
+        wait: Duration::MAX,
     });
     let mut stream = connect(&handle.0).unwrap();
     rpc::write_frame(&mut stream, &request).unwrap();
     let response: Response = rpc::read_frame(&mut stream).unwrap();
 
-    assert!(matches!(
-        response,
-        Response::Terminal {
-            status: Status::Exited(17),
-            ..
-        }
-    ));
+    let Response::Terminal {
+        status: Status::Exited(17),
+        waited_ms,
+        ..
+    } = response
+    else {
+        panic!("interact did not return the expected exit status");
+    };
+    assert!(waited_ms >= 1_500);
 }

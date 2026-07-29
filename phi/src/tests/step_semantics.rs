@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 
@@ -9,7 +12,7 @@ use crate::{
     home::LocalPhiHome,
     message::{PhiHistory, PhiMessage, PhiToolMessage},
     module::{PhiAgentStepEvent, PhiModule},
-    render::{PhiProviderCall, TestClient},
+    render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, Session},
 };
 
@@ -19,6 +22,9 @@ use super::support::{
 };
 
 struct EmptyProvider;
+struct SequenceProvider {
+    responses: Mutex<VecDeque<PhiModelResponse>>,
+}
 
 #[async_trait]
 impl TestClient for EmptyProvider {
@@ -26,8 +32,23 @@ impl TestClient for EmptyProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
-        Ok(Vec::new())
+    ) -> PhiRuntimeResult<PhiModelResponse> {
+        Ok(PhiModelResponse::unspecified(Vec::new()))
+    }
+}
+
+#[async_trait]
+impl TestClient for SequenceProvider {
+    async fn complete(
+        &self,
+        _request: &PhiProviderCall,
+        _messages: &PhiHistory,
+    ) -> PhiRuntimeResult<PhiModelResponse> {
+        self.responses
+            .lock()
+            .expect("response queue should be healthy")
+            .pop_front()
+            .ok_or_else(|| PhiRuntimeError::provider_response("response queue exhausted"))
     }
 }
 
@@ -300,6 +321,50 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
     );
     assert!(matches!(
         yolo_outcome.session.step(),
+        PhiAgentStep::Completed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() {
+    let session = Session::from_root(
+        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        vec![PhiMessage::user("inspect files")],
+    );
+    let client = SequenceProvider {
+        responses: Mutex::new(VecDeque::from([
+            PhiModelResponse::new(
+                vec![PhiMessage::assistant("I will inspect the files now.")],
+                PhiModelTurnState::Continue,
+            ),
+            PhiModelResponse::new(
+                vec![PhiMessage::assistant("The files have been inspected.")],
+                PhiModelTurnState::Complete,
+            ),
+        ])),
+    };
+    let outcome =
+        crate::agent::PhiAgent::builder(session, PhiAgentCommand::Yolo(PhiAgentCommand::yolo()))
+            .with_home(Arc::new(LocalPhiHome::new(
+                super::support::unique_test_home(),
+            )))
+            .with_model_defaults(test_model_defaults())
+            .with_client(Arc::new(client))
+            .build()
+            .expect("agent should build")
+            .run_to_completed()
+            .await;
+
+    assert_eq!(
+        outcome.session.history(),
+        &[
+            PhiMessage::user("inspect files"),
+            PhiMessage::assistant("I will inspect the files now."),
+            PhiMessage::assistant("The files have been inspected."),
+        ]
+    );
+    assert!(matches!(
+        outcome.session.step(),
         PhiAgentStep::Completed { .. }
     ));
 }

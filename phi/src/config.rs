@@ -3,12 +3,11 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
-use crate::executor::PhiToolDefinition;
+use crate::executor::{PhiToolDefinition, ToolOutputLimits};
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_MAX_STEPS: usize = 1_000_000;
 const DEFAULT_CONTEXT_TOKENS: usize = 256 * 1024;
-const DEFAULT_TOOL_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_TOOL_THRESHOLD_TOKENS: usize = (24 * 1024) / 4;
 const DEFAULT_TOOL_PREVIEW_BYTES: usize = 2 * 1024;
 static RUNTIME_OVERRIDES: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
@@ -148,16 +147,25 @@ pub const fn default_auto_compact_threshold_tokens() -> usize {
     DEFAULT_CONTEXT_TOKENS * 9 / 10
 }
 
-pub const fn default_tool_timeout_ms() -> u64 {
-    DEFAULT_TOOL_TIMEOUT_MS
-}
-
 pub const fn default_tool_threshold_tokens() -> usize {
     DEFAULT_TOOL_THRESHOLD_TOKENS
 }
 
 pub const fn default_tool_preview_bytes() -> usize {
     DEFAULT_TOOL_PREVIEW_BYTES
+}
+
+pub fn tool_output_limits_from_config(config: &PhiConfig) -> ToolOutputLimits {
+    ToolOutputLimits::new(
+        optional_public_usize_from_config(config, "PHI_TOOL_THRESHOLD_TOKENS")
+            .ok()
+            .flatten()
+            .unwrap_or(default_tool_threshold_tokens()),
+        optional_public_usize_from_config(config, "PHI_TOOL_PREVIEW_BYTES")
+            .ok()
+            .flatten()
+            .unwrap_or(default_tool_preview_bytes()),
+    )
 }
 
 pub fn set_runtime_setting(name: &str, value: Option<String>) {
@@ -308,6 +316,19 @@ mod tests {
             phi_tools_from_config(&config)
                 .expect("unset tools should parse as empty")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn tool_output_limits_are_derived_from_global_config() {
+        let config = PhiConfig::new(BTreeMap::from([
+            ("PHI_TOOL_THRESHOLD_TOKENS".to_string(), "1234".to_string()),
+            ("PHI_TOOL_PREVIEW_BYTES".to_string(), "567".to_string()),
+        ]));
+
+        assert_eq!(
+            tool_output_limits_from_config(&config),
+            ToolOutputLimits::new(1234, 567)
         );
     }
 }
