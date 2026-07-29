@@ -11,7 +11,6 @@ use super::pty::PtySession;
 use super::rpc::{self, Request, Response, Status};
 use super::wait::{ActivityExpiration, WaitPolicy};
 
-#[cfg(not(test))]
 use std::process::{Command, Stdio};
 
 const CLIENT_IO_GRACE: Duration = Duration::from_secs(5);
@@ -374,10 +373,10 @@ fn spawn_container(handle: &JobHandle, command: &str, expiration: Duration) -> R
     #[cfg(not(test))]
     {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        Command::new(executable)
+        let status = Command::new(executable)
             .args([
                 "container",
-                "local",
+                "launch-local",
                 &handle.0,
                 &duration_millis(expiration).to_string(),
                 command,
@@ -385,10 +384,67 @@ fn spawn_container(handle: &JobHandle, command: &str, expiration: Duration) -> R
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .status()
             .map_err(|error| format!("unable to start phi local container: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "phi container launcher exited with status {status}"
+            ));
+        }
         wait_until_ready(&handle.0, CLIENT_IO_GRACE)
     }
+}
+
+pub(crate) fn launch_container(
+    handle: &str,
+    command: &str,
+    expiration: Duration,
+) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut worker = Command::new(executable);
+    worker
+        .args([
+            "container",
+            "local",
+            handle,
+            &duration_millis(expiration).to_string(),
+            command,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_detached_worker(&mut worker);
+    worker
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("unable to launch detached phi container: {error}"))
+}
+
+#[cfg(unix)]
+fn configure_detached_worker(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // The launcher is a short-lived, single-purpose process. Starting a new
+    // session detaches the worker from the invoking terminal before the
+    // launcher exits and the worker is reparented.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(windows)]
+fn configure_detached_worker(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 }
 
 fn duration_millis(duration: Duration) -> u64 {

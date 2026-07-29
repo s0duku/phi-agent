@@ -17,6 +17,14 @@ pub(crate) fn container_entry(
     runtime::run_container(handle, command, expiration)
 }
 
+pub(crate) fn launch_container(
+    handle: &str,
+    expiration: std::time::Duration,
+    command: &str,
+) -> Result<(), String> {
+    runtime::launch_container(handle, command, expiration)
+}
+
 #[async_trait::async_trait]
 impl JobContainer for LocalShellJobContainer {
     async fn job_exec(

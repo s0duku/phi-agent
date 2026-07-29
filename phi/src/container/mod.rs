@@ -54,6 +54,13 @@ enum ContainerCommand {
     },
     #[command(about = "Close a running shell job and release its container resources")]
     Close { handle: String },
+    #[command(name = "launch-local", hide = true)]
+    LaunchLocal {
+        handle: String,
+        expiration_ms: u64,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     #[command(
         name = "local",
         about = "Run the local shell container process used by phi job tools"
@@ -109,6 +116,14 @@ pub async fn run(args: ContainerArgs) -> Result<(), String> {
             let info =
                 <LocalShellJobContainer as JobContainer>::job_close(JobHandle(handle)).await?;
             render(info, None)?;
+        }
+        ContainerCommand::LaunchLocal {
+            handle,
+            expiration_ms,
+            command,
+        } => {
+            let command = command.join(" ");
+            local::launch_container(&handle, Duration::from_millis(expiration_ms), &command)?;
         }
         ContainerCommand::Local {
             handle,
