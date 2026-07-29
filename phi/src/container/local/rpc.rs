@@ -6,40 +6,12 @@ use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions, Name,
     Stream, ToFsName, ToNsName, prelude::*,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::container::job::{JobAccess, JobHandle, TerminalSnapshot};
+use crate::container::job::JobHandle;
 
 const ENDPOINT_PREFIX: &str = "phi-container-";
 const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
-
-#[derive(Serialize, Deserialize)]
-pub(crate) enum Request {
-    Access(JobAccess),
-    Close,
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) enum Response {
-    Written {
-        status: Status,
-    },
-    Terminal {
-        status: Status,
-        terminal: TerminalSnapshot,
-        waited_ms: u64,
-    },
-    Failed {
-        status: Status,
-        error: String,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) enum Status {
-    Running,
-    Exited(i8),
-}
 
 pub(crate) fn bind(handle: &str) -> io::Result<Listener> {
     validate_handle(handle)?;

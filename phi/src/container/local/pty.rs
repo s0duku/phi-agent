@@ -1,12 +1,14 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Instant;
 
 use portable_pty::{Child, PtySize, native_pty_system};
 
 use super::platform;
-use super::terminal::{HeadlessTerminal, PreparedTerminalSnapshot, TerminalSnapshotCommit};
+use super::terminal::{
+    HeadlessTerminal, PendingTerminalResponse, TerminalActivity, TerminalDelivery,
+    TerminalObservation,
+};
 
 pub(crate) struct PtySession {
     _master: Box<dyn portable_pty::MasterPty + Send>,
@@ -14,7 +16,6 @@ pub(crate) struct PtySession {
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
     terminal: HeadlessTerminal,
-    last_output_at: Option<Instant>,
     eof: bool,
     exit_status: Option<i8>,
     #[cfg(unix)]
@@ -32,6 +33,7 @@ impl PtySession {
                 pixel_height: 0,
             })
             .map_err(|error| error.to_string())?;
+        platform::disable_pty_echo(&*pair.master).map_err(|error| error.to_string())?;
         #[cfg(unix)]
         let process_group_leader = pair.master.process_group_leader();
         let builder = platform::build_shell_command(command);
@@ -72,7 +74,6 @@ impl PtySession {
             writer,
             output_rx,
             terminal: HeadlessTerminal::new(),
-            last_output_at: None,
             eof: false,
             exit_status: None,
             #[cfg(unix)]
@@ -80,15 +81,12 @@ impl PtySession {
         })
     }
 
-    pub(crate) fn capture(&mut self) -> Result<bool, String> {
-        let mut changed = false;
+    pub(crate) fn capture(&mut self) -> Result<TerminalObservation, String> {
+        let mut activity = TerminalActivity::default();
         loop {
             match self.output_rx.try_recv() {
                 Ok(chunk) => {
                     let update = self.terminal.process(&chunk);
-                    if update.output {
-                        self.last_output_at = Some(Instant::now());
-                    }
                     for reply in update.replies {
                         // A ConPTY may close its input side before its child
                         // handle reports the final status. The reply is best
@@ -96,12 +94,12 @@ impl PtySession {
                         // an RPC failure.
                         let _ = self.writer.write_all(&reply);
                     }
-                    changed |= update.output;
+                    activity.merge(update.activity);
                 }
-                Err(TryRecvError::Empty) => return Ok(changed),
+                Err(TryRecvError::Empty) => return Ok(self.terminal.observe(activity)),
                 Err(TryRecvError::Disconnected) => {
                     self.eof = true;
-                    return Ok(changed);
+                    return Ok(self.terminal.observe(activity));
                 }
             }
         }
@@ -168,20 +166,18 @@ impl PtySession {
         self.eof
     }
 
-    pub(crate) fn prepare_snapshot(&self) -> PreparedTerminalSnapshot {
-        self.terminal.prepare_snapshot()
+    pub(crate) fn pending_response(
+        &self,
+        observation: &TerminalObservation,
+    ) -> PendingTerminalResponse {
+        self.terminal.pending_response(observation)
     }
 
-    pub(crate) fn commit_snapshot(&mut self, commit: TerminalSnapshotCommit) {
-        self.terminal.commit_snapshot(commit);
-        self.last_output_at = None;
+    pub(crate) fn acknowledge(&mut self, delivery: TerminalDelivery) {
+        self.terminal.acknowledge(delivery);
     }
 
-    pub(crate) fn pending_output_at(&self) -> Option<Instant> {
-        if self.terminal.has_output() {
-            self.last_output_at
-        } else {
-            None
-        }
+    pub(crate) fn current_observation(&self) -> TerminalObservation {
+        self.terminal.observe(TerminalActivity::default())
     }
 }

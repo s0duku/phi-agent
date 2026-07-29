@@ -267,10 +267,7 @@ fn response(
     handle: Option<JobHandle>,
     closing: bool,
 ) -> ToolCallResponse {
-    let (status, terminal, waited) = info.into_parts();
-    let output = terminal.text().to_owned();
-    let output_truncated = terminal.truncated();
-    let screen = terminal.screen().to_owned();
+    let (status, output, output_truncated, waited) = info.into_parts();
     let (status_name, exit_code, running, exists) = match status {
         JobStatus::Running => ("running", None, true, true),
         JobStatus::Exited(code) => ("exited", Some(code), false, true),
@@ -286,7 +283,6 @@ fn response(
         "exit_code": exit_code,
         "output": output,
         "output_truncated": output_truncated,
-        "screen": screen,
         "handle": handle,
         "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
     });
@@ -347,8 +343,6 @@ const fn default_interact_wait_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::TerminalSnapshot;
-
     #[test]
     fn tool_response_reports_actual_wait_duration() {
         let request = ToolCallRequest {
@@ -359,7 +353,8 @@ mod tests {
         };
         let info = JobInfo::new(
             JobStatus::Running,
-            TerminalSnapshot::default(),
+            String::new(),
+            false,
             Duration::from_millis(123),
         );
 
@@ -372,5 +367,6 @@ mod tests {
         );
 
         assert_eq!(response.output.as_value()["waited_ms"], 123);
+        assert!(response.output.as_value().get("screen").is_none());
     }
 }

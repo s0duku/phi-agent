@@ -2,25 +2,32 @@ use std::collections::VecDeque;
 
 use vte::{Params, Perform};
 
+use super::TerminalObservation;
+
 pub(super) struct TerminalOutput {
     bytes: VecDeque<u8>,
     line_count: usize,
     truncated: bool,
     start_offset: u64,
     end_offset: u64,
-    committed_rows: Vec<String>,
+    checkpoint: TerminalCheckpoint,
 }
 
-pub(crate) struct OutputCommit {
-    end_offset: u64,
+pub(crate) struct OutputDelivery {
+    checkpoint: TerminalCheckpoint,
+}
+
+struct TerminalCheckpoint {
+    stream_offset: u64,
     rendered_rows: Vec<String>,
 }
 
-pub(super) struct PreparedOutput {
+struct OutputPolicy;
+
+pub(super) struct PendingOutput {
     pub(super) text: String,
-    pub(super) stream: String,
     pub(super) truncated: bool,
-    pub(super) commit: OutputCommit,
+    pub(super) delivery: OutputDelivery,
 }
 
 impl TerminalOutput {
@@ -31,7 +38,10 @@ impl TerminalOutput {
             truncated: false,
             start_offset: 0,
             end_offset: 0,
-            committed_rows: Vec::new(),
+            checkpoint: TerminalCheckpoint {
+                stream_offset: 0,
+                rendered_rows: Vec::new(),
+            },
         }
     }
 
@@ -53,28 +63,54 @@ impl TerminalOutput {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn has_pending(&self) -> bool {
         !self.bytes.is_empty() || self.truncated
     }
 
-    pub(super) fn prepare(&self, rendered_rows: Vec<String>) -> PreparedOutput {
-        let bytes: Vec<_> = self.bytes.iter().copied().collect();
-        let stream = String::from_utf8_lossy(&bytes).into_owned();
-        let text = linear_output(&stream)
-            .unwrap_or_else(|| rendered_difference(&self.committed_rows, &rendered_rows));
-        PreparedOutput {
+    pub(super) fn changed_since_checkpoint(&self, rendered_rows: &[String]) -> bool {
+        self.checkpoint.rendered_rows != rendered_rows
+    }
+
+    pub(super) fn end_offset(&self) -> u64 {
+        self.end_offset
+    }
+
+    pub(super) fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub(super) fn pending_response(&self, observation: &TerminalObservation) -> PendingOutput {
+        let stream = self.stream(observation);
+        let text = OutputPolicy::render(&stream, &self.checkpoint, observation);
+        PendingOutput {
             text,
-            stream,
-            truncated: self.truncated,
-            commit: OutputCommit {
-                end_offset: self.end_offset,
-                rendered_rows,
+            truncated: observation.stream_truncated(),
+            delivery: OutputDelivery {
+                checkpoint: TerminalCheckpoint {
+                    stream_offset: observation.stream_end_offset(),
+                    rendered_rows: observation.rendered_rows().to_vec(),
+                },
             },
         }
     }
 
-    pub(super) fn commit(&mut self, commit: OutputCommit) {
-        let delivered = commit.end_offset.saturating_sub(self.start_offset);
+    pub(super) fn stream(&self, observation: &TerminalObservation) -> String {
+        let observed = observation
+            .stream_end_offset()
+            .saturating_sub(self.start_offset);
+        let observed = usize::try_from(observed)
+            .unwrap_or(usize::MAX)
+            .min(self.bytes.len());
+        let bytes: Vec<_> = self.bytes.iter().take(observed).copied().collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    pub(super) fn acknowledge(&mut self, delivery: OutputDelivery) {
+        let delivered = delivery
+            .checkpoint
+            .stream_offset
+            .saturating_sub(self.start_offset);
         let delivered = usize::try_from(delivered)
             .unwrap_or(usize::MAX)
             .min(self.bytes.len());
@@ -84,7 +120,19 @@ impl TerminalOutput {
             .saturating_add(u64::try_from(delivered).unwrap_or(u64::MAX));
         self.line_count = self.bytes.iter().filter(|&&byte| byte == b'\n').count();
         self.truncated = false;
-        self.committed_rows = commit.rendered_rows;
+        self.checkpoint = delivery.checkpoint;
+    }
+}
+
+impl OutputPolicy {
+    fn render(
+        stream: &str,
+        checkpoint: &TerminalCheckpoint,
+        observation: &TerminalObservation,
+    ) -> String {
+        linear_output(stream).unwrap_or_else(|| {
+            rendered_difference(&checkpoint.rendered_rows, observation.rendered_rows())
+        })
     }
 }
 
@@ -242,7 +290,7 @@ impl Perform for LinearOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalOutput, linear_output, rendered_difference};
+    use super::{TerminalObservation, TerminalOutput, linear_output, rendered_difference};
 
     #[test]
     fn linear_crlf_and_styles_render_as_an_increment() {
@@ -269,15 +317,22 @@ mod tests {
     }
 
     #[test]
-    fn commit_token_only_consumes_the_prepared_prefix() {
+    fn delivery_only_acknowledges_the_observed_prefix() {
         let mut output = TerminalOutput::new();
         output.append(b"first\n", 1_000, 1024);
-        let prepared = output.prepare(vec!["first".to_owned()]);
+        let first =
+            TerminalObservation::from_rendered_rows(vec!["first".to_owned()], output.end_offset);
         output.append(b"second\n", 1_000, 1024);
+        let pending = output.pending_response(&first);
+        assert_eq!(output.stream(&first), "first\n");
 
-        output.commit(prepared.commit);
-        let pending = output.prepare(vec!["first".to_owned(), "second".to_owned()]);
-        assert_eq!(pending.stream, "second\n");
+        output.acknowledge(pending.delivery);
+        let second = TerminalObservation::from_rendered_rows(
+            vec!["first".to_owned(), "second".to_owned()],
+            output.end_offset,
+        );
+        let pending = output.pending_response(&second);
+        assert_eq!(output.stream(&second), "second\n");
         assert_eq!(pending.text, "second");
     }
 

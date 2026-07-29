@@ -216,6 +216,23 @@ async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn pty_line_discipline_does_not_echo_submitted_input() {
+    let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
+        "IFS= read -r value; printf done",
+        Duration::from_millis(20),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(initial.status(), JobStatus::Running));
+
+    let info = access_interact(handle.unwrap(), "private-input\r", Duration::from_secs(2)).await;
+    assert!(matches!(info.status(), JobStatus::Exited(0)));
+    assert_eq!(info.outputs(), "done");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
     let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
         "IFS= read -r value; printf 'value:<%s>' \"$value\"",
@@ -264,7 +281,7 @@ async fn persistent_job_can_be_read_and_closed() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn write_preserves_output_for_the_next_interact_snapshot() {
+async fn write_preserves_output_for_the_next_interaction_delta() {
     let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
         line_input_command(),
         Duration::ZERO,

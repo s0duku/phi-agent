@@ -1,9 +1,14 @@
+mod client;
+pub(crate) mod interaction;
+mod launcher;
+pub(crate) mod lease;
 pub(crate) mod platform;
+mod process;
+pub(crate) mod protocol;
 mod pty;
 pub(crate) mod rpc;
-mod runtime;
+mod server;
 pub(crate) mod terminal;
-pub(crate) mod wait;
 
 use crate::container::job::{JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo};
 
@@ -14,7 +19,7 @@ pub(crate) fn container_entry(
     expiration: std::time::Duration,
     command: &str,
 ) -> Result<(), String> {
-    runtime::run_container(handle, command, expiration)
+    server::run_container(handle, command, expiration)
 }
 
 pub(crate) fn launch_container(
@@ -22,7 +27,7 @@ pub(crate) fn launch_container(
     expiration: std::time::Duration,
     command: &str,
 ) -> Result<(), String> {
-    runtime::launch_container(handle, command, expiration)
+    launcher::launch_container(handle, command, expiration)
 }
 
 #[async_trait::async_trait]
@@ -32,14 +37,14 @@ impl JobContainer for LocalShellJobContainer {
         wait: std::time::Duration,
         expiration: std::time::Duration,
     ) -> Result<(Option<JobHandle>, JobInfo), String> {
-        runtime::job_exec(cmd, wait, expiration)
+        client::job_exec(cmd, wait, expiration)
     }
 
     async fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
-        runtime::job_access(handle, access)
+        client::job_access(handle, access)
     }
 
     async fn job_close(handle: JobHandle) -> Result<JobInfo, String> {
-        runtime::job_close(handle)
+        client::job_close(handle)
     }
 }

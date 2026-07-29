@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use crate::container::job::{JobAccess, JobHandle, JobStatus};
-use crate::container::local::rpc::{self, Response, Status};
+use crate::container::local::protocol::{Request, Response, Status};
+use crate::container::local::rpc;
 use crate::tests::container::support::{connect, job_exec, job_interact};
 
 const EXPIRATION: Duration = Duration::from_secs(5);
@@ -52,7 +53,7 @@ fn initial_response_preserves_output_beyond_the_visible_terminal_page() {
     assert!(info.outputs().contains("line-1\n"));
     assert!(info.outputs().contains("line-100"));
     assert_eq!(info.outputs().lines().count(), 100);
-    assert!(!info.terminal().truncated());
+    assert!(!info.output_truncated());
 }
 
 #[test]
@@ -61,7 +62,7 @@ fn maximum_wait_value_still_returns_when_the_shell_exits() {
     assert!(matches!(info.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
-    let request = rpc::Request::Access(JobAccess::Interact {
+    let request = Request::Access(JobAccess::Interact {
         data: String::new(),
         wait: Duration::MAX,
     });

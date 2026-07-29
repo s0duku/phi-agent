@@ -6,9 +6,7 @@ use std::time::Duration;
 
 use clap::{Args, Subcommand};
 
-pub use job::{
-    JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus, TerminalSnapshot,
-};
+pub use job::{JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus};
 pub use local::LocalShellJobContainer;
 
 #[derive(Args)]
@@ -139,7 +137,7 @@ pub async fn run(args: ContainerArgs) -> Result<(), String> {
 
 fn render(info: JobInfo, handle: Option<&JobHandle>) -> Result<(), String> {
     std::io::stdout()
-        .write_all(info.terminal().text().as_bytes())
+        .write_all(info.outputs().as_bytes())
         .map_err(|error| error.to_string())?;
     let status = match info.status() {
         JobStatus::Running => "running".to_owned(),

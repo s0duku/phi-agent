@@ -8,25 +8,10 @@ pub enum JobStatus {
     NoExist,
 }
 
-#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
-pub struct TerminalSnapshot {
-    revision: u64,
-    text: String,
-    #[serde(default)]
-    stream: String,
-    #[serde(default)]
-    screen: String,
-    #[serde(default)]
-    truncated: bool,
-    rows: u16,
-    columns: u16,
-    cursor_row: u16,
-    cursor_column: u16,
-}
-
 pub struct JobInfo {
     status: JobStatus,
-    terminal: TerminalSnapshot,
+    output: String,
+    output_truncated: bool,
     waited: std::time::Duration,
 }
 
@@ -35,9 +20,9 @@ pub struct JobHandle(pub String);
 /// An access request for a running job.
 #[derive(serde::Deserialize, serde::Serialize)]
 pub enum JobAccess {
-    /// Write input without waiting for or acquiring an output snapshot.
+    /// Write input without waiting for or acquiring an output delta.
     Write { data: String },
-    /// Write input and acquire an output snapshot.
+    /// Write input and acquire the output delta since the previous interaction.
     ///
     /// `wait` is the maximum duration to wait for the job to exit or for terminal
     /// output activity to settle. Output activity is used as a heuristic that
@@ -96,7 +81,7 @@ impl JobHandle {
 
 #[async_trait::async_trait]
 pub trait JobContainer {
-    /// Start a command and acquire its initial output snapshot.
+    /// Start a command and acquire its initial output delta.
     ///
     /// `wait` bounds only the initial wait for output activity to settle or for
     /// the process to exit. Output activity acts as a heuristic that meaningful
@@ -117,12 +102,14 @@ pub trait JobContainer {
 impl JobInfo {
     pub(crate) fn new(
         status: JobStatus,
-        terminal: TerminalSnapshot,
+        output: String,
+        output_truncated: bool,
         waited: std::time::Duration,
     ) -> Self {
         Self {
             status,
-            terminal,
+            output,
+            output_truncated,
             waited,
         }
     }
@@ -131,12 +118,12 @@ impl JobInfo {
         &self.status
     }
 
-    pub fn terminal(&self) -> &TerminalSnapshot {
-        &self.terminal
+    pub fn outputs(&self) -> &str {
+        &self.output
     }
 
-    pub fn outputs(&self) -> &str {
-        self.terminal.text()
+    pub fn output_truncated(&self) -> bool {
+        self.output_truncated
     }
 
     /// Time spent waiting for process exit or terminal output to settle.
@@ -145,61 +132,7 @@ impl JobInfo {
         self.waited
     }
 
-    pub fn into_parts(self) -> (JobStatus, TerminalSnapshot, std::time::Duration) {
-        (self.status, self.terminal, self.waited)
-    }
-}
-
-impl TerminalSnapshot {
-    pub(crate) fn new(
-        revision: u64,
-        text: String,
-        stream: String,
-        screen: String,
-        truncated: bool,
-        rows: u16,
-        columns: u16,
-        cursor_row: u16,
-        cursor_column: u16,
-    ) -> Self {
-        Self {
-            revision,
-            text,
-            truncated,
-            stream,
-            screen,
-            rows,
-            columns,
-            cursor_row,
-            cursor_column,
-        }
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    pub fn truncated(&self) -> bool {
-        self.truncated
-    }
-
-    pub fn stream(&self) -> &str {
-        &self.stream
-    }
-
-    pub fn screen(&self) -> &str {
-        &self.screen
-    }
-
-    pub fn size(&self) -> (u16, u16) {
-        (self.rows, self.columns)
-    }
-
-    pub fn cursor(&self) -> (u16, u16) {
-        (self.cursor_row, self.cursor_column)
+    pub fn into_parts(self) -> (JobStatus, String, bool, std::time::Duration) {
+        (self.status, self.output, self.output_truncated, self.waited)
     }
 }

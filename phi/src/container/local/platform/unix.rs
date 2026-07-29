@@ -2,6 +2,22 @@ use std::io;
 
 use portable_pty::CommandBuilder;
 
+pub(crate) fn disable_pty_echo(master: &dyn portable_pty::MasterPty) -> io::Result<()> {
+    let fd = master
+        .as_raw_fd()
+        .ok_or_else(|| io::Error::other("PTY master does not expose a file descriptor"))?;
+    let mut attributes = unsafe { std::mem::zeroed::<libc::termios>() };
+    if unsafe { libc::tcgetattr(fd, &mut attributes) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    attributes.c_lflag &=
+        !(libc::ECHO | libc::ECHONL | libc::ECHOE | libc::ECHOK | libc::ECHOCTL | libc::ECHOKE);
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &attributes) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 pub(crate) fn build_shell_command(command: &str) -> CommandBuilder {
     let shell = choose_shell();
     let mut builder = CommandBuilder::new(shell);

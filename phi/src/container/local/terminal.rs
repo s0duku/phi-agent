@@ -1,9 +1,12 @@
+//! Persistent headless-terminal state and its delivery transaction.
+//!
+//! PTY bytes are processed into an observation, the observation produces a pending
+//! response, and successful transport acknowledges its delivery checkpoint.
+
 use vte::{Params, Perform};
 
-use crate::container::job::TerminalSnapshot;
-
 mod output;
-use output::{OutputCommit, TerminalOutput};
+use output::{OutputDelivery, TerminalOutput};
 
 const ROWS: u16 = 24;
 const COLS: u16 = 80;
@@ -14,19 +17,33 @@ pub(crate) struct HeadlessTerminal {
     parser: vte::Parser,
     dispatcher: Dispatcher,
     screen: vt100::Parser,
-    revision: u64,
     output: TerminalOutput,
 }
 
-pub(crate) struct PreparedTerminalSnapshot {
-    snapshot: TerminalSnapshot,
-    commit: TerminalSnapshotCommit,
+pub(crate) struct PendingTerminalResponse {
+    output: String,
+    truncated: bool,
+    delivery: TerminalDelivery,
 }
 
-pub(crate) struct TerminalSnapshotCommit(OutputCommit);
+pub(crate) struct TerminalDelivery(OutputDelivery);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TerminalActivity {
+    displayed: bool,
+    alternate_screen_activity: bool,
+}
+
+pub(crate) struct TerminalObservation {
+    activity: TerminalActivity,
+    changed_since_checkpoint: bool,
+    stream_end_offset: u64,
+    stream_truncated: bool,
+    rendered_rows: Vec<String>,
+}
 
 pub(crate) struct TerminalUpdate {
-    pub(crate) output: bool,
+    pub(crate) activity: TerminalActivity,
     pub(crate) replies: Vec<Vec<u8>>,
 }
 
@@ -36,13 +53,12 @@ impl HeadlessTerminal {
             parser: vte::Parser::new(),
             dispatcher: Dispatcher::default(),
             screen: vt100::Parser::new(ROWS, COLS, SCROLLBACK_ROWS),
-            revision: 0,
             output: TerminalOutput::new(),
         }
     }
 
     pub(crate) fn process(&mut self, bytes: &[u8]) -> TerminalUpdate {
-        let before = self.screen.screen().contents_formatted();
+        let was_alternate_screen = self.screen.screen().alternate_screen();
         self.parser.advance(&mut self.dispatcher, bytes);
 
         let mut replies = Vec::new();
@@ -61,13 +77,15 @@ impl HeadlessTerminal {
                 }
             }
         }
-        let changed = before != self.screen.screen().contents_formatted();
-        if changed {
-            self.revision = self.revision.saturating_add(1);
+        let alternate_screen_activity =
+            was_alternate_screen || self.screen.screen().alternate_screen();
+        TerminalUpdate {
+            activity: TerminalActivity::new(output, alternate_screen_activity),
+            replies,
         }
-        TerminalUpdate { output, replies }
     }
 
+    #[cfg(test)]
     pub(crate) fn has_output(&self) -> bool {
         self.output.has_pending()
     }
@@ -90,65 +108,127 @@ impl HeadlessTerminal {
         rows
     }
 
-    pub(crate) fn prepare_snapshot(&self) -> PreparedTerminalSnapshot {
-        let prepared = self.output.prepare(self.rendered_rows());
-        let screen = self.screen.screen();
-        let (cursor_row, cursor_column) = screen.cursor_position();
-        let snapshot = TerminalSnapshot::new(
-            self.revision,
-            prepared.text,
-            prepared.stream,
-            screen.contents(),
-            prepared.truncated,
-            ROWS,
-            COLS,
-            cursor_row,
-            cursor_column,
-        );
-        PreparedTerminalSnapshot {
-            snapshot,
-            commit: TerminalSnapshotCommit(prepared.commit),
+    pub(crate) fn observe(&self, activity: TerminalActivity) -> TerminalObservation {
+        let rendered_rows = self.rendered_rows();
+        TerminalObservation {
+            activity,
+            changed_since_checkpoint: self.output.changed_since_checkpoint(&rendered_rows),
+            stream_end_offset: self.output.end_offset(),
+            stream_truncated: self.output.truncated(),
+            rendered_rows,
         }
     }
 
-    pub(crate) fn commit_snapshot(&mut self, commit: TerminalSnapshotCommit) {
-        self.output.commit(commit.0);
+    pub(crate) fn pending_response(
+        &self,
+        observation: &TerminalObservation,
+    ) -> PendingTerminalResponse {
+        let pending = self.output.pending_response(observation);
+        PendingTerminalResponse {
+            output: pending.text,
+            truncated: pending.truncated,
+            delivery: TerminalDelivery(pending.delivery),
+        }
     }
 
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> TerminalSnapshot {
-        self.prepare_snapshot().snapshot().clone()
+    pub(crate) fn acknowledge(&mut self, delivery: TerminalDelivery) {
+        self.output.acknowledge(delivery.0);
     }
 
     #[cfg(test)]
     pub(crate) fn output(&self) -> (String, bool) {
-        let prepared = self.prepare_snapshot();
-        (
-            prepared.snapshot().stream().to_owned(),
-            prepared.snapshot().truncated(),
-        )
+        let observation = self.observe(TerminalActivity::default());
+        let pending = self.output.pending_response(&observation);
+        (self.output.stream(&observation), pending.truncated)
     }
 
     #[cfg(test)]
     pub(crate) fn rendered_output(&self) -> String {
-        self.prepare_snapshot().snapshot().text().to_owned()
+        self.pending_response(&self.observe(TerminalActivity::default()))
+            .output
     }
 
     #[cfg(test)]
-    pub(crate) fn commit_output(&mut self) {
-        let (_, commit) = self.prepare_snapshot().into_parts();
-        self.commit_snapshot(commit);
+    pub(crate) fn acknowledge_output(&mut self) {
+        let observation = self.observe(TerminalActivity::default());
+        let (_, _, delivery) = self.pending_response(&observation).into_parts();
+        self.acknowledge(delivery);
     }
 }
 
-impl PreparedTerminalSnapshot {
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> &TerminalSnapshot {
-        &self.snapshot
+impl TerminalActivity {
+    pub(crate) const fn new(displayed: bool, alternate_screen_activity: bool) -> Self {
+        Self {
+            displayed,
+            alternate_screen_activity,
+        }
     }
 
-    pub(crate) fn into_parts(self) -> (TerminalSnapshot, TerminalSnapshotCommit) {
-        (self.snapshot, self.commit)
+    pub(crate) fn displayed(self) -> bool {
+        self.displayed
+    }
+
+    pub(crate) fn alternate_screen_activity(self) -> bool {
+        self.alternate_screen_activity
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.displayed |= other.displayed;
+        self.alternate_screen_activity |= other.alternate_screen_activity;
+    }
+}
+
+impl TerminalObservation {
+    pub(crate) fn activity(&self) -> TerminalActivity {
+        self.activity
+    }
+
+    pub(crate) fn changed_since_checkpoint(&self) -> bool {
+        self.changed_since_checkpoint
+    }
+
+    pub(crate) fn rendered_rows(&self) -> &[String] {
+        &self.rendered_rows
+    }
+
+    pub(crate) fn stream_end_offset(&self) -> u64 {
+        self.stream_end_offset
+    }
+
+    pub(crate) fn stream_truncated(&self) -> bool {
+        self.stream_truncated
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_facts(
+        displayed: bool,
+        changed_since_checkpoint: bool,
+        alternate_screen_activity: bool,
+    ) -> Self {
+        Self {
+            activity: TerminalActivity::new(displayed, alternate_screen_activity),
+            changed_since_checkpoint,
+            stream_end_offset: 0,
+            stream_truncated: false,
+            rendered_rows: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_rendered_rows(rendered_rows: Vec<String>, stream_end_offset: u64) -> Self {
+        Self {
+            activity: TerminalActivity::default(),
+            changed_since_checkpoint: true,
+            stream_end_offset,
+            stream_truncated: false,
+            rendered_rows,
+        }
+    }
+}
+
+impl PendingTerminalResponse {
+    pub(crate) fn into_parts(self) -> (String, bool, TerminalDelivery) {
+        (self.output, self.truncated, self.delivery)
     }
 }
 
