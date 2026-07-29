@@ -52,35 +52,34 @@ pub struct ToolCallRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ToolCallOutput {
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub tool_ok: bool,
+    pub tool_error: Option<String>,
     pub value: serde_json::Value,
 }
 
 impl ToolCallOutput {
     pub fn success(value: serde_json::Value) -> Self {
         Self {
-            ok: true,
-            error: None,
+            tool_ok: true,
+            tool_error: None,
             value,
         }
     }
 
     pub fn failure(error: impl Into<String>, value: serde_json::Value) -> Self {
         Self {
-            ok: false,
-            error: Some(error.into()),
+            tool_ok: false,
+            tool_error: Some(error.into()),
             value,
         }
     }
 
-    pub fn is_ok(&self) -> bool {
-        self.ok
+    pub fn tool_ok(&self) -> bool {
+        self.tool_ok
     }
 
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+    pub fn tool_error(&self) -> Option<&str> {
+        self.tool_error.as_deref()
     }
 
     pub fn as_value(&self) -> &serde_json::Value {

@@ -4,11 +4,11 @@ use std::thread;
 
 use portable_pty::{Child, PtySize, native_pty_system};
 
-use super::platform;
 use super::terminal::{
     HeadlessTerminal, PendingTerminalResponse, TerminalActivity, TerminalDelivery,
     TerminalObservation,
 };
+use super::{platform, supervisor};
 
 pub(crate) struct PtySession {
     _master: Box<dyn portable_pty::MasterPty + Send>,
@@ -36,7 +36,7 @@ impl PtySession {
         platform::disable_pty_echo(&*pair.master).map_err(|error| error.to_string())?;
         #[cfg(unix)]
         let process_group_leader = pair.master.process_group_leader();
-        let builder = platform::build_shell_command(command);
+        let builder = supervisor::command(command);
         let child = pair
             .slave
             .spawn_command(builder)

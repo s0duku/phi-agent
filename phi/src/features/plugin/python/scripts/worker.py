@@ -49,7 +49,8 @@ def protect_plugin_io():
 def normalize_tool_output(value):
     return _json.dumps(
         {
-            "ok": True,
+            "tool_ok": True,
+            "tool_error": None,
             "value": value,
         },
         ensure_ascii=False,
@@ -116,8 +117,8 @@ def normalize_tool_exception(exc):
         payload["location"] = location
     return _json.dumps(
         {
-            "ok": False,
-            "error": message,
+            "tool_ok": False,
+            "tool_error": message,
             "value": payload,
         },
         ensure_ascii=False,

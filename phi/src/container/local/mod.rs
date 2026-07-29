@@ -8,6 +8,7 @@ pub(crate) mod protocol;
 mod pty;
 pub(crate) mod rpc;
 mod server;
+mod supervisor;
 pub(crate) mod terminal;
 
 use crate::container::job::{JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo};

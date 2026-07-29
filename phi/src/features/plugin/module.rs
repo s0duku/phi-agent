@@ -521,8 +521,8 @@ def badreturn():
             .expect("python tool should execute through executor");
 
         assert_eq!(response.name, "adder");
-        assert!(response.output.is_ok());
-        assert_eq!(response.output.error(), None);
+        assert!(response.output.tool_ok());
+        assert_eq!(response.output.tool_error(), None);
         assert_eq!(
             *response.output.as_value(),
             serde_json::json!({
@@ -567,8 +567,8 @@ def badreturn():
             .await
             .expect("python exception should still return a tool result");
 
-        assert!(!response.output.is_ok());
-        assert_eq!(response.output.error(), Some("bad name: alice"));
+        assert!(!response.output.tool_ok());
+        assert_eq!(response.output.tool_error(), Some("bad name: alice"));
         let payload = response.output.as_value();
         assert_eq!(payload["type"], serde_json::json!("ValueError"));
         assert_eq!(payload["message"], serde_json::json!("bad name: alice"));
@@ -623,9 +623,9 @@ def badreturn():
             .await
             .expect("non-serializable python output should still return a tool result");
 
-        assert!(!response.output.is_ok());
+        assert!(!response.output.tool_ok());
         assert!(
-            response.output.error().is_some_and(
+            response.output.tool_error().is_some_and(
                 |error| error.contains("Object of type object is not JSON serializable")
             )
         );

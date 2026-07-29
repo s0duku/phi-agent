@@ -41,7 +41,7 @@ pub fn sanitize_tool_call_output(
     mut output: ToolCallOutput,
     limits: ToolOutputLimits,
 ) -> ToolCallOutput {
-    if let Some(error) = output.error.as_mut() {
+    if let Some(error) = output.tool_error.as_mut() {
         *error = maybe_truncate_text(error, limits.output_threshold_tokens, limits.preview_bytes);
     }
     output.value = sanitize_json_string_leaves(
@@ -273,7 +273,7 @@ mod tests {
 
         assert!(
             sanitized
-                .error()
+                .tool_error()
                 .expect("error should remain present")
                 .contains("Warning: truncated output")
         );

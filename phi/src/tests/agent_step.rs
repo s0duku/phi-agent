@@ -1010,8 +1010,8 @@ async fn tool_step_commits_pending_assistant_then_tool_call_then_result() {
     };
     assert_eq!(id.as_deref(), Some("call_1"));
     assert_eq!(name.as_deref(), Some(shell_tool_name()));
-    assert_eq!(result["ok"], serde_json::json!(true));
-    assert_eq!(result["error"], serde_json::Value::Null);
+    assert_eq!(result["tool_ok"], serde_json::json!(true));
+    assert_eq!(result["tool_error"], serde_json::Value::Null);
     assert_eq!(
         result["value"]["output"],
         serde_json::json!(shell_stdout_ok())
@@ -1108,9 +1108,9 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
     };
     assert_eq!(id.as_deref(), Some("call_missing"));
     assert_eq!(name.as_deref(), Some("no_exist"));
-    assert_eq!(result["ok"], serde_json::json!(false));
+    assert_eq!(result["tool_ok"], serde_json::json!(false));
     assert_eq!(
-        result["error"],
+        result["tool_error"],
         serde_json::json!("assistant requested unknown tool: no_exist")
     );
     assert_eq!(result["value"]["kind"], serde_json::json!("tool_not_found"));
@@ -1121,7 +1121,7 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
         .clone();
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("structured tool_not_found result for no_exist"));
-    assert!(warnings[0].contains("\"ok\":false"));
+    assert!(warnings[0].contains("\"tool_ok\":false"));
     assert!(warnings[0].contains("\"kind\":\"tool_not_found\""));
     assert!(warnings[0].contains("\"tool_name\":\"no_exist\""));
     assert!(matches!(
@@ -1270,7 +1270,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     assert!(matches!(
         &history[3],
         PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. })
-            if id.as_deref() == Some("call_1") && result["ok"] == serde_json::json!(true)
+            if id.as_deref() == Some("call_1") && result["tool_ok"] == serde_json::json!(true)
     ));
     assert!(matches!(
         &history[4],
@@ -1279,7 +1279,8 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     assert!(matches!(
         &history[5],
         PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. })
-            if id.as_deref() == Some("call_missing") && result["ok"] == serde_json::json!(false)
+            if id.as_deref() == Some("call_missing")
+                && result["tool_ok"] == serde_json::json!(false)
     ));
     assert_eq!(history.len(), 6);
     assert!(matches!(

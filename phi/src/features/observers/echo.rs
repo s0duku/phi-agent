@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal, Write};
 
 use owo_colors::{OwoColorize, Stream, Style};
+use serde::Serialize;
 
 use crate::{
     error::{PhiRuntimeError, PhiRuntimeResult},
@@ -236,105 +237,20 @@ fn pretty_tool_call(name: &str, id: Option<&str>, arguments: &serde_json::Value)
 }
 
 fn pretty_tool_output(output: &ToolCallOutput) -> String {
-    let mut parts = Vec::new();
-    parts.push(format!("ok: {}", output.is_ok()));
-    if let Some(error) = output.error() {
-        parts.push(format!("error: {error}"));
-    }
-    parts.push(format!("value:\n{}", pretty_json_value(output.as_value())));
-    parts.join("\n")
+    pretty_json_value(
+        &serde_json::to_value(output).expect("ToolCallOutput must serialize as structured JSON"),
+    )
 }
 
 fn pretty_json_value(value: &serde_json::Value) -> String {
-    let Some(object) = value.as_object() else {
-        return serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-    };
-
-    let status = object
-        .get("status")
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    let timed_out = object
-        .get("timed_out")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let duration_ms = object
-        .get("duration_ms")
-        .and_then(serde_json::Value::as_u64);
-    let waited_ms = object.get("waited_ms").and_then(serde_json::Value::as_u64);
-    let stderr = object
-        .get("stderr")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let stdout = object
-        .get("stdout")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let output = object.get("output").and_then(serde_json::Value::as_str);
-    let exit_code = object.get("exit_code").and_then(serde_json::Value::as_i64);
-    let handle = object.get("handle").and_then(serde_json::Value::as_str);
-    let stdout_artifact = object.get("stdout_artifact");
-    let stderr_artifact = object.get("stderr_artifact");
-
-    if object.contains_key("status")
-        || object.contains_key("timed_out")
-        || object.contains_key("duration_ms")
-        || object.contains_key("waited_ms")
-        || object.contains_key("stdout")
-        || object.contains_key("stderr")
-        || object.contains_key("output")
-        || object.contains_key("exit_code")
-        || stdout_artifact.is_some()
-        || stderr_artifact.is_some()
-    {
-        let mut parts = vec![format!("status: {status}")];
-        if let Some(duration_ms) = duration_ms {
-            parts.push(format!("duration_ms: {duration_ms}"));
-        }
-        if let Some(waited_ms) = waited_ms {
-            parts.push(format!("waited_ms: {waited_ms}"));
-        }
-        if timed_out {
-            parts.push("timed_out: true".to_string());
-        }
-        if let Some(exit_code) = exit_code {
-            parts.push(format!("exit_code: {exit_code}"));
-        }
-        if let Some(handle) = handle {
-            parts.push(format!("handle: {handle}"));
-        }
-        if let Some(output) = output {
-            if output.trim().is_empty() {
-                parts.push(format!(
-                    "output: {}",
-                    serde_json::to_string(output).unwrap_or_else(|_| "\"\"".to_string())
-                ));
-            } else {
-                parts.push(format!("output:\n{}", output.trim_end()));
-            }
-        }
-        if !stdout.trim().is_empty() {
-            parts.push(format!("stdout:\n{}", stdout.trim_end()));
-        }
-        if !stderr.trim().is_empty() {
-            parts.push(format!("stderr:\n{}", stderr.trim_end()));
-        }
-        if let Some(artifact) = stdout_artifact {
-            parts.push(format!(
-                "stdout_artifact:\n{}",
-                serde_json::to_string_pretty(artifact).unwrap_or_else(|_| artifact.to_string())
-            ));
-        }
-        if let Some(artifact) = stderr_artifact {
-            parts.push(format!(
-                "stderr_artifact:\n{}",
-                serde_json::to_string_pretty(artifact).unwrap_or_else(|_| artifact.to_string())
-            ));
-        }
-        return parts.join("\n");
-    }
-
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
+    let mut bytes = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
+    value
+        .serialize(&mut serializer)
+        .ok()
+        .and_then(|()| String::from_utf8(bytes).ok())
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn style_header(role: &str, stream: Stream) -> String {
@@ -410,7 +326,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:call]\nbash #call_123\n{\n  \"command\": \"pwd\"\n}"
+            "\n[tool:call]\nbash #call_123\n{\n\t\"command\": \"pwd\"\n}"
         );
     }
 
@@ -424,7 +340,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:call]\njob_close #call_123\n{\n  \"handle\": \"mira-kest\"\n}"
+            "\n[tool:call]\njob_close #call_123\n{\n\t\"handle\": \"mira-kest\"\n}"
         );
         assert!(!rendered.contains("status: unknown"));
     }
@@ -447,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn condenses_shell_like_tool_results() {
+    fn renders_every_shell_tool_result_field() {
         let rendered = pretty_tool_result_event(
             "bash",
             "call_123",
@@ -462,12 +378,12 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash call_123\nok: true\nvalue:\nstatus: 0\nduration_ms: 12\nstdout:\nhello"
+            "\n[tool:result]\nbash call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"duration_ms\": 12,\n\t\t\"status\": 0,\n\t\t\"stderr\": \"\",\n\t\t\"stdout\": \"hello\\n\",\n\t\t\"timed_out\": false\n\t}\n}"
         );
     }
 
     #[test]
-    fn condenses_job_tool_results() {
+    fn renders_every_job_tool_result_field() {
         let rendered = pretty_tool_result_event(
             "bash_job",
             "call_123",
@@ -482,7 +398,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash_job call_123\nok: true\nvalue:\nstatus: \"running\"\nwaited_ms: 1500\nhandle: mira-kest\noutput:\nready"
+            "\n[tool:result]\nbash_job call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"exit_code\": null,\n\t\t\"handle\": \"mira-kest\",\n\t\t\"output\": \"ready\\r\\n\",\n\t\t\"status\": \"running\",\n\t\t\"waited_ms\": 1500\n\t}\n}"
         );
     }
 
@@ -501,7 +417,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\njob_interact call_123\nok: true\nvalue:\nstatus: \"running\"\nwaited_ms: 60000\nhandle: mira-kest\noutput: \"\""
+            "\n[tool:result]\njob_interact call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"handle\": \"mira-kest\",\n\t\t\"output\": \"\",\n\t\t\"status\": \"running\",\n\t\t\"waited_ms\": 60000\n\t}\n}"
         );
     }
 
@@ -557,7 +473,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&pretty_history(&history)),
-            "\n[user]\nhello\n\n[tool:call]\nbash #call_123\n{\n  \"command\": \"pwd\"\n}\n\n[tool:result]\nbash call_123\nok: true\nvalue:\nstatus: 0\nstdout:\nok\n\n[assistant]\ndone"
+            "\n[user]\nhello\n\n[tool:call]\nbash #call_123\n{\n\t\"command\": \"pwd\"\n}\n\n[tool:result]\nbash call_123\n{\n\t\"tool_error\": null,\n\t\"tool_ok\": true,\n\t\"value\": {\n\t\t\"status\": 0,\n\t\t\"stdout\": \"ok\\n\"\n\t}\n}\n\n[assistant]\ndone"
         );
     }
 }

@@ -100,7 +100,7 @@ impl PhiTool for ShellJobExecTool {
         .await;
 
         match result {
-            Ok((handle, info)) => response(request, self.name(), info, handle, false),
+            Ok((handle, info)) => response(request, self.name(), info, handle),
             Err(error) => failure(request, self.name(), error),
         }
     }
@@ -180,13 +180,7 @@ impl PhiTool for ShellJobInteractTool {
         };
 
         match result {
-            Ok(info) => response(
-                request,
-                self.name(),
-                info,
-                Some(JobHandle(handle_value)),
-                false,
-            ),
+            Ok(info) => response(request, self.name(), info, Some(JobHandle(handle_value))),
             Err(error) => failure(request, self.name(), error),
         }
     }
@@ -246,7 +240,7 @@ impl PhiTool for ShellJobCloseTool {
             <LocalShellJobContainer as JobContainer>::job_close(JobHandle(args.handle)).await;
 
         match result {
-            Ok(info) => response(request, self.name(), info, None, true),
+            Ok(info) => response(request, self.name(), info, None),
             Err(error) => failure(request, self.name(), error),
         }
     }
@@ -265,13 +259,12 @@ fn response(
     name: &str,
     info: JobInfo,
     handle: Option<JobHandle>,
-    closing: bool,
 ) -> ToolCallResponse {
     let (status, output, output_truncated, waited) = info.into_parts();
-    let (status_name, exit_code, running, exists) = match status {
-        JobStatus::Running => ("running", None, true, true),
-        JobStatus::Exited(code) => ("exited", Some(code), false, true),
-        JobStatus::NoExist => ("not_found", None, false, false),
+    let (status_name, exit_code, running) = match status {
+        JobStatus::Running => ("running", None, true),
+        JobStatus::Exited(code) => ("exited", Some(code), false),
+        JobStatus::NoExist => ("not_found", None, false),
     };
     let handle = if running {
         handle.map(|handle| handle.0)
@@ -287,17 +280,6 @@ fn response(
         "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
     });
 
-    if !exists {
-        return ToolCallResponse::failure(request, name, "job does not exist", value);
-    }
-    if let Some(code) = exit_code.filter(|code| !closing && *code != 0) {
-        return ToolCallResponse::failure(
-            request,
-            name,
-            format!("shell exited with status {code}"),
-            value,
-        );
-    }
     ToolCallResponse::success(request, name, value)
 }
 
@@ -363,10 +345,36 @@ mod tests {
             "job_interact",
             info,
             Some(JobHandle("mira-kest".into())),
-            false,
         );
 
         assert_eq!(response.output.as_value()["waited_ms"], 123);
         assert!(response.output.as_value().get("screen").is_none());
+    }
+
+    #[test]
+    fn job_status_does_not_define_phi_tool_success() {
+        let request = ToolCallRequest {
+            id: "call-1".into(),
+            call_id: None,
+            name: "bash_job".into(),
+            arguments: serde_json::json!({}),
+        };
+
+        for (status, expected_status, expected_exit_code) in [
+            (JobStatus::Exited(17), "exited", serde_json::json!(17)),
+            (JobStatus::NoExist, "not_found", serde_json::Value::Null),
+        ] {
+            let response = response(
+                &request,
+                "bash_job",
+                JobInfo::new(status, String::new(), false, Duration::ZERO),
+                None,
+            );
+
+            assert!(response.output.tool_ok());
+            assert_eq!(response.output.tool_error(), None);
+            assert_eq!(response.output.as_value()["status"], expected_status);
+            assert_eq!(response.output.as_value()["exit_code"], expected_exit_code);
+        }
     }
 }

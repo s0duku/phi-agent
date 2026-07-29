@@ -198,6 +198,65 @@ fn long_running_command() -> &'static str {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn nohup_process_survives_shell_exit_and_container_expiration() {
+    let marker = background_marker("nohup");
+    let command = format!(
+        "nohup sh -c 'sleep 0.4; printf survived > \"{}\"' >/dev/null 2>&1 &",
+        marker.display()
+    );
+
+    let (handle, info) = <LocalShellJobContainer as JobContainer>::job_exec(
+        &command,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
+    assert!(handle.is_none());
+    assert!(matches!(info.status(), JobStatus::Exited(0)));
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "survived");
+    std::fs::remove_file(marker).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn attached_background_process_ends_with_terminal_session() {
+    let marker = background_marker("attached");
+    let command = format!(
+        "sh -c 'sleep 0.4; printf escaped > \"{}\"' &",
+        marker.display()
+    );
+
+    let (handle, info) = <LocalShellJobContainer as JobContainer>::job_exec(
+        &command,
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    assert!(handle.is_none());
+    assert!(matches!(info.status(), JobStatus::Exited(0)));
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(!marker.exists());
+}
+
+#[cfg(unix)]
+fn background_marker(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "phi-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
     let (handle, initial) = <LocalShellJobContainer as JobContainer>::job_exec(
         "IFS= read -r value; if IFS= read -r -t 0.2 extra; then printf 'extra:%s' \"$extra\"; else printf 'received:%s' \"$value\"; fi",

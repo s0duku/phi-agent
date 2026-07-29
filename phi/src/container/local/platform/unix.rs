@@ -1,7 +1,5 @@
 use std::io;
 
-use portable_pty::CommandBuilder;
-
 pub(crate) fn disable_pty_echo(master: &dyn portable_pty::MasterPty) -> io::Result<()> {
     let fd = master
         .as_raw_fd()
@@ -16,14 +14,6 @@ pub(crate) fn disable_pty_echo(master: &dyn portable_pty::MasterPty) -> io::Resu
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-pub(crate) fn build_shell_command(command: &str) -> CommandBuilder {
-    let shell = choose_shell();
-    let mut builder = CommandBuilder::new(shell);
-    builder.arg("-c");
-    builder.arg(command);
-    builder
 }
 
 pub(crate) fn poll_process_status(process_id: Option<u32>) -> io::Result<Option<i8>> {
@@ -69,19 +59,4 @@ fn normalize_wait_status(status: libc::c_int) -> i8 {
     } else {
         -1
     }
-}
-
-fn choose_shell() -> String {
-    std::path::Path::new("/bin/bash")
-        .is_file()
-        .then(|| "/bin/bash".to_owned())
-        .or_else(|| {
-            std::env::var_os("PATH").and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|directory| directory.join("bash"))
-                    .find(|candidate| candidate.is_file())
-                    .map(|path| path.to_string_lossy().into_owned())
-            })
-        })
-        .unwrap_or_else(|| "/bin/sh".to_owned())
 }
