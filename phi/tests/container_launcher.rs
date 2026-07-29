@@ -28,17 +28,25 @@ fn detached_container_survives_its_launcher() {
             .args(["container", "write", "--wait-ms", "0", &handle])
             .output()
             .expect("container access should execute");
-        if output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.success() && stderr.contains("status=running") {
             break output;
         }
         assert!(
+            output.status.success() && stderr.contains("status=not-found"),
+            "unexpected container status while waiting for readiness: {stderr}"
+        );
+        assert!(
             Instant::now() < deadline,
-            "detached container did not become ready: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "detached container did not become ready: {stderr}"
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    assert!(String::from_utf8_lossy(&ready.stderr).contains("status=running"));
+    assert!(
+        String::from_utf8_lossy(&ready.stderr).contains("status=running"),
+        "detached container reported an unexpected ready status: {}",
+        String::from_utf8_lossy(&ready.stderr)
+    );
 
     let closed = Command::new(PHI)
         .args(["container", "close", &handle])

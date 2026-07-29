@@ -33,3 +33,6 @@ toml.workspace = true
 libc = "0.2"
 vt100 = "0.16"
 vte = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }

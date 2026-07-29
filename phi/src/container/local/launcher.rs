@@ -68,11 +68,37 @@ pub(super) fn launch_container(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(windows)]
+    prevent_standard_handle_inheritance()?;
     configure_detached_worker(&mut worker);
     worker
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("unable to launch detached phi container: {error}"))
+}
+
+#[cfg(windows)]
+fn prevent_standard_handle_inheritance() -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    for standard_handle in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        let handle = unsafe { GetStdHandle(standard_handle) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(format!(
+                "unable to detach inherited standard handle: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
