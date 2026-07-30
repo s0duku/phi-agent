@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use crate::{
     agent::PhiAgent,
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     home::LocalPhiHome,
     message::{PhiHistory, PhiMessage},
     render::{PhiModelResponse, PhiProviderCall, TestClient},
@@ -27,7 +27,7 @@ impl TestClient for CaptureProvider {
         &self,
         _request: &PhiProviderCall,
         messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         *self
             .seen_messages
             .lock()

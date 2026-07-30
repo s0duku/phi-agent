@@ -2,7 +2,7 @@ use minijinja::{Environment, context};
 use roxmltree::{Document, Node};
 
 use crate::{
-    error::{PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     home::PhiHome,
     message::{PhiAssistantMessage, PhiMessage, PhiReasoningContent},
 };
@@ -14,45 +14,50 @@ pub(super) fn render_template(
     template: Option<&str>,
     request: &PhiProviderCall,
     messages: &PhiRenderedMessages,
-) -> PhiRuntimeResult<PhiRenderedMessages> {
+) -> PhiAgentRuntimeResult<PhiRenderedMessages> {
     let Some(template) = template.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(messages.clone());
     };
 
     let history = messages.to_history();
-    let source = home.read_template(template)?;
+    let source = home
+        .read_template(template)
+        .map_err(|error| PhiAgentRuntimeError::home(error.to_string()))?;
     let mut environment = Environment::new();
     environment.add_template("phi", &source).map_err(|error| {
-        PhiRuntimeError::session(format!("failed to load template {template}: {error}"))
+        PhiAgentRuntimeError::session(format!("failed to load template {template}: {error}"))
     })?;
     let rendered = environment
         .get_template("phi")
         .map_err(|error| {
-            PhiRuntimeError::session(format!("failed to resolve template {template}: {error}"))
+            PhiAgentRuntimeError::session(format!("failed to resolve template {template}: {error}"))
         })?
         .render(context! {
             messages => history,
             request => request,
         })
         .map_err(|error| {
-            PhiRuntimeError::session(format!("failed to render template {template}: {error}"))
+            PhiAgentRuntimeError::session(format!("failed to render template {template}: {error}"))
         })?;
 
     parse_rendered_messages(template, &rendered)
         .map(|messages| PhiRenderedMessages::from_history(messages.into()))
 }
 
-fn parse_rendered_messages(template: &str, rendered: &str) -> PhiRuntimeResult<Vec<PhiMessage>> {
+fn parse_rendered_messages(
+    template: &str,
+    rendered: &str,
+) -> PhiAgentRuntimeResult<Vec<PhiMessage>> {
     let rendered = rendered.trim();
     if rendered.is_empty() {
-        return Err(PhiRuntimeError::session(format!(
+        return Err(PhiAgentRuntimeError::session(format!(
             "template {template} rendered an empty message payload"
         )));
     }
 
     parse_phi_dsl_messages(template, rendered).or_else(|dsl_error| {
         parse_json_messages(template, rendered).map_err(|json_error| {
-            PhiRuntimeError::session(format!(
+            PhiAgentRuntimeError::session(format!(
                 "template {template} must render Phi DSL or PhiMessage JSON; dsl error: {}; json error: {}",
                 dsl_error.detail(),
                 json_error.detail(),
@@ -61,10 +66,13 @@ fn parse_rendered_messages(template: &str, rendered: &str) -> PhiRuntimeResult<V
     })
 }
 
-fn parse_phi_dsl_messages(template: &str, rendered: &str) -> PhiRuntimeResult<Vec<PhiMessage>> {
+fn parse_phi_dsl_messages(
+    template: &str,
+    rendered: &str,
+) -> PhiAgentRuntimeResult<Vec<PhiMessage>> {
     let wrapped = format!("<phi>{rendered}</phi>");
     let document = Document::parse(&wrapped).map_err(|error| {
-        PhiRuntimeError::session(format!(
+        PhiAgentRuntimeError::session(format!(
             "template {template} produced invalid phi dsl/xml: {error}"
         ))
     })?;
@@ -76,7 +84,7 @@ fn parse_phi_dsl_messages(template: &str, rendered: &str) -> PhiRuntimeResult<Ve
     }
 
     if messages.is_empty() {
-        return Err(PhiRuntimeError::session(format!(
+        return Err(PhiAgentRuntimeError::session(format!(
             "template {template} did not produce any phi dsl message tags"
         )));
     }
@@ -84,7 +92,7 @@ fn parse_phi_dsl_messages(template: &str, rendered: &str) -> PhiRuntimeResult<Ve
     Ok(messages)
 }
 
-fn parse_phi_dsl_message(template: &str, node: Node<'_, '_>) -> PhiRuntimeResult<PhiMessage> {
+fn parse_phi_dsl_message(template: &str, node: Node<'_, '_>) -> PhiAgentRuntimeResult<PhiMessage> {
     let body = collect_node_text(node);
     match node.tag_name().name() {
         "system" => Ok(PhiMessage::system(body)),
@@ -113,7 +121,7 @@ fn parse_phi_dsl_message(template: &str, node: Node<'_, '_>) -> PhiRuntimeResult
                 result,
             ))
         }
-        other => Err(PhiRuntimeError::session(format!(
+        other => Err(PhiAgentRuntimeError::session(format!(
             "template {template} produced unsupported phi dsl tag <{other}>"
         ))),
     }
@@ -136,20 +144,20 @@ fn parse_json_body(
     node: Node<'_, '_>,
     body: &str,
     label: &str,
-) -> PhiRuntimeResult<serde_json::Value> {
+) -> PhiAgentRuntimeResult<serde_json::Value> {
     serde_json::from_str(body.trim()).map_err(|error| {
-        PhiRuntimeError::session(format!(
+        PhiAgentRuntimeError::session(format!(
             "template {template} tag <{}> must contain valid JSON for {label}: {error}",
             node.tag_name().name()
         ))
     })
 }
 
-fn parse_json_messages(template: &str, rendered: &str) -> PhiRuntimeResult<Vec<PhiMessage>> {
+fn parse_json_messages(template: &str, rendered: &str) -> PhiAgentRuntimeResult<Vec<PhiMessage>> {
     serde_json::from_str::<Vec<PhiMessage>>(rendered)
         .or_else(|_| serde_json::from_str::<PhiMessage>(rendered).map(|message| vec![message]))
         .map_err(|error| {
-            PhiRuntimeError::session(format!(
+            PhiAgentRuntimeError::session(format!(
                 "template {template} must render PhiMessage JSON or a JSON array of PhiMessage values: {error}"
             ))
         })
@@ -170,10 +178,10 @@ fn optional_attr(node: Node<'_, '_>, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn required_attr(node: Node<'_, '_>, name: &str) -> PhiRuntimeResult<Option<String>> {
+fn required_attr(node: Node<'_, '_>, name: &str) -> PhiAgentRuntimeResult<Option<String>> {
     let value = optional_attr(node, name);
     if value.is_none() {
-        return Err(PhiRuntimeError::session(format!(
+        return Err(PhiAgentRuntimeError::session(format!(
             "phi dsl tag <{}> requires attribute {name}",
             node.tag_name().name()
         )));

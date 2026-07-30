@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     config::{ModelRequestDefaults, ProviderConfig, ReasoningEffort},
-    error::{PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::PhiToolDefinition,
     message::PhiMessage,
 };
@@ -77,15 +77,18 @@ pub(in crate::render) trait PhiProvider: Send + Sync {
     type ProviderMessage: Clone + Send + Sync + Serialize + DeserializeOwned;
     type ProviderTool: Clone + Send + Sync + Serialize;
 
+    // Provider conversion and requests run inside agent evaluation. Their
+    // failures intentionally use PhiAgentRuntimeResult so retry/recovery policy
+    // can persist and classify the failed provider step.
     fn provider_messages(
         &self,
         messages: &PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<Self::ProviderMessage>>;
+    ) -> PhiAgentRuntimeResult<Vec<Self::ProviderMessage>>;
 
     fn phi_messages(
         &self,
         response: Vec<Self::ProviderMessage>,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>>;
+    ) -> PhiAgentRuntimeResult<Vec<PhiMessage>>;
 
     fn provider_tool(&self, tool: &PhiToolDefinition) -> Self::ProviderTool;
 
@@ -93,7 +96,7 @@ pub(in crate::render) trait PhiProvider: Send + Sync {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiRuntimeResult<PhiModelResponse>;
+    ) -> PhiAgentRuntimeResult<PhiModelResponse>;
 }
 
 #[async_trait]
@@ -102,7 +105,7 @@ pub(in crate::render) trait DynProvider: Send + Sync {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<PhiModelResponse>;
+    ) -> PhiAgentRuntimeResult<PhiModelResponse>;
 }
 
 #[async_trait]
@@ -114,14 +117,14 @@ where
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         PhiProvider::complete(self, request, &messages).await
     }
 }
 
 pub(in crate::render) fn build_provider(
     config: ProviderConfig,
-) -> PhiRuntimeResult<Box<dyn DynProvider>> {
+) -> PhiAgentRuntimeResult<Box<dyn DynProvider>> {
     if config.provider.trim() != "fake" && config.api_key.trim().is_empty() {
         eprintln!(
             "phi provider: PHI_KEY is not configured; model requests will likely fail until an API key is set"
@@ -132,7 +135,7 @@ pub(in crate::render) fn build_provider(
         "fake" => Ok(Box::new(FakeClient::new(config)?)),
         "openai_chat" => Ok(Box::new(OpenAiCompatClient::new(config))),
         "openai_response" => Ok(Box::new(ResponsesClient::new(config))),
-        other => Err(PhiRuntimeError::provider_request(format!(
+        other => Err(PhiAgentRuntimeError::provider_request(format!(
             "unsupported provider: {other}"
         ))),
     }

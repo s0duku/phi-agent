@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    error::{PhiErrorKind, PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     home::LocalPhiHome,
     message::{
@@ -36,6 +36,20 @@ struct CaptureWarningsModule {
 }
 struct RewriteArgumentsInsideTool;
 struct RegisterRewriteArgumentsToolModule;
+struct RegisterStructuredFailureToolModule;
+struct StructuredFailureTool;
+
+#[derive(serde::Serialize)]
+struct TestStructuredError {
+    code: u16,
+    reason: &'static str,
+}
+
+impl crate::error::PhiStructureError for TestStructuredError {
+    fn into_value(self: Box<Self>) -> serde_json::Value {
+        serde_json::to_value(*self).unwrap()
+    }
+}
 struct CaptureRequestToolsProvider {
     request: Arc<Mutex<Option<PhiProviderCall>>>,
     response: Vec<PhiMessage>,
@@ -47,7 +61,7 @@ struct ModelResponseProvider {
 impl PhiModule for RewriteToolCallModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::BeforeToolCall { request, .. } = event {
             request.arguments = serde_json::json!({ "cmd": shell_echo_rewritten_command() });
         }
@@ -58,10 +72,11 @@ impl PhiModule for RewriteToolCallModule {
 impl PhiModule for RejectAfterModelResponseModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterModelResponse { .. } = event {
-            return Err(PhiRuntimeError::module("module rejected model response")
-                .with_source_step("request_provider"));
+            return Err(PhiAgentRuntimeError::module(
+                "module rejected model response",
+            ));
         }
         Ok(())
     }
@@ -70,10 +85,9 @@ impl PhiModule for RejectAfterModelResponseModule {
 impl PhiModule for RejectAfterToolCallModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterToolCall { .. } = event {
-            return Err(PhiRuntimeError::module("module rejected tool result")
-                .with_source_step("step_tool"));
+            return Err(PhiAgentRuntimeError::module("module rejected tool result"));
         }
         Ok(())
     }
@@ -82,7 +96,7 @@ impl PhiModule for RejectAfterToolCallModule {
 impl PhiModule for RewriteAllAssistantMessagesModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let PhiAgentStepEvent::AfterModelResponse { message, .. } = event else {
             return Ok(());
         };
@@ -106,7 +120,7 @@ impl PhiModule for RewriteAllAssistantMessagesModule {
 impl PhiModule for CaptureModelRequestModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let PhiAgentStepEvent::BeforeModelRequest {
             history, request, ..
         } = event
@@ -131,7 +145,7 @@ impl PhiModule for CaptureModelRequestModule {
 impl PhiModule for CaptureEchoEventsModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let label = match event {
             PhiAgentStepEvent::AfterModelResponseParsed { messages } => {
                 format!("messages:{}", messages.len())
@@ -178,6 +192,43 @@ impl PhiModule for RegisterRewriteArgumentsToolModule {
     }
 }
 
+impl PhiModule for RegisterStructuredFailureToolModule {
+    type ProbInfo = ();
+
+    fn module_tools(
+        &mut self,
+        _context: &crate::agent::PhiAgentBuildContext,
+    ) -> Vec<Arc<dyn PhiTool>> {
+        vec![Arc::new(StructuredFailureTool)]
+    }
+}
+
+#[async_trait]
+impl PhiTool for StructuredFailureTool {
+    fn name(&self) -> &str {
+        "structured_failure"
+    }
+
+    fn description(&self) -> &str {
+        "Return a structured test failure."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "additionalProperties": false})
+    }
+
+    async fn call(
+        &self,
+        _request: &mut ToolCallRequest,
+        _runtime: &crate::agent::PhiAgentRuntime,
+    ) -> crate::executor::PhiToolResult {
+        Err(Box::new(TestStructuredError {
+            code: 73,
+            reason: "terminal unavailable",
+        }))
+    }
+}
+
 #[async_trait]
 impl PhiTool for RewriteArgumentsInsideTool {
     fn name(&self) -> &str {
@@ -203,9 +254,13 @@ impl PhiTool for RewriteArgumentsInsideTool {
         &self,
         request: &mut ToolCallRequest,
         _runtime: &crate::agent::PhiAgentRuntime,
-    ) -> ToolCallResponse {
+    ) -> crate::executor::PhiToolResult {
         request.arguments = serde_json::json!({ "value": "rewritten-inside-tool" });
-        ToolCallResponse::new(request, self.name(), serde_json::json!({ "ok": true }))
+        Ok(ToolCallResponse::new(
+            request,
+            self.name(),
+            serde_json::json!({ "ok": true }),
+        ))
     }
 }
 
@@ -217,7 +272,7 @@ impl TestClient for CaptureRequestToolsProvider {
         &self,
         request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         *self
             .request
             .lock()
@@ -232,7 +287,7 @@ impl TestClient for EmptyProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         Ok(PhiModelResponse::unspecified(Vec::new()))
     }
 }
@@ -243,7 +298,7 @@ impl TestClient for ModelResponseProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         Ok(self.response.clone())
     }
 }
@@ -475,7 +530,9 @@ async fn request_compact_failure_enters_failed_step_and_preserves_history() {
 
     let render = crate::render::PhiRender::from_test_client(Arc::new(EmptyProvider))
         .with_compact_override(Arc::new(|_history| {
-            Err(crate::error::PhiRuntimeError::internal("compact exploded"))
+            Err(crate::error::PhiAgentRuntimeError::request_compact(
+                "compact exploded",
+            ))
         }));
 
     let outcome = step_agent_builder(session)
@@ -489,9 +546,8 @@ async fn request_compact_failure_enters_failed_step_and_preserves_history() {
     assert!(matches!(
         outcome.session.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::RequestCompact
+        if matches!(error, PhiAgentRuntimeError::RequestCompact { .. })
             && error.detail() == "compact exploded"
-            && error.source_step() == Some("step_request_compact")
     ));
 }
 
@@ -560,7 +616,7 @@ async fn after_model_rejection_does_not_commit_partial_model_history() {
     assert!(matches!(
         outcome.session.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::Module
+        if matches!(error, PhiAgentRuntimeError::Module { .. })
             && error.detail() == "module rejected model response"
     ));
 }
@@ -602,7 +658,7 @@ async fn after_model_response_rewrites_are_committed_for_all_assistant_messages(
 #[tokio::test]
 async fn failed_step_without_default_module_stays_failed() {
     let session = Session::from_root(
-        PhiAgentStep::failed(PhiRuntimeError::internal("failed")),
+        PhiAgentStep::failed(PhiAgentRuntimeError::module("failed")),
         vec![PhiMessage::user("hello")],
     );
 
@@ -628,8 +684,7 @@ async fn failed_step_without_default_module_stays_failed() {
 
     assert!(matches!(
         resumed.session.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
-        if detail == "resuming from failed step"
+        PhiAgentStep::Failed { .. }
     ));
 }
 
@@ -969,7 +1024,7 @@ async fn after_tool_call_rejection_does_not_commit_half_finished_tool_history() 
     assert!(matches!(
         outcome.session.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::Module
+        if matches!(error, PhiAgentRuntimeError::Module { .. })
             && error.detail() == "module rejected tool result"
     ));
 }
@@ -1049,10 +1104,66 @@ async fn unknown_tool_fails_without_recovery_module() {
     assert!(matches!(
         outcome.session.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::ToolNotFound
+        if matches!(error, PhiAgentRuntimeError::ToolNotFound { .. })
             && error.tool_request().is_some_and(|request| request.name == "no_exist")
             && error.pending_messages().is_some_and(|messages| messages == [PhiMessage::assistant("trying custom tool")].as_slice())
     ));
+}
+
+#[tokio::test]
+async fn structured_tool_error_bubbles_to_failed_and_default_recovery_commits_it() {
+    let request = ToolCallRequest {
+        id: "call_failed".to_string(),
+        call_id: Some("call_failed".to_string()),
+        name: "structured_failure".to_string(),
+        arguments: serde_json::json!({}),
+    };
+    let session = Session::from_root(
+        PhiAgentStep::request_executor(
+            "tool execution is pending",
+            vec![PhiMessage::assistant("trying structured failure")],
+            vec![request],
+        ),
+        vec![PhiMessage::user("run failing tool")],
+    );
+
+    let failed = step_agent_builder(session)
+        .with_client(Arc::new(EmptyProvider))
+        .with_module(RegisterStructuredFailureToolModule)
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await
+        .session;
+
+    assert!(matches!(
+        failed.step(),
+        PhiAgentStep::Failed { error }
+            if matches!(error, PhiAgentRuntimeError::ToolError { .. })
+                && error.tool_error_detail() == Some(&serde_json::json!({
+                    "code": 73,
+                    "reason": "terminal unavailable"
+                }))
+    ));
+
+    let outcome = default_step_agent_builder(failed)
+        .with_client(Arc::new(EmptyProvider))
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await;
+    let history = outcome.session.history();
+    let result = history
+        .iter()
+        .find_map(|message| match message {
+            PhiMessage::Tool(PhiToolMessage::ToolResult { result, .. }) => Some(result),
+            _ => None,
+        })
+        .expect("recovery should commit a tool result");
+    assert_eq!(
+        result,
+        &serde_json::json!({"code": 73, "reason": "terminal unavailable"})
+    );
 }
 
 #[tokio::test]
@@ -1113,7 +1224,7 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
         .expect("warning mutex should not be poisoned")
         .clone();
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("structured tool_not_found result for no_exist"));
+    assert!(warnings[0].contains("structured result for no_exist"));
     assert!(warnings[0].contains("\"kind\":\"tool_not_found\""));
     assert!(warnings[0].contains("\"tool_name\":\"no_exist\""));
     assert!(matches!(
@@ -1240,7 +1351,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     assert!(matches!(
         failed.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::ToolNotFound
+        if matches!(error, PhiAgentRuntimeError::ToolNotFound { .. })
             && error.remaining_tool_requests().is_some_and(|requests| requests.len() == 1)
     ));
 
@@ -1283,7 +1394,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
 }
 
 #[tokio::test]
-async fn failed_tool_step_resumes_from_clean_history_on_next_step() {
+async fn failed_tool_step_rolls_back_to_original_request() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
@@ -1298,6 +1409,7 @@ async fn failed_tool_step_resumes_from_clean_history_on_next_step() {
         vec![PhiMessage::user("hello")],
     );
 
+    let original = serde_json::to_value(&session).expect("session should serialize");
     let failed = step_agent_builder(session)
         .with_client(Arc::new(EmptyProvider))
         .with_module(RejectAfterToolCallModule)
@@ -1318,10 +1430,13 @@ async fn failed_tool_step_resumes_from_clean_history_on_next_step() {
         .await
         .session;
 
+    assert_eq!(
+        serde_json::to_value(&resumed).expect("session should serialize"),
+        original
+    );
     assert_eq!(resumed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
-        if detail == "resuming from failed step"
+        PhiAgentStep::RequestExecutor { .. }
     ));
 }

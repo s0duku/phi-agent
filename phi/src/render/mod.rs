@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::{
     config::ProviderConfig,
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     home::PhiHome,
     message::{PhiHistory, PhiMessage},
 };
@@ -45,7 +45,7 @@ pub(crate) struct PhiRender {
     provider: Arc<dyn DynProvider>,
     #[cfg(test)]
     compact_override:
-        Option<Arc<dyn Fn(&PhiHistory) -> PhiRuntimeResult<PhiHistory> + Send + Sync>>,
+        Option<Arc<dyn Fn(&PhiHistory) -> PhiAgentRuntimeResult<PhiHistory> + Send + Sync>>,
 }
 
 impl PhiRender {
@@ -63,7 +63,7 @@ impl PhiRender {
         template: Option<&str>,
         request: &PhiProviderCall,
         history: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         let rendered_messages = self.render_messages(history);
         let rendered_messages =
             template::render_template(home, template, request, &rendered_messages)?;
@@ -76,7 +76,7 @@ impl PhiRender {
         template: Option<&str>,
         request: &PhiProviderCall,
         history: &PhiHistory,
-    ) -> PhiRuntimeResult<usize> {
+    ) -> PhiAgentRuntimeResult<usize> {
         let rendered_messages = self.render_messages(history);
         let rendered_messages =
             template::render_template(home, template, request, &rendered_messages)?;
@@ -91,7 +91,7 @@ impl PhiRender {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         self.provider.complete(request, messages).await
     }
 
@@ -99,7 +99,7 @@ impl PhiRender {
         &self,
         request: PhiProviderCall,
         history: PhiHistory,
-    ) -> PhiRuntimeResult<PhiHistory> {
+    ) -> PhiAgentRuntimeResult<PhiHistory> {
         #[cfg(test)]
         if let Some(compact_override) = &self.compact_override {
             return compact_override(&history);
@@ -109,7 +109,7 @@ impl PhiRender {
     }
 }
 
-pub(crate) fn build(config: ProviderConfig) -> PhiRuntimeResult<PhiRender> {
+pub(crate) fn build(config: ProviderConfig) -> PhiAgentRuntimeResult<PhiRender> {
     Ok(PhiRender::new(Arc::from(provider::build_provider(config)?)))
 }
 
@@ -120,7 +120,7 @@ pub(crate) trait TestClient: Send + Sync {
         &self,
         request: &PhiProviderCall,
         messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse>;
+    ) -> PhiAgentRuntimeResult<PhiModelResponse>;
 }
 
 #[cfg(test)]
@@ -135,7 +135,7 @@ impl DynProvider for TestClientAdapter {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         self.client.complete(request, &messages.to_history()).await
     }
 }
@@ -149,7 +149,9 @@ impl PhiRender {
     #[cfg(test)]
     pub(crate) fn with_compact_override(
         mut self,
-        compact_override: Arc<dyn Fn(&PhiHistory) -> PhiRuntimeResult<PhiHistory> + Send + Sync>,
+        compact_override: Arc<
+            dyn Fn(&PhiHistory) -> PhiAgentRuntimeResult<PhiHistory> + Send + Sync,
+        >,
     ) -> Self {
         self.compact_override = Some(compact_override);
         self

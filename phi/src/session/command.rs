@@ -19,6 +19,11 @@ pub struct SessionArgs {
 #[derive(Subcommand)]
 pub enum SessionCommand {
     #[command(
+        about = "Create a new empty session file without overwriting an existing path",
+        before_help = banner::startup_banner()
+    )]
+    New(SessionNewArgs),
+    #[command(
         about = "Print a session's committed history as an echo-style transcript",
         before_help = banner::startup_banner()
     )]
@@ -28,6 +33,12 @@ pub enum SessionCommand {
         before_help = banner::startup_banner()
     )]
     Delete(SessionDeleteArgs),
+}
+
+#[derive(Args)]
+pub struct SessionNewArgs {
+    #[arg(value_name = "SESSION")]
+    pub file: PathBuf,
 }
 
 #[derive(Args)]
@@ -43,9 +54,14 @@ pub struct SessionDeleteArgs {
 
 pub async fn run(args: SessionArgs) -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
+        SessionCommand::New(args) => new(args),
         SessionCommand::History(args) => history(args),
         SessionCommand::Delete(args) => delete(args).await,
     }
+}
+
+fn new(args: SessionNewArgs) -> Result<(), Box<dyn std::error::Error>> {
+    Session::empty().create(args.file)
 }
 
 fn history(args: SessionHistoryArgs) -> Result<(), Box<dyn std::error::Error>> {

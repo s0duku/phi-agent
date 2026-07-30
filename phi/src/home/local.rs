@@ -3,10 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::error::PhiRuntimeError;
-
 use super::{
-    PhiHome, PhiHomeDoctorReport, PhiHomeEntry, PhiHomePath, PhiHomeUrl,
+    PhiHome, PhiHomeDoctorReport, PhiHomeEntry, PhiHomeError, PhiHomePath, PhiHomeResult,
+    PhiHomeUrl,
     spec::{self, path_from_relative_file},
 };
 
@@ -80,10 +79,10 @@ impl PhiHome for LocalPhiHome {
         }
     }
 
-    fn read_file(&self, source: &PhiHomeUrl) -> crate::error::PhiRuntimeResult<Vec<u8>> {
+    fn read_file(&self, source: &PhiHomeUrl) -> PhiHomeResult<Vec<u8>> {
         let path = url_to_path(source)?;
         fs::read(&path).map_err(|error| {
-            PhiRuntimeError::tool_execution(format!(
+            PhiHomeError::read(format!(
                 "failed to read phi home file {}: {error}",
                 path.display()
             ))
@@ -196,9 +195,9 @@ fn is_managed_home_path(path: &PhiHomePath) -> bool {
         || path.as_str().starts_with("/templates/")
 }
 
-fn url_to_path(url: &PhiHomeUrl) -> crate::error::PhiRuntimeResult<PathBuf> {
+fn url_to_path(url: &PhiHomeUrl) -> PhiHomeResult<PathBuf> {
     if url.scheme() != "file" {
-        return Err(PhiRuntimeError::tool_execution(format!(
+        return Err(PhiHomeError::read(format!(
             "local phi home only supports file urls, got {}",
             url.scheme()
         )));

@@ -1,7 +1,7 @@
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     message::PhiMessage,
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
 };
@@ -19,7 +19,7 @@ impl ChannelModule {
 impl PhiModule for ChannelModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let _ = event;
         Ok(())
     }

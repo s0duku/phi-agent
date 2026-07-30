@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::{
     agent::{PhiAgent, PhiAgentCommand},
     config::{ModelRequestDefaults, ReasoningEffort},
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     home::LocalPhiHome,
     message::{PhiHistory, PhiMessage},
     render::{PhiModelResponse, PhiProviderCall, TestClient},
@@ -36,7 +36,7 @@ impl TestClient for StubProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         Ok(PhiModelResponse::unspecified(self.response.clone()))
     }
 }

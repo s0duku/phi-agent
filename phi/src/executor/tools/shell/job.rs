@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     agent::PhiAgentRuntime,
-    executor::{PhiTool, ToolCallRequest, ToolCallResponse},
+    executor::{PhiTool, PhiToolResult, ToolCallRequest, ToolCallResponse},
     headlessterm::{
         DEFAULT_TRY_WAIT, HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo,
         JobStatus, ReturnWhen, TerminalCommand,
@@ -84,13 +84,13 @@ impl PhiTool for ShellJobExecTool {
         &self,
         request: &mut ToolCallRequest,
         runtime: &PhiAgentRuntime,
-    ) -> ToolCallResponse {
+    ) -> PhiToolResult {
         let args = match parse_args::<ExecArgs>(request, self.name()) {
             Ok(args) => args,
-            Err(error) => return failure(request, self.name(), error),
+            Err(error) => return Ok(failure(request, self.name(), error)),
         };
         if let Err(error) = prepare_local_jobs() {
-            return failure(request, self.name(), error);
+            return Ok(failure(request, self.name(), error));
         }
         let terminal = HeadlessTerminal::new();
         let command = runtime
@@ -108,8 +108,8 @@ impl PhiTool for ShellJobExecTool {
             .await;
 
         match result {
-            Ok((handle, info)) => response(request, self.name(), info, handle),
-            Err(error) => headlessterm_failure(request, self.name(), error),
+            Ok((handle, info)) => Ok(response(request, self.name(), info, handle)),
+            Err(error) => Err(Box::new(error)),
         }
     }
 }
@@ -152,13 +152,13 @@ impl PhiTool for ShellJobInteractTool {
         &self,
         request: &mut ToolCallRequest,
         _runtime: &PhiAgentRuntime,
-    ) -> ToolCallResponse {
+    ) -> PhiToolResult {
         let args = match parse_args::<InteractArgs>(request, self.name()) {
             Ok(args) => args,
-            Err(error) => return failure(request, self.name(), error),
+            Err(error) => return Ok(failure(request, self.name(), error)),
         };
         if let Err(error) = prepare_local_jobs() {
-            return failure(request, self.name(), error);
+            return Ok(failure(request, self.name(), error));
         }
         let handle_value = args.handle.clone();
         let handle = JobHandle(args.handle);
@@ -173,13 +173,13 @@ impl PhiTool for ShellJobInteractTool {
                 match written {
                     Ok(JobAccessResult::Written(_)) => {}
                     Ok(JobAccessResult::Interacted(_)) => {
-                        return failure(
+                        return Ok(failure(
                             request,
                             self.name(),
                             "job access returned a terminal snapshot for write request".into(),
-                        );
+                        ));
                     }
-                    Err(error) => return headlessterm_failure(request, self.name(), error),
+                    Err(error) => return Err(Box::new(error)),
                 }
                 tokio::time::sleep(SUBMIT_KEY_DELAY).await;
                 interact(handle, "\r".into(), wait).await
@@ -187,8 +187,13 @@ impl PhiTool for ShellJobInteractTool {
         };
 
         match result {
-            Ok(info) => response(request, self.name(), info, Some(JobHandle(handle_value))),
-            Err(error) => headlessterm_failure(request, self.name(), error),
+            Ok(info) => Ok(response(
+                request,
+                self.name(),
+                info,
+                Some(JobHandle(handle_value)),
+            )),
+            Err(error) => Err(Box::new(error)),
         }
     }
 }
@@ -244,21 +249,21 @@ impl PhiTool for ShellJobCloseTool {
         &self,
         request: &mut ToolCallRequest,
         _runtime: &PhiAgentRuntime,
-    ) -> ToolCallResponse {
+    ) -> PhiToolResult {
         let args = match parse_args::<CloseArgs>(request, self.name()) {
             Ok(args) => args,
-            Err(error) => return failure(request, self.name(), error),
+            Err(error) => return Ok(failure(request, self.name(), error)),
         };
         if let Err(error) = prepare_local_jobs() {
-            return failure(request, self.name(), error);
+            return Ok(failure(request, self.name(), error));
         }
         let result = HeadlessTerminal::new()
             .close_job(JobHandle(args.handle))
             .await;
 
         match result {
-            Ok(info) => response(request, self.name(), info, None),
-            Err(error) => headlessterm_failure(request, self.name(), error),
+            Ok(info) => Ok(response(request, self.name(), info, None)),
+            Err(error) => Err(Box::new(error)),
         }
     }
 }
@@ -302,18 +307,6 @@ fn response(
 
 fn failure(request: &ToolCallRequest, name: &str, error: String) -> ToolCallResponse {
     ToolCallResponse::new(request, name, serde_json::json!({"error": error}))
-}
-
-fn headlessterm_failure(
-    request: &ToolCallRequest,
-    name: &str,
-    error: crate::headlessterm::HeadlessTermError,
-) -> ToolCallResponse {
-    ToolCallResponse::new(
-        request,
-        name,
-        serde_json::to_value(error).expect("HeadlessTermError should serialize"),
-    )
 }
 
 pub(crate) fn interactive_input(input: Option<String>) -> InteractiveInput {

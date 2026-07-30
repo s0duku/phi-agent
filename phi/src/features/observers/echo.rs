@@ -3,7 +3,7 @@ use std::io::{self, IsTerminal, Write};
 use owo_colors::{OwoColorize, Stream, Style};
 
 use crate::{
-    error::{PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallOutput,
     message::{
         PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolMessage,
@@ -55,7 +55,7 @@ impl Drop for EchoModule {
 impl PhiModule for EchoModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         match event {
             PhiAgentStepEvent::AfterModelResponseParsed { messages } => {
                 for message in messages.iter() {
@@ -119,11 +119,11 @@ fn pretty_info_for_stream(message: &str, stream: Stream) -> String {
     )
 }
 
-fn pretty_runtime_error(error: &PhiRuntimeError) -> String {
+fn pretty_runtime_error(error: &PhiAgentRuntimeError) -> String {
     pretty_runtime_error_for_stream(error, Stream::Stderr)
 }
 
-fn pretty_runtime_error_for_stream(error: &PhiRuntimeError, stream: Stream) -> String {
+fn pretty_runtime_error_for_stream(error: &PhiAgentRuntimeError, stream: Stream) -> String {
     format!(
         "\n{}\n{}",
         style_header("error", stream),
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn formats_runtime_error_as_red_transcript_block_without_color_codes() {
-        let rendered = pretty_runtime_error(&PhiRuntimeError::tool_not_found(
+        let rendered = pretty_runtime_error(&PhiAgentRuntimeError::tool_not_found(
             "assistant requested unknown tool: no_exist",
             crate::executor::ToolCallRequest {
                 id: "call_missing".to_string(),

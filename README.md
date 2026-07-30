@@ -79,7 +79,7 @@ echo "follow up" | phi run work.session
 
 In file-backed mode:
 
-- the file is loaded if it exists, otherwise Phi starts from an empty session
+- the file must already exist; create it explicitly with `phi session new SESSION`
 - the updated session is written back to the same file
 - stdin is treated as plain user text, not session JSON
 
@@ -92,6 +92,7 @@ Main commands:
 - `phi yolo [SESSION]`
 - `phi probe [SESSION]`
 - `phi doctor`
+- `phi session new [SESSION]`
 - `phi session history [SESSION]`
 - `phi home new|pack|unpack`
 
@@ -103,6 +104,7 @@ phi run --quiet --user "Summarize the bug"
 phi yolo work.session --user "Keep going until done"
 phi probe work.session
 phi doctor
+phi session new work.session
 phi session history work.session
 ```
 

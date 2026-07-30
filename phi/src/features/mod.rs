@@ -10,8 +10,7 @@ use crate::{
         StepInterveneNext,
     },
     config::{default_max_steps, optional_public_usize_from_config},
-    error::PhiErrorKind,
-    error::PhiRuntimeResult,
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallOutput,
     message::PhiMessage,
     module::{PhiModule, PhiModuleLayout},
@@ -141,7 +140,7 @@ struct DefaultFailedRecoveryModule;
 impl PhiModule for CommandInputModule {
     type ProbInfo = ();
 
-    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiRuntimeResult<()> {
+    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
         context.bootstrap_messages(self.messages.drain(..), self.verbose)
     }
 }
@@ -149,8 +148,8 @@ impl PhiModule for CommandInputModule {
 impl PhiModule for EmptySessionGuardModule {
     type ProbInfo = ();
 
-    fn init_context(&mut self, _context: &mut PhiAgentBuildContext) -> PhiRuntimeResult<()> {
-        Err(crate::error::PhiRuntimeError::session(
+    fn init_context(&mut self, _context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
+        Err(crate::error::PhiAgentRuntimeError::session(
             "session is empty; provide --user/--assistant",
         ))
     }
@@ -166,19 +165,24 @@ impl PhiModule for DefaultFailedRecoveryModule {
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
         if let PhiAgentStep::Failed { error } = runtime.base_step().clone()
-            && error.kind() == PhiErrorKind::ToolNotFound
-            && error.source_step() == Some("step_tool")
+            && matches!(
+                error,
+                PhiAgentRuntimeError::ToolNotFound { .. } | PhiAgentRuntimeError::ToolError { .. }
+            )
             && let Some(tool_request) = error.tool_request().cloned()
         {
-            let output = ToolCallOutput::new(serde_json::json!({
-                "error": error.detail(),
-                "kind": "tool_not_found",
-                "tool_name": tool_request.name.clone(),
-            }));
+            let output =
+                ToolCallOutput::new(error.tool_error_detail().cloned().unwrap_or_else(|| {
+                    serde_json::json!({
+                        "error": error.detail(),
+                        "kind": "tool_not_found",
+                        "tool_name": tool_request.name.clone(),
+                    })
+                }));
             let rendered_output = serde_json::to_string(&output)
                 .expect("tool-not-found recovery output should serialize");
             runtime.emit_warning(&format!(
-                "recovered failed tool call by committing a structured tool_not_found result for {}: {}",
+                "recovered failed tool call by committing a structured result for {}: {}",
                 tool_request.name, rendered_output
             ));
             let pending_messages = error.pending_messages().unwrap_or_default().to_vec();
@@ -213,15 +217,11 @@ impl PhiModule for DefaultFailedRecoveryModule {
             return Ok(StepBounce::ReplaceBaseStep(runtime, step, delta));
         }
 
-        if let PhiAgentStep::Failed { .. } = runtime.base_step().clone() {
-            runtime.emit_warning("resuming from failed step");
-            let delta = if runtime.cur_delta().is_empty() {
-                runtime.base_delta().clone()
-            } else {
-                runtime.cur_delta().clone()
-            };
-            let step = runtime.request_provider_step("resuming from failed step");
-            return Ok(StepBounce::ReplaceBaseStep(runtime, step, delta));
+        if matches!(runtime.base_step(), PhiAgentStep::Failed { .. })
+            && runtime.base_expr().expr().is_some()
+        {
+            runtime.emit_warning("rolling back failed step");
+            return Ok(StepBounce::RollbackStep(runtime));
         }
         next.call(runtime, cont)
     }

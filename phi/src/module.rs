@@ -2,7 +2,7 @@ use crate::{
     agent::{
         PhiAgentBuildContext, PhiAgentRuntime, StepCont, StepInterveneNext, StepInterveneResult,
     },
-    error::{PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     expr::{PhiExprDelta, PhiStepExpr},
     message::{PhiHistory, PhiMessage},
@@ -81,7 +81,7 @@ pub(crate) enum PhiAgentCommitEvent<'a> {
     ModelResponseCommitted { message: &'a PhiMessage },
     MessageCommitted { message: &'a PhiMessage },
     WarningEmitted { message: &'a str },
-    StepFailed { error: &'a PhiRuntimeError },
+    StepFailed { error: &'a PhiAgentRuntimeError },
 }
 
 pub(crate) trait PhiModule: Send + Sync {
@@ -95,7 +95,7 @@ pub(crate) trait PhiModule: Send + Sync {
         None
     }
 
-    fn init_context(&mut self, _context: &mut PhiAgentBuildContext) -> PhiRuntimeResult<()> {
+    fn init_context(&mut self, _context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
         Ok(())
     }
 
@@ -119,7 +119,7 @@ pub(crate) trait PhiModule: Send + Sync {
     // Design goal: "prepare first, commit last" inside a step so history
     // updates stay coherent even when modules rewrites or rejects candidate
     // payloads.
-    fn handle(&mut self, _event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, _event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         Ok(())
     }
 
@@ -143,11 +143,11 @@ pub(crate) trait PhiModule: Send + Sync {
 
 pub(crate) trait DynPhiModule: Send + Sync {
     // Probe is observational and is not part of runtime step evaluation.
-    // PhiRuntimeResult is reserved for recoverable runtime-eval errors; probe
-    // info must therefore serialize directly to JSON at this boundary.
+    // PhiAgentRuntimeResult is reserved for errors that may become a Failed
+    // agent step; probe info therefore serializes directly at this boundary.
     fn probe_json(&self, runtime: &PhiAgentRuntime) -> Option<PhiModuleProbeJson>;
 
-    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiRuntimeResult<()>;
+    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()>;
 
     fn module_tools(&mut self, context: &PhiAgentBuildContext) -> Vec<Arc<dyn PhiTool>>;
 
@@ -158,7 +158,7 @@ pub(crate) trait DynPhiModule: Send + Sync {
         next: StepInterveneNext,
     ) -> StepInterveneResult;
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()>;
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()>;
 
     fn observe(&mut self, event: &PhiAgentCommitEvent<'_>);
 
@@ -177,7 +177,7 @@ where
         })
     }
 
-    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiRuntimeResult<()> {
+    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
         PhiModule::init_context(self, context)
     }
 
@@ -194,7 +194,7 @@ where
         PhiModule::intervene(self, runtime, cont, next)
     }
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         PhiModule::handle(self, event)
     }
 
@@ -303,7 +303,10 @@ impl PhiModuleChain {
         output
     }
 
-    pub(crate) fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    pub(crate) fn handle(
+        &mut self,
+        event: &mut PhiAgentStepEvent<'_>,
+    ) -> PhiAgentRuntimeResult<()> {
         for module in &mut self.modules {
             module.handle(event)?;
         }
@@ -332,7 +335,7 @@ impl PhiModuleChain {
 pub(crate) fn init_context_modules(
     modules: &mut [Box<dyn DynPhiModule>],
     context: &mut PhiAgentBuildContext,
-) -> PhiRuntimeResult<()> {
+) -> PhiAgentRuntimeResult<()> {
     for module in modules {
         module.init_context(context)?;
     }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::{PhiModelResponse, PhiModelTurnState, PhiProvider, PhiProviderCall};
 use crate::{
     config::ProviderConfig,
-    error::{PhiResult, PhiRuntimeError},
+    error::{PhiAgentResult, PhiAgentRuntimeError},
     executor::PhiToolDefinition,
     message::{
         PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage, PhiUserMessage,
@@ -37,11 +37,14 @@ impl PhiProvider for ResponsesClient {
     fn provider_messages(
         &self,
         messages: &PhiRenderedMessages,
-    ) -> PhiResult<Vec<Self::ProviderMessage>> {
+    ) -> PhiAgentResult<Vec<Self::ProviderMessage>> {
         Ok(ResponsesPrompt::from_phi_messages(messages).input)
     }
 
-    fn phi_messages(&self, response: Vec<Self::ProviderMessage>) -> PhiResult<Vec<PhiMessage>> {
+    fn phi_messages(
+        &self,
+        response: Vec<Self::ProviderMessage>,
+    ) -> PhiAgentResult<Vec<PhiMessage>> {
         response
             .into_iter()
             .map(ProviderMessage::into_phi_messages)
@@ -57,7 +60,7 @@ impl PhiProvider for ResponsesClient {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiResult<PhiModelResponse> {
+    ) -> PhiAgentResult<PhiModelResponse> {
         let prompt = ResponsesPrompt::from_phi_messages(messages);
         let provider_tools = request
             .tools
@@ -78,7 +81,7 @@ impl PhiProvider for ResponsesClient {
             .send()
             .await
             .map_err(|error| {
-                PhiRuntimeError::provider_request(format!(
+                PhiAgentRuntimeError::provider_request(format!(
                     "openai_response request failed: {error}"
                 ))
             })?;
@@ -89,19 +92,19 @@ impl PhiProvider for ResponsesClient {
                 .text()
                 .await
                 .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
-            return Err(PhiRuntimeError::provider_request(format!(
+            return Err(PhiAgentRuntimeError::provider_request(format!(
                 "HTTP {status} from responses API: {body}"
             )));
         }
 
         let status = response.status();
         let body = response.text().await.map_err(|error| {
-            PhiRuntimeError::provider_response(format!(
+            PhiAgentRuntimeError::provider_response(format!(
                 "openai_response response body read failed (HTTP {status}): {error}"
             ))
         })?;
         let response = serde_json::from_str::<ResponsesCreateResponse>(&body).map_err(|error| {
-            PhiRuntimeError::provider_response(format!(
+            PhiAgentRuntimeError::provider_response(format!(
                 "openai_response response decode failed (HTTP {status}): {error}; response body: {body}"
             ))
         })?;
@@ -202,7 +205,7 @@ impl ProviderMessage {
         }
     }
 
-    fn into_phi_messages(self) -> PhiResult<Vec<PhiMessage>> {
+    fn into_phi_messages(self) -> PhiAgentResult<Vec<PhiMessage>> {
         Ok(match self {
             Self::Message { role, content } => {
                 let text = content
@@ -270,7 +273,7 @@ impl ProviderMessage {
                 Some(call_id),
                 name,
                 serde_json::from_str(&arguments).map_err(|error| {
-                    PhiRuntimeError::provider_response(format!(
+                    PhiAgentRuntimeError::provider_response(format!(
                         "openai_response invalid tool-call arguments JSON: {} | raw={}",
                         error, arguments
                     ))
@@ -380,7 +383,7 @@ struct ResponsesCreateResponse {
 }
 
 impl ResponsesCreateResponse {
-    fn validate_status(&self) -> PhiResult<()> {
+    fn validate_status(&self) -> PhiAgentResult<()> {
         match self.status.as_deref() {
             None | Some("completed") => Ok(()),
             Some("failed") => {
@@ -389,7 +392,7 @@ impl ResponsesCreateResponse {
                     .as_ref()
                     .map(ResponsesError::detail)
                     .unwrap_or_else(|| "response failed without error details".to_string());
-                Err(PhiRuntimeError::provider_response(format!(
+                Err(PhiAgentRuntimeError::provider_response(format!(
                     "openai_response failed: {detail}"
                 )))
             }
@@ -399,11 +402,11 @@ impl ResponsesCreateResponse {
                     .as_ref()
                     .and_then(|details| details.reason.as_deref())
                     .unwrap_or("unknown reason");
-                Err(PhiRuntimeError::provider_response(format!(
+                Err(PhiAgentRuntimeError::provider_response(format!(
                     "openai_response incomplete: {reason}"
                 )))
             }
-            Some(status) => Err(PhiRuntimeError::provider_response(format!(
+            Some(status) => Err(PhiAgentRuntimeError::provider_response(format!(
                 "openai_response returned non-terminal status: {status}"
             ))),
         }

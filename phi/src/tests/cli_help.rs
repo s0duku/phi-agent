@@ -56,3 +56,16 @@ fn headlessterm_help_exposes_launch_local() {
         .to_string();
     assert!(exec_help.contains("--container"));
 }
+
+#[test]
+fn session_help_exposes_explicit_new_command() {
+    let mut command = Cli::command();
+    let help = command
+        .find_subcommand_mut("session")
+        .expect("session subcommand should exist")
+        .render_help()
+        .to_string();
+
+    assert!(help.contains("new"));
+    assert!(help.contains("Create a new empty session file"));
+}

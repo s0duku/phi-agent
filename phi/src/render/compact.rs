@@ -1,5 +1,5 @@
 use crate::{
-    error::{PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiUserMessage},
     utils::APPROX_BYTES_PER_TOKEN,
 };
@@ -15,7 +15,7 @@ pub(super) async fn compact_history(
     render: &PhiRender,
     request: &PhiProviderCall,
     history: &PhiHistory,
-) -> PhiRuntimeResult<PhiHistory> {
+) -> PhiAgentRuntimeResult<PhiHistory> {
     let history_tokens = approx_history_token_count(history);
     if history_tokens <= AUTO_COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS {
         return Ok(history.clone());
@@ -109,7 +109,7 @@ pub(super) async fn compact_history(
         .to_string();
 
     if summary.is_empty() {
-        return Err(PhiRuntimeError::provider_response(
+        return Err(PhiAgentRuntimeError::provider_response(
             "compact provider returned no assistant summary",
         ));
     }
@@ -159,7 +159,7 @@ mod tests {
             &self,
             _request: &PhiProviderCall,
             _messages: &crate::message::PhiHistory,
-        ) -> crate::error::PhiRuntimeResult<PhiModelResponse> {
+        ) -> crate::error::PhiAgentRuntimeResult<PhiModelResponse> {
             Ok(PhiModelResponse::unspecified(vec![PhiMessage::assistant(
                 "summary from provider",
             )]))

@@ -151,7 +151,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::PhiRuntimeError;
+    use crate::error::PhiAgentRuntimeError;
     use crate::expr::PhiStepExpr;
     use crate::message::{PhiHistory, PhiMessage};
     use crate::session::PhiAgentStep;
@@ -159,7 +159,9 @@ mod tests {
     #[test]
     fn round_trips_session_json() {
         let session = Session::from_root(
-            PhiAgentStep::failed(PhiRuntimeError::provider_request("provider request failed")),
+            PhiAgentStep::failed(PhiAgentRuntimeError::provider_request(
+                "provider request failed",
+            )),
             vec![PhiMessage::user("inspect the code")],
         );
         let mut output = Vec::new();
@@ -326,7 +328,7 @@ mod tests {
                     {
                         "step": {
                             "kind": "failed",
-                            "error": {"kind": "internal", "detail": "bad"}
+                            "error": {"kind": "module", "detail": "bad"}
                         },
                         "delta": {
                             "history": [{"role": "assistant", "content": "oops"}]

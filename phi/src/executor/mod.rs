@@ -5,7 +5,7 @@ pub mod tools;
 use std::sync::Arc;
 
 use crate::agent::PhiAgentRuntime;
-use crate::error::{PhiRuntimeError, PhiRuntimeResult};
+use crate::error::{PhiAgentRuntimeError, PhiAgentRuntimeResult, PhiStructureError};
 use async_trait::async_trait;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,8 @@ pub struct ToolCallResponse {
     pub output: ToolCallOutput,
 }
 
+pub(crate) type PhiToolResult = Result<ToolCallResponse, Box<dyn PhiStructureError>>;
+
 impl ToolCallResponse {
     pub fn new(
         request: &ToolCallRequest,
@@ -110,11 +112,8 @@ pub(crate) trait PhiTool: Send + Sync {
 
     // The tool owns the response schema. Runtime errors are reserved for
     // executor-level dispatch failures, such as an unknown tool name.
-    async fn call(
-        &self,
-        request: &mut ToolCallRequest,
-        runtime: &PhiAgentRuntime,
-    ) -> ToolCallResponse;
+    async fn call(&self, request: &mut ToolCallRequest, runtime: &PhiAgentRuntime)
+    -> PhiToolResult;
 }
 
 pub struct PhiExecutor {
@@ -122,23 +121,43 @@ pub struct PhiExecutor {
     output_limits: ToolOutputLimits,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PhiExecutorBuildError {
+    EmptyToolName,
+    DuplicateToolName { name: String },
+}
+
+impl std::fmt::Display for PhiExecutorBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyToolName => formatter.write_str("tool name cannot be empty"),
+            Self::DuplicateToolName { name } => {
+                write!(
+                    formatter,
+                    "tool {name} is already registered on this executor"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PhiExecutorBuildError {}
+
 impl PhiExecutor {
     pub(crate) fn from_tools(
         tools: Vec<Arc<dyn PhiTool>>,
         output_limits: ToolOutputLimits,
-    ) -> PhiRuntimeResult<Self> {
+    ) -> Result<Self, PhiExecutorBuildError> {
         let mut registered = IndexMap::new();
 
         for tool in tools {
             let definition = tool.definition();
             let name = definition.name;
             if name.trim().is_empty() {
-                return Err(PhiRuntimeError::internal("tool name cannot be empty"));
+                return Err(PhiExecutorBuildError::EmptyToolName);
             }
             if registered.contains_key(&name) {
-                return Err(PhiRuntimeError::internal(format!(
-                    "tool {name} is already registered on this executor"
-                )));
+                return Err(PhiExecutorBuildError::DuplicateToolName { name });
             }
             registered.insert(name, tool);
         }
@@ -161,15 +180,17 @@ impl PhiExecutor {
         &self,
         mut request: ToolCallRequest,
         runtime: &PhiAgentRuntime,
-    ) -> PhiRuntimeResult<(ToolCallRequest, ToolCallResponse)> {
+    ) -> PhiAgentRuntimeResult<(ToolCallRequest, ToolCallResponse)> {
         let name = request.name.clone();
         let tool = self.tool(name.as_str()).ok_or_else(|| {
-            PhiRuntimeError::tool_not_found(
+            PhiAgentRuntimeError::tool_not_found(
                 format!("assistant requested unknown tool: {name}"),
                 request.clone(),
             )
         })?;
-        let mut response = tool.call(&mut request, runtime).await;
+        let mut response = tool.call(&mut request, runtime).await.map_err(|error| {
+            PhiAgentRuntimeError::tool_error(error.into_value(), request.clone())
+        })?;
         response.output = sanitizer::sanitize_tool_call_output(response.output, self.output_limits);
         Ok((request, response))
     }

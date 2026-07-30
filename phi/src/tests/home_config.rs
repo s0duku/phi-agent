@@ -25,7 +25,7 @@ impl PhiModule for CaptureEnvModule {
     fn init_context(
         &mut self,
         context: &mut PhiAgentBuildContext,
-    ) -> crate::error::PhiRuntimeResult<()> {
+    ) -> crate::error::PhiAgentRuntimeResult<()> {
         *self.seen.lock().expect("capture lock should be healthy") = Some(context.config().clone());
         Ok(())
     }

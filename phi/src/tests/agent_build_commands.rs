@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     agent::{PhiAgent, PhiAgentCommand},
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     executor::PhiTool,
     home::LocalPhiHome,
     module::PhiModule,
@@ -26,7 +26,7 @@ impl PhiModule for BuildProbeModule {
     fn init_context(
         &mut self,
         _context: &mut crate::agent::PhiAgentBuildContext,
-    ) -> PhiRuntimeResult<()> {
+    ) -> PhiAgentRuntimeResult<()> {
         self.flags
             .lock()
             .expect("flags mutex should lock")

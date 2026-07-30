@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     message::{PhiHistory, PhiMessage},
     render::{PhiModelResponse, PhiProviderCall, TestClient},
     session::{PhiAgentStep, Session},
@@ -24,7 +24,7 @@ impl TestClient for CaptureProvider {
         &self,
         _request: &PhiProviderCall,
         messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         *self
             .seen_messages
             .lock()

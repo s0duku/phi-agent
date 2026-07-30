@@ -3,7 +3,7 @@ mod serialization;
 
 use crate::{
     config::{ModelRequestDefaults, PhiConfig},
-    error::PhiRuntimeError,
+    error::PhiAgentRuntimeError,
     executor::ToolCallRequest,
     expr::{PhiExprDelta, PhiStepExpr},
     message::{PhiHistory, PhiMessage},
@@ -44,7 +44,9 @@ pub enum PhiAgentStep {
         detail: String,
     },
     Failed {
-        error: PhiRuntimeError,
+        /// Persisted agent-evaluation failure. Lower-level subsystem errors are
+        /// converted before entering this state.
+        error: PhiAgentRuntimeError,
     },
 }
 
@@ -85,7 +87,7 @@ impl PhiAgentStep {
         }
     }
 
-    pub fn failed(error: PhiRuntimeError) -> Self {
+    pub fn failed(error: PhiAgentRuntimeError) -> Self {
         Self::Failed { error }
     }
 
@@ -100,7 +102,7 @@ impl PhiAgentStep {
         }
     }
 
-    pub fn error(&self) -> Option<&PhiRuntimeError> {
+    pub fn error(&self) -> Option<&PhiAgentRuntimeError> {
         let Self::Failed { error } = self else {
             return None;
         };
@@ -176,19 +178,19 @@ impl Session {
         self.0.into_history()
     }
 
-    pub(crate) fn validate(&self) -> Result<(), PhiRuntimeError> {
-        fn validate_expr(expr: &PhiStepExpr) -> Result<(), PhiRuntimeError> {
+    pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {
+        fn validate_expr(expr: &PhiStepExpr) -> Result<(), PhiAgentRuntimeError> {
             match expr.step() {
                 PhiAgentStep::RequestCompact | PhiAgentStep::Failed { .. }
                     if expr.expr().is_some() && !expr.delta().is_empty() =>
                 {
-                    return Err(PhiRuntimeError::session(format!(
+                    return Err(PhiAgentRuntimeError::session(format!(
                         "{} frame must keep an empty delta",
                         expr.step().detail()
                     )));
                 }
                 PhiAgentStep::Compacted if expr.expr().is_none() => {
-                    return Err(PhiRuntimeError::session(
+                    return Err(PhiAgentRuntimeError::session(
                         "compacted frame must preserve a parent expr",
                     ));
                 }
@@ -264,6 +266,42 @@ impl Session {
         })?;
         self.write_json(&mut file).map_err(|error| {
             format!("failed to write session file {}: {error}", path.display()).into()
+        })
+    }
+
+    pub fn create(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let path = path.as_ref();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create session directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                format!(
+                    "failed to create new session file {}: {error}",
+                    path.display()
+                )
+            })?;
+        self.write_json(&mut file).map_err(|error| {
+            let _ = std::fs::remove_file(path);
+            format!(
+                "failed to write new session file {}: {error}",
+                path.display()
+            )
+            .into()
         })
     }
 }

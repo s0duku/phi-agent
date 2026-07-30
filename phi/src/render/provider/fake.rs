@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     config::ProviderConfig,
-    error::{PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     message::{PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage},
 };
 
@@ -18,13 +18,13 @@ enum FakeProfile {
 }
 
 impl FakeProfile {
-    fn parse(value: &str) -> PhiRuntimeResult<Self> {
+    fn parse(value: &str) -> PhiAgentRuntimeResult<Self> {
         match value.trim() {
             "assistant_text" => Ok(Self::AssistantText),
             "reasoning_text" => Ok(Self::ReasoningText),
             "tool_call" => Ok(Self::ToolCall),
             "provider_error" => Ok(Self::ProviderError),
-            other => Err(PhiRuntimeError::provider_request(format!(
+            other => Err(PhiAgentRuntimeError::provider_request(format!(
                 "unsupported fake provider profile: {other}"
             ))),
         }
@@ -36,7 +36,7 @@ pub struct FakeClient {
 }
 
 impl FakeClient {
-    pub fn new(config: ProviderConfig) -> PhiRuntimeResult<Self> {
+    pub fn new(config: ProviderConfig) -> PhiAgentRuntimeResult<Self> {
         Ok(Self {
             profile: FakeProfile::parse(&config.fake_profile)?,
         })
@@ -80,7 +80,7 @@ impl FakeClient {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiAgentRuntimeResult<Vec<PhiMessage>> {
         if messages
             .iter()
             .any(|message| matches!(message, PhiMessage::Tool(PhiToolMessage::ToolResult { .. })))
@@ -91,7 +91,7 @@ impl FakeClient {
         }
 
         let Some(tool) = request.tools.first() else {
-            return Err(PhiRuntimeError::provider_response(
+            return Err(PhiAgentRuntimeError::provider_response(
                 "fake tool_call profile requires at least one available tool",
             ));
         };
@@ -116,12 +116,12 @@ impl DynProvider for FakeClient {
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         let messages = match self.profile {
             FakeProfile::AssistantText => Ok(self.assistant_text(request, &messages)),
             FakeProfile::ReasoningText => Ok(self.reasoning_text(request, &messages)),
             FakeProfile::ToolCall => self.tool_call(request, &messages),
-            FakeProfile::ProviderError => Err(PhiRuntimeError::provider_request(
+            FakeProfile::ProviderError => Err(PhiAgentRuntimeError::provider_request(
                 "fake provider generated a configured request error",
             )),
         }?;

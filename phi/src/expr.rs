@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 #[cfg(test)]
-use crate::error::PhiRuntimeError;
+use crate::error::PhiAgentRuntimeError;
 use crate::{
     message::{PhiHistory, PhiMessage},
     session::PhiAgentStep,
@@ -184,7 +184,7 @@ impl PhiStepExpr {
 
     #[must_use]
     #[cfg(test)]
-    pub(crate) fn branch_failed(self, error: PhiRuntimeError) -> Self {
+    pub(crate) fn branch_failed(self, error: PhiAgentRuntimeError) -> Self {
         Self::branch(self, PhiAgentStep::failed(error), PhiExprDelta::default())
     }
 

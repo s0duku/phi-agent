@@ -3,7 +3,7 @@ mod similarity;
 
 use crate::{
     agent::{PhiAgentRuntime, StepCont, StepInterveneNext},
-    error::{PhiErrorKind, PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     expr::{DeltaLookup, PhiExprDelta, PhiStepExpr},
     message::{PhiHistory, PhiMessage},
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
@@ -90,7 +90,7 @@ impl LoopGuardPolicy {
         }
     }
 
-    fn inspect_candidate(&mut self, message: &PhiMessage) -> Result<(), PhiRuntimeError> {
+    fn inspect_candidate(&mut self, message: &PhiMessage) -> Result<(), PhiAgentRuntimeError> {
         let detection = self
             .detectors
             .iter_mut()
@@ -100,11 +100,10 @@ impl LoopGuardPolicy {
             return Ok(());
         };
 
-        Err(PhiRuntimeError::model_candidate_rejected(format!(
+        Err(PhiAgentRuntimeError::model_candidate_rejected(format!(
             "loop detected by {}: {}",
             detection.detector, detection.detail
-        ))
-        .with_source_step("request_provider"))
+        )))
     }
 }
 
@@ -117,8 +116,7 @@ fn is_loop_guard_failed_step(step: &PhiAgentStep) -> bool {
         return false;
     };
 
-    error.kind() == PhiErrorKind::ModelCandidateRejected
-        && error.source_step() == Some("request_provider")
+    matches!(error, PhiAgentRuntimeError::ModelCandidateRejected { .. })
 }
 
 impl PhiModule for LoopGuardPolicy {
@@ -196,7 +194,7 @@ impl PhiModule for LoopGuardPolicy {
         ))
     }
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         match event {
             PhiAgentStepEvent::BeforeModelRequest {
                 step: _step,
@@ -301,7 +299,8 @@ impl PhiExprDelta {
 mod tests {
     use super::*;
     use crate::{
-        config::ReasoningEffort, error::PhiRuntimeError, render::PhiProviderCall, session::Session,
+        config::ReasoningEffort, error::PhiAgentRuntimeError, render::PhiProviderCall,
+        session::Session,
     };
 
     struct NoopDetector;
@@ -411,12 +410,9 @@ mod tests {
             Vec::<PhiMessage>::new(),
         )
         .with_loop_guard_rejected_attempts(3);
-        let session = Session::from_expr(
-            retrying_step.branch_failed(
-                PhiRuntimeError::model_candidate_rejected("loop detected")
-                    .with_source_step("request_provider"),
-            ),
-        );
+        let session = Session::from_expr(retrying_step.branch_failed(
+            PhiAgentRuntimeError::model_candidate_rejected("loop detected"),
+        ));
 
         let outcome = crate::tests::support::step_agent_builder(session)
             .with_client(crate::tests::support::stub_client(Vec::new()))

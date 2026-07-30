@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::executor::{PhiTool, ToolCallOutput, ToolCallRequest, ToolCallResponse};
+use crate::executor::{PhiTool, PhiToolResult, ToolCallOutput, ToolCallRequest, ToolCallResponse};
 use crate::module::PhiModule;
 
 use super::python::PhiPythonRuntime;
@@ -96,7 +96,7 @@ impl PhiTool for PythonPluginTool {
         &self,
         request: &mut ToolCallRequest,
         _runtime: &crate::agent::PhiAgentRuntime,
-    ) -> ToolCallResponse {
+    ) -> PhiToolResult {
         let request_snapshot = request.clone();
         let output = match self
             .runtime
@@ -104,21 +104,21 @@ impl PhiTool for PythonPluginTool {
         {
             Ok(output) => output,
             Err(error) => {
-                return ToolCallResponse::new(
+                return Ok(ToolCallResponse::new(
                     &request_snapshot,
                     self.definition.name.clone(),
                     serde_json::json!({"error": error}),
-                );
+                ));
             }
         };
         let output = serde_json::from_str::<ToolCallOutput>(&output)
             .unwrap_or_else(|_| ToolCallOutput::new(serde_json::Value::String(output)));
-        ToolCallResponse {
+        Ok(ToolCallResponse {
             id: request.id.clone(),
             call_id: request.call_id.clone(),
             name: self.definition.name.clone(),
             output,
-        }
+        })
     }
 }
 
@@ -128,7 +128,7 @@ impl PhiModule for PyPluginModule {
     fn init_context(
         &mut self,
         _context: &mut crate::agent::PhiAgentBuildContext,
-    ) -> crate::error::PhiRuntimeResult<()> {
+    ) -> crate::error::PhiAgentRuntimeResult<()> {
         self.ensure_plugins_loaded();
         Ok(())
     }
@@ -211,11 +211,11 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn read_template(&self, _name: &str) -> crate::error::PhiRuntimeResult<String> {
+        fn read_template(&self, _name: &str) -> crate::home::PhiHomeResult<String> {
             unreachable!("templates are not used in plugin module tests")
         }
 
-        fn read_file(&self, source: &PhiHomeUrl) -> crate::error::PhiRuntimeResult<Vec<u8>> {
+        fn read_file(&self, source: &PhiHomeUrl) -> crate::home::PhiHomeResult<Vec<u8>> {
             if source.display().contains("broken.py") {
                 Ok(b"   ".to_vec())
             } else if source.display().contains("printy.py") {
@@ -434,7 +434,7 @@ def badreturn():
     fn build_executor_with_module_tools(
         middleware: &mut PyPluginModule,
         context: &PhiAgentBuildContext,
-    ) -> crate::error::PhiRuntimeResult<crate::executor::PhiExecutor> {
+    ) -> Result<crate::executor::PhiExecutor, Box<dyn std::error::Error>> {
         crate::executor::PhiExecutor::from_tools(
             crate::executor::builtins::default_tools()
                 .into_iter()
@@ -442,6 +442,7 @@ def badreturn():
                 .collect(),
             crate::config::tool_output_limits_from_config(context.config()),
         )
+        .map_err(Into::into)
     }
 
     #[test]

@@ -11,10 +11,54 @@ use std::{fmt, path::Path, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config::{PhiConfig, ambient_config},
-    error::{PhiRuntimeError, PhiRuntimeResult},
-};
+use crate::config::{PhiConfig, ambient_config};
+
+/// Errors owned by PhiHome implementations.
+///
+/// This type deliberately does not depend on the agent evaluator. Callers that
+/// use a home operation while evaluating an agent step must convert it to
+/// `PhiAgentRuntimeError::Home` at that boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PhiHomeError {
+    InvalidPath { detail: String },
+    Read { detail: String },
+    Template { detail: String },
+}
+
+pub type PhiHomeResult<T> = Result<T, PhiHomeError>;
+
+impl PhiHomeError {
+    pub(crate) fn invalid_path(detail: impl Into<String>) -> Self {
+        Self::InvalidPath {
+            detail: detail.into(),
+        }
+    }
+
+    pub(crate) fn read(detail: impl Into<String>) -> Self {
+        Self::Read {
+            detail: detail.into(),
+        }
+    }
+
+    pub(crate) fn template(detail: impl Into<String>) -> Self {
+        Self::Template {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for PhiHomeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let detail = match self {
+            Self::InvalidPath { detail } | Self::Read { detail } | Self::Template { detail } => {
+                detail
+            }
+        };
+        formatter.write_str(detail)
+    }
+}
+
+impl std::error::Error for PhiHomeError {}
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PhiHomeUrl {
@@ -61,7 +105,7 @@ impl fmt::Display for PhiHomeUrl {
 pub trait PhiHome: Send + Sync {
     fn doctor_report(&self) -> PhiHomeDoctorReport;
 
-    fn read_file(&self, source: &PhiHomeUrl) -> PhiRuntimeResult<Vec<u8>>;
+    fn read_file(&self, source: &PhiHomeUrl) -> PhiHomeResult<Vec<u8>>;
 
     fn entries(&self) -> Result<Vec<PhiHomeEntry>, Box<dyn std::error::Error>>;
 
@@ -87,12 +131,12 @@ pub trait PhiHome: Send + Sync {
         Ok(plugins)
     }
 
-    fn read_template(&self, name: &str) -> PhiRuntimeResult<String> {
+    fn read_template(&self, name: &str) -> PhiHomeResult<String> {
         for path in spec::template_candidates(name)? {
             let url = self.url_for_path(&path);
             if let Ok(bytes) = self.read_file(&url) {
                 return String::from_utf8(bytes).map_err(|error| {
-                    PhiRuntimeError::session(format!(
+                    PhiHomeError::template(format!(
                         "failed to decode phi template {} as UTF-8: {error}",
                         path.as_str()
                     ))
@@ -100,7 +144,7 @@ pub trait PhiHome: Send + Sync {
             }
         }
 
-        Err(PhiRuntimeError::session(format!(
+        Err(PhiHomeError::template(format!(
             "template not found: {} (searched under {})",
             name.trim(),
             spec::templates_dir().as_str()

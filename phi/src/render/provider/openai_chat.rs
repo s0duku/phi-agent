@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::{PhiModelResponse, PhiProvider, PhiProviderCall};
 use crate::{
     config::ProviderConfig,
-    error::{PhiResult, PhiRuntimeError},
+    error::{PhiAgentResult, PhiAgentRuntimeError},
     executor::PhiToolDefinition,
     message::{
         PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage, PhiUserMessage,
@@ -33,16 +33,16 @@ impl OpenAiCompatClient {
         }
     }
 
-    fn current_reasoning_format(&self) -> PhiResult<ReasoningFormat> {
+    fn current_reasoning_format(&self) -> PhiAgentResult<ReasoningFormat> {
         let guard = self
             .reasoning_format
             .get_or_init(|| Mutex::new(ReasoningFormat::PhiReasoningContent))
             .lock()
-            .map_err(|_| PhiRuntimeError::internal("reasoning format mutex was poisoned"))?;
+            .expect("reasoning format mutex was poisoned");
         Ok(*guard)
     }
 
-    fn observe_reasoning_format(&self, message: &ProviderAssistantMessage) -> PhiResult<()> {
+    fn observe_reasoning_format(&self, message: &ProviderAssistantMessage) -> PhiAgentResult<()> {
         let next = if message
             .reasoning_content
             .as_deref()
@@ -67,7 +67,7 @@ impl OpenAiCompatClient {
             .reasoning_format
             .get_or_init(|| Mutex::new(ReasoningFormat::PhiReasoningContent))
             .lock()
-            .map_err(|_| PhiRuntimeError::internal("reasoning format mutex was poisoned"))?;
+            .expect("reasoning format mutex was poisoned");
         *guard = next;
         Ok(())
     }
@@ -81,11 +81,14 @@ impl PhiProvider for OpenAiCompatClient {
     fn provider_messages(
         &self,
         messages: &PhiRenderedMessages,
-    ) -> PhiResult<Vec<Self::ProviderMessage>> {
+    ) -> PhiAgentResult<Vec<Self::ProviderMessage>> {
         ProviderMessage::from_phi_messages(messages, self.current_reasoning_format()?)
     }
 
-    fn phi_messages(&self, response: Vec<Self::ProviderMessage>) -> PhiResult<Vec<PhiMessage>> {
+    fn phi_messages(
+        &self,
+        response: Vec<Self::ProviderMessage>,
+    ) -> PhiAgentResult<Vec<PhiMessage>> {
         response
             .into_iter()
             .map(|message| match message {
@@ -106,7 +109,7 @@ impl PhiProvider for OpenAiCompatClient {
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiResult<PhiModelResponse> {
+    ) -> PhiAgentResult<PhiModelResponse> {
         let provider_messages = self.provider_messages(messages)?;
         let provider_tools = request
             .tools
@@ -150,7 +153,9 @@ impl PhiProvider for OpenAiCompatClient {
             .send()
             .await
             .map_err(|error| {
-                PhiRuntimeError::provider_request(format!("openai_chat request failed: {error}"))
+                PhiAgentRuntimeError::provider_request(format!(
+                    "openai_chat request failed: {error}"
+                ))
             })?;
         if !response.status().is_success() {
             let status = response.status();
@@ -158,24 +163,24 @@ impl PhiProvider for OpenAiCompatClient {
                 .text()
                 .await
                 .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
-            return Err(PhiRuntimeError::provider_request(format!(
+            return Err(PhiAgentRuntimeError::provider_request(format!(
                 "openai_chat HTTP {status}: {body}"
             )));
         }
         let status = response.status();
         let body = response.text().await.map_err(|error| {
-            PhiRuntimeError::provider_response(format!(
+            PhiAgentRuntimeError::provider_response(format!(
                 "openai_chat response body read failed (HTTP {status}): {error}"
             ))
         })?;
         let response = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|error| {
-            PhiRuntimeError::provider_response(format!(
+            PhiAgentRuntimeError::provider_response(format!(
                 "openai_chat response decode failed (HTTP {status}): {error}; response body: {body}"
             ))
         })?;
 
         let choice = response.choices.into_iter().next().ok_or_else(|| {
-            PhiRuntimeError::provider_response("openai_chat provider returned no choices")
+            PhiAgentRuntimeError::provider_response("openai_chat provider returned no choices")
         })?;
         self.observe_reasoning_format(&choice.message)?;
 
@@ -289,7 +294,7 @@ impl ProviderMessage {
     fn from_phi_messages(
         messages: &PhiRenderedMessages,
         reasoning_format: ReasoningFormat,
-    ) -> PhiResult<Vec<Self>> {
+    ) -> PhiAgentResult<Vec<Self>> {
         let mut provider_messages = Vec::new();
         let mut assistant = ProviderAssistantMessage::default();
 
@@ -421,7 +426,7 @@ impl ProviderAssistantMessage {
         }
     }
 
-    fn into_phi_messages(self) -> PhiResult<Vec<PhiMessage>> {
+    fn into_phi_messages(self) -> PhiAgentResult<Vec<PhiMessage>> {
         let mut messages = Vec::new();
 
         let reasoning = self
@@ -446,7 +451,7 @@ impl ProviderAssistantMessage {
         for tool_call in self.tool_calls {
             let raw_arguments = tool_call.function.arguments.clone();
             let parsed_arguments = serde_json::from_str(&raw_arguments).map_err(|error| {
-                PhiRuntimeError::provider_response(format!(
+                PhiAgentRuntimeError::provider_response(format!(
                     "openai_chat invalid tool-call arguments JSON: {} | raw={}",
                     error, raw_arguments
                 ))
@@ -531,7 +536,7 @@ fn reasoning_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::ProviderConfig, error::PhiErrorKind, executor::PhiToolDefinition};
+    use crate::{config::ProviderConfig, error::PhiAgentRuntimeError, executor::PhiToolDefinition};
     use std::sync::MutexGuard;
 
     fn test_config() -> ProviderConfig {
@@ -896,7 +901,10 @@ mod tests {
         .into_phi_messages()
         .expect_err("invalid tool call JSON should fail");
 
-        assert_eq!(error.kind(), PhiErrorKind::ProviderResponse);
+        assert!(matches!(
+            error,
+            PhiAgentRuntimeError::ProviderResponse { .. }
+        ));
         assert!(
             error.detail().contains("invalid tool-call arguments JSON"),
             "unexpected error detail: {}",

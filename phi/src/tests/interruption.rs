@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::Notify;
 
 use crate::{
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     message::{PhiHistory, PhiMessage},
     render::{PhiModelResponse, PhiProviderCall, TestClient},
     session::{PhiAgentStep, Session},
@@ -21,7 +21,7 @@ impl TestClient for PendingProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         self.started.notify_one();
         future::pending().await
     }

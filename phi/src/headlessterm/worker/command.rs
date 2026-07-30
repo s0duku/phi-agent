@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use portable_pty::CommandBuilder;
 
 use crate::headlessterm::job::TerminalCommand;
@@ -11,22 +13,130 @@ const EXIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// alive briefly after the user shell exits gives asynchronously launched
 /// programs time to establish `nohup` handling before termination of the
 /// terminal session sends SIGHUP to its foreground process group.
-pub(crate) fn build(command: TerminalCommand) -> CommandBuilder {
+pub(crate) fn build(command: TerminalCommand) -> Result<CommandBuilder, String> {
     match command {
-        TerminalCommand::Shell { command } => return build_shell(command),
+        TerminalCommand::Shell { command } => return Ok(build_shell(command)),
         TerminalCommand::DockerExec {
             container,
             command,
             shell,
         } => {
-            let mut builder = CommandBuilder::new("docker");
+            let cli = resolve_container_cli()?;
+            validate_running_container(cli, &container)?;
+            let mut builder = CommandBuilder::new(cli.executable());
             builder.args(["exec", "--interactive", "--tty"]);
             builder.arg(container);
             builder.arg(shell);
             builder.arg("-lc");
             builder.arg(command);
-            return builder;
+            return Ok(builder);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContainerCli {
+    Docker,
+    Podman,
+}
+
+impl ContainerCli {
+    fn executable(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+        }
+    }
+}
+
+fn resolve_container_cli() -> Result<ContainerCli, String> {
+    let docker_version = probe_version("docker");
+    let podman_available = docker_version
+        .as_deref()
+        .is_none_or(|version| version.to_ascii_lowercase().contains("podman"))
+        && probe_version("podman").is_some();
+    choose_container_cli(docker_version.as_deref(), podman_available)
+        .ok_or_else(|| "neither docker nor podman is available for container execution".to_owned())
+}
+
+fn probe_version(executable: &str) -> Option<String> {
+    let output = Command::new(executable).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut version = String::from_utf8_lossy(&output.stdout).into_owned();
+    version.push_str(&String::from_utf8_lossy(&output.stderr));
+    Some(version)
+}
+
+fn validate_running_container(cli: ContainerCli, container: &str) -> Result<(), String> {
+    let output = Command::new(cli.executable())
+        .args([
+            "container",
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            container,
+        ])
+        .output()
+        .map_err(|error| {
+            format!(
+                "unable to inspect container {container:?} with {}: {error}",
+                cli.executable()
+            )
+        })?;
+    inspect_result(
+        cli,
+        container,
+        output.status.success(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+fn inspect_result(
+    cli: ContainerCli,
+    container: &str,
+    success: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<(), String> {
+    let state = String::from_utf8_lossy(stdout);
+    if success && state.trim().eq_ignore_ascii_case("true") {
+        return Ok(());
+    }
+    if success {
+        return Err(format!("container {container:?} is not running"));
+    }
+
+    let detail = String::from_utf8_lossy(stderr);
+    let detail = detail.trim();
+    let detail = if detail.is_empty() {
+        String::from_utf8_lossy(stdout).trim().to_owned()
+    } else {
+        detail.to_owned()
+    };
+    if detail.is_empty() {
+        Err(format!(
+            "{} could not inspect container {container:?}",
+            cli.executable()
+        ))
+    } else {
+        Err(detail)
+    }
+}
+
+fn choose_container_cli(
+    docker_version: Option<&str>,
+    podman_available: bool,
+) -> Option<ContainerCli> {
+    match docker_version {
+        Some(version) if version.to_ascii_lowercase().contains("podman") => {
+            podman_available.then_some(ContainerCli::Podman)
+        }
+        Some(_) => Some(ContainerCli::Docker),
+        None if podman_available => Some(ContainerCli::Podman),
+        None => None,
     }
 }
 
@@ -74,4 +184,73 @@ fn unix_shell() -> String {
             })
         })
         .unwrap_or_else(|| "/bin/sh".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContainerCli, choose_container_cli, inspect_result};
+
+    #[test]
+    fn real_docker_uses_docker_cli() {
+        assert_eq!(
+            choose_container_cli(Some("Docker version 27.0.0"), true),
+            Some(ContainerCli::Docker)
+        );
+    }
+
+    #[test]
+    fn podman_docker_compatibility_wrapper_uses_podman_directly() {
+        assert_eq!(
+            choose_container_cli(Some("podman version 4.9.3"), true),
+            Some(ContainerCli::Podman)
+        );
+    }
+
+    #[test]
+    fn podman_is_used_when_docker_is_unavailable() {
+        assert_eq!(choose_container_cli(None, true), Some(ContainerCli::Podman));
+    }
+
+    #[test]
+    fn podman_wrapper_without_podman_is_unavailable() {
+        assert_eq!(
+            choose_container_cli(Some("podman version 4.9.3"), false),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_container_clis_are_reported() {
+        assert_eq!(choose_container_cli(None, false), None);
+    }
+
+    #[test]
+    fn running_container_passes_preflight() {
+        assert_eq!(
+            inspect_result(ContainerCli::Docker, "dev", true, b"true\n", b""),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn stopped_container_fails_preflight() {
+        assert_eq!(
+            inspect_result(ContainerCli::Podman, "dev", true, b"false\n", b""),
+            Err("container \"dev\" is not running".to_owned())
+        );
+    }
+
+    #[test]
+    fn missing_container_preserves_cli_error() {
+        assert_eq!(
+            inspect_result(
+                ContainerCli::Podman,
+                "missing",
+                false,
+                b"",
+                b"Error: no container with name or ID missing found\n",
+            ),
+            Err("Error: no container with name or ID missing found".to_owned())
+        );
+    }
 }

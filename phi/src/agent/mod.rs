@@ -20,7 +20,7 @@ pub(crate) use crate::expr::{DeltaLookup, PhiExprDelta, PhiStepExpr};
 use crate::module::PhiModule;
 use crate::{
     config::{ModelRequestDefaults, PhiConfig, PhiRuntimeSetup, ProviderConfig},
-    error::PhiRuntimeError,
+    error::PhiAgentRuntimeError,
     executor::{PhiExecutor, PhiToolDefinition},
     features::{build_default_modules, build_init_modules, build_runtime_modules},
     home::{PhiHome, PhiHomeDoctorReport},
@@ -87,15 +87,14 @@ impl PhiAgentBuildContext {
         &mut self,
         messages: I,
         verbose: bool,
-    ) -> Result<(), PhiRuntimeError>
+    ) -> Result<(), PhiAgentRuntimeError>
     where
         I: IntoIterator<Item = PhiMessage>,
     {
         let defaults = ModelRequestDefaults::from_config(&self.config)
-            .map_err(|error| PhiRuntimeError::session(error.to_string()))?;
+            .map_err(|error| PhiAgentRuntimeError::session(error.to_string()))?;
         let expr = std::mem::replace(&mut self.session, Session::empty()).into_expr();
-        let mut delta = expr.delta().clone();
-        let parent = expr.expr().cloned();
+        let mut delta = PhiExprDelta::default();
         for message in messages {
             if verbose {
                 eprintln!("{}", crate::features::pretty_message(&message));
@@ -103,18 +102,66 @@ impl PhiAgentBuildContext {
             delta.push_message(message);
         }
         let step = PhiAgentStep::request_provider("ready to request the model", &defaults);
-        let expr = match parent {
-            Some(parent) => PhiStepExpr::branch(parent, step, delta),
-            None => PhiStepExpr::new(step, delta),
-        };
-        self.session = Session::from_expr(expr);
+        self.session = Session::from_expr(PhiStepExpr::branch(expr, step, delta));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod build_context_tests {
+    use super::PhiAgentBuildContext;
+    use crate::{
+        agent::PhiAgentCommand,
+        message::PhiMessage,
+        session::{PhiAgentStep, Session},
+    };
+
+    #[test]
+    fn command_messages_branch_over_the_complete_input_expr() {
+        let session = Session::from_root(
+            PhiAgentStep::turn_end("previous turn"),
+            vec![
+                PhiMessage::user("old input"),
+                PhiMessage::assistant("old output"),
+            ],
+        );
+        let original = serde_json::to_value(&session).expect("session should serialize");
+        let mut context =
+            PhiAgentBuildContext::new(session, PhiAgentCommand::Step(PhiAgentCommand::step()));
+
+        context
+            .bootstrap_messages(
+                [
+                    PhiMessage::user("new input"),
+                    PhiMessage::assistant("prefill"),
+                ],
+                false,
+            )
+            .expect("messages should bootstrap");
+
+        let expr = context.session.into_expr();
+        assert!(matches!(expr.step(), PhiAgentStep::RequestProvider { .. }));
+        assert_eq!(
+            expr.delta().history(),
+            &crate::message::PhiHistory::from_messages(vec![
+                PhiMessage::user("new input"),
+                PhiMessage::assistant("prefill"),
+            ])
+        );
+        let parent = expr
+            .expr()
+            .cloned()
+            .expect("input expr should be preserved");
+        assert_eq!(
+            serde_json::to_value(Session::from_expr(parent)).expect("session should serialize"),
+            original
+        );
     }
 }
 
 pub struct AgentStepRunOutcome {
     pub session: Session,
-    pub error: Option<PhiRuntimeError>,
+    pub error: Option<PhiAgentRuntimeError>,
 }
 
 pub struct PhiAgent {
@@ -507,7 +554,7 @@ impl PhiAgentRuntime {
         &self,
         request: &render::PhiProviderCall,
         history: &PhiHistory,
-    ) -> crate::error::PhiRuntimeResult<usize> {
+    ) -> crate::error::PhiAgentRuntimeResult<usize> {
         self.render.provider_history_token_count(
             self.home(),
             self.render_template.as_deref(),

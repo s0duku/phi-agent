@@ -37,7 +37,7 @@ impl PtySession {
         platform::disable_pty_echo(&*pair.master).map_err(|error| error.to_string())?;
         #[cfg(unix)]
         let process_group_leader = pair.master.process_group_leader();
-        let builder = command::build(command);
+        let builder = command::build(command)?;
         let child = pair
             .slave
             .spawn_command(builder)

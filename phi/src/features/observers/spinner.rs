@@ -11,7 +11,7 @@ use owo_colors::{OwoColorize, Stream, Style};
 use tokio::{task::JoinHandle, time::sleep};
 
 use crate::{
-    error::PhiRuntimeResult,
+    error::PhiAgentRuntimeResult,
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
 };
 
@@ -221,7 +221,7 @@ impl Drop for SpinnerModule {
 impl PhiModule for SpinnerModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         match event {
             PhiAgentStepEvent::BeforeCompactRequest { .. } => {
                 self.start("compacting history".to_string());

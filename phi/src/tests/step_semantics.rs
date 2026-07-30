@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::{
     agent::PhiAgentCommand,
-    error::{PhiErrorKind, PhiRuntimeError, PhiRuntimeResult},
+    error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallRequest,
     home::LocalPhiHome,
     message::{PhiHistory, PhiMessage, PhiToolMessage},
@@ -32,7 +32,7 @@ impl TestClient for EmptyProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         Ok(PhiModelResponse::unspecified(Vec::new()))
     }
 }
@@ -43,12 +43,12 @@ impl TestClient for SequenceProvider {
         &self,
         _request: &PhiProviderCall,
         _messages: &PhiHistory,
-    ) -> PhiRuntimeResult<PhiModelResponse> {
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
         self.responses
             .lock()
             .expect("response queue should be healthy")
             .pop_front()
-            .ok_or_else(|| PhiRuntimeError::provider_response("response queue exhausted"))
+            .ok_or_else(|| PhiAgentRuntimeError::provider_response("response queue exhausted"))
     }
 }
 
@@ -60,10 +60,9 @@ struct RejectFirstModelResponseModule {
 impl PhiModule for RejectAfterToolCallModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterToolCall { .. } = event {
-            return Err(PhiRuntimeError::module("module rejected tool result")
-                .with_source_step("step_tool"));
+            return Err(PhiAgentRuntimeError::module("module rejected tool result"));
         }
         Ok(())
     }
@@ -72,13 +71,12 @@ impl PhiModule for RejectAfterToolCallModule {
 impl PhiModule for RejectFirstModelResponseModule {
     type ProbInfo = ();
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if matches!(event, PhiAgentStepEvent::AfterModelResponse { .. }) && !self.rejected {
             self.rejected = true;
-            return Err(
-                PhiRuntimeError::module("module rejected first model response")
-                    .with_source_step("request_provider"),
-            );
+            return Err(PhiAgentRuntimeError::module(
+                "module rejected first model response",
+            ));
         }
         Ok(())
     }
@@ -179,12 +177,13 @@ async fn invariant_tool_step_commits_pending_messages_atomically() {
 }
 
 #[tokio::test]
-async fn invariant_failed_tool_step_drops_pending_messages_and_resumes_cleanly() {
+async fn invariant_failed_tool_step_drops_pending_messages_and_rolls_back() {
     let session = pending_tool_session(
         vec![PhiMessage::user("hello")],
         vec![PhiMessage::assistant("running bash now")],
         serde_json::json!({ "cmd": shell_echo_ok_command() }),
     );
+    let original = serde_json::to_value(&session).expect("session should serialize");
 
     let failed = step_agent_builder(session)
         .with_client(Arc::new(EmptyProvider))
@@ -199,7 +198,7 @@ async fn invariant_failed_tool_step_drops_pending_messages_and_resumes_cleanly()
     assert!(matches!(
         failed.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::Module
+        if matches!(error, PhiAgentRuntimeError::Module { .. })
             && error.detail() == "module rejected tool result"
     ));
 
@@ -211,16 +210,19 @@ async fn invariant_failed_tool_step_drops_pending_messages_and_resumes_cleanly()
         .await
         .session;
 
+    assert_eq!(
+        serde_json::to_value(&resumed).expect("session should serialize"),
+        original
+    );
     assert_eq!(resumed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
-        if detail == "resuming from failed step"
+        PhiAgentStep::RequestExecutor { .. }
     ));
 }
 
 #[tokio::test]
-async fn invariant_completed_and_failed_steps_only_resume_never_execute_immediately() {
+async fn invariant_completed_resumes_and_root_failed_stays_failed() {
     let completed = Session::from_root(
         PhiAgentStep::turn_end("done"),
         vec![PhiMessage::user("hello"), PhiMessage::assistant("world")],
@@ -242,7 +244,7 @@ async fn invariant_completed_and_failed_steps_only_resume_never_execute_immediat
     ));
 
     let failed = Session::from_root(
-        PhiAgentStep::failed(PhiRuntimeError::internal("failed")),
+        PhiAgentStep::failed(PhiAgentRuntimeError::module("failed")),
         vec![PhiMessage::user("hello")],
     );
     let resumed_failed = default_step_agent_builder(failed)
@@ -253,10 +255,7 @@ async fn invariant_completed_and_failed_steps_only_resume_never_execute_immediat
         .await
         .session;
     assert_eq!(resumed_failed.history(), &[PhiMessage::user("hello")]);
-    assert!(matches!(
-        resumed_failed.step(),
-        PhiAgentStep::RequestProvider { .. }
-    ));
+    assert!(matches!(resumed_failed.step(), PhiAgentStep::Failed { .. }));
 }
 
 #[tokio::test]
@@ -288,7 +287,7 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
     assert!(matches!(
         run_outcome.session.step(),
         PhiAgentStep::Failed { error }
-        if error.kind() == PhiErrorKind::Module
+        if matches!(error, PhiAgentRuntimeError::Module { .. })
             && error.detail() == "module rejected first model response"
     ));
 

@@ -52,15 +52,16 @@ pub(crate) enum StepBounce {
     ContEval(PhiAgentRuntime, StepCont),
     CreateNextStep(PhiAgentRuntime, PhiAgentStep, PhiExprDelta),
     ReplaceBaseStep(PhiAgentRuntime, PhiAgentStep, PhiExprDelta),
+    RollbackStep(PhiAgentRuntime),
 }
 
 pub(crate) struct StepInterveneError {
     runtime: PhiAgentRuntime,
-    error: crate::error::PhiRuntimeError,
+    error: crate::error::PhiAgentRuntimeError,
 }
 
 impl StepInterveneError {
-    pub(crate) fn new(runtime: PhiAgentRuntime, error: crate::error::PhiRuntimeError) -> Self {
+    pub(crate) fn new(runtime: PhiAgentRuntime, error: crate::error::PhiAgentRuntimeError) -> Self {
         Self { runtime, error }
     }
 }
@@ -83,7 +84,8 @@ fn restore_module(
     match &mut bounce {
         StepBounce::ContEval(runtime, ..)
         | StepBounce::CreateNextStep(runtime, ..)
-        | StepBounce::ReplaceBaseStep(runtime, ..) => {
+        | StepBounce::ReplaceBaseStep(runtime, ..)
+        | StepBounce::RollbackStep(runtime) => {
             runtime.modules.restore_module(index, module);
         }
     }
@@ -111,7 +113,7 @@ impl PhiAgentRuntime {
         step: &mut PhiAgentStep,
         delta: &mut PhiExprDelta,
         replace_base: bool,
-    ) -> crate::error::PhiRuntimeResult<()> {
+    ) -> crate::error::PhiAgentRuntimeResult<()> {
         if matches!(step, PhiAgentStep::Failed { .. }) {
             return Ok(());
         }
@@ -139,17 +141,9 @@ impl PhiAgentRuntime {
             .unwrap_or_else(|| self.request_provider_step("ready"))
     }
 
-    fn continue_failed(
-        self,
-        error: crate::error::PhiRuntimeError,
-        source_step: &'static str,
-    ) -> StepBounce {
+    fn continue_failed(self, error: crate::error::PhiAgentRuntimeError) -> StepBounce {
         let delta = self.cur_delta().clone();
-        StepBounce::CreateNextStep(
-            self,
-            PhiAgentStep::failed(error.with_source_step(source_step)),
-            delta,
-        )
+        StepBounce::CreateNextStep(self, PhiAgentStep::failed(error), delta)
     }
 
     pub(super) async fn run_step(self) -> Self {
@@ -167,7 +161,7 @@ impl PhiAgentRuntime {
                     if let Err(error) =
                         runtime.handle_bounce_transition(&mut step, &mut delta, false)
                     {
-                        bounce = runtime.continue_failed(error, "bounce_transition");
+                        bounce = runtime.continue_failed(error);
                         continue;
                     }
                     let base = std::mem::replace(&mut runtime.base, PhiStepExpr::empty_root());
@@ -183,7 +177,7 @@ impl PhiAgentRuntime {
                     if let Err(error) =
                         runtime.handle_bounce_transition(&mut step, &mut delta, true)
                     {
-                        bounce = runtime.continue_failed(error, "bounce_transition");
+                        bounce = runtime.continue_failed(error);
                         continue;
                     }
                     runtime.base = match runtime.base.expr().cloned() {
@@ -195,6 +189,13 @@ impl PhiAgentRuntime {
                         let event = crate::module::PhiAgentCommitEvent::StepFailed { error };
                         runtime.modules.observe(&event);
                     }
+                    return runtime;
+                }
+                StepBounce::RollbackStep(mut runtime) => {
+                    if let Some(parent) = runtime.base.expr().cloned() {
+                        runtime.base = parent;
+                    }
+                    runtime.delta = PhiExprDelta::default();
                     return runtime;
                 }
             }
@@ -257,7 +258,7 @@ impl PhiAgentRuntime {
         match module.intervene(self, cont, next) {
             Ok(bounce) => restore_module(bounce, index, module),
             Err(StepInterveneError { runtime, error }) => {
-                let bounce = runtime.continue_failed(error, "intervene");
+                let bounce = runtime.continue_failed(error);
                 restore_module(bounce, index, module)
             }
         }
@@ -282,7 +283,7 @@ impl PhiAgentRuntime {
                     };
 
                     if let Err(error) = runtime.modules.handle(&mut before_event) {
-                        return runtime.continue_failed(error, "step_request_compact");
+                        return runtime.continue_failed(error);
                     }
 
                     match runtime.render.compact(request, history).await {
@@ -291,15 +292,14 @@ impl PhiAgentRuntime {
                                 history: &mut history,
                             };
                             if let Err(error) = runtime.modules.handle(&mut after_event) {
-                                return runtime.continue_failed(error, "step_request_compact");
+                                return runtime.continue_failed(error);
                             }
                             runtime.delta = history.into();
                             let delta = runtime.cur_delta().clone();
                             StepBounce::CreateNextStep(runtime, PhiAgentStep::Compacted, delta)
                         }
                         Err(error) => runtime.continue_failed(
-                            crate::error::PhiRuntimeError::request_compact(error.detail()),
-                            "step_request_compact",
+                            crate::error::PhiAgentRuntimeError::request_compact(error.detail()),
                         ),
                     }
                 })
@@ -325,7 +325,7 @@ impl PhiAgentRuntime {
             request: &mut request,
         };
         if let Err(failure) = self.modules.handle(&mut before_event) {
-            return self.continue_failed(failure, "request_provider");
+            return self.continue_failed(failure);
         }
         let request_history_tail = appended_history_tail(&original_history, &request_history);
 
@@ -348,7 +348,7 @@ impl PhiAgentRuntime {
                     {
                         Ok(response_messages) => response_messages,
                         Err(failure) => {
-                            return runtime.continue_failed(failure, "request_provider");
+                            return runtime.continue_failed(failure);
                         }
                     };
 
@@ -359,7 +359,7 @@ impl PhiAgentRuntime {
                         let mut after_event =
                             PhiAgentStepEvent::AfterModelResponse { message: assistant };
                         if let Err(failure) = runtime.modules.handle(&mut after_event) {
-                            return runtime.continue_failed(failure, "request_provider");
+                            return runtime.continue_failed(failure);
                         }
                     }
 
@@ -393,7 +393,7 @@ impl PhiAgentRuntime {
                         messages: &response_messages_without_tool_call,
                     };
                     if let Err(failure) = runtime.modules.handle(&mut after_response_event) {
-                        return runtime.continue_failed(failure, "request_provider");
+                        return runtime.continue_failed(failure);
                     }
 
                     if !tool_calls.is_empty() {
@@ -468,7 +468,7 @@ impl PhiAgentRuntime {
             request: &mut request,
         };
         if let Err(failure) = self.modules.handle(&mut before_event) {
-            return self.continue_failed(failure, "step_tool");
+            return self.continue_failed(failure);
         }
 
         StepBounce::ContEval(
@@ -479,17 +479,14 @@ impl PhiAgentRuntime {
                         match runtime.executor.call_tool(request.clone(), &runtime).await {
                             Ok(outcome) => outcome,
                             Err(failure) => {
-                                let failure = if matches!(
-                                    failure.kind(),
-                                    crate::error::PhiErrorKind::ToolNotFound
-                                ) {
+                                let failure = if failure.tool_request().is_some() {
                                     failure
                                         .with_pending_messages(pending_messages.clone())
                                         .with_remaining_tool_requests(remaining_tool_calls.clone())
                                 } else {
                                     failure
                                 };
-                                return runtime.continue_failed(failure, "step_tool");
+                                return runtime.continue_failed(failure);
                             }
                         };
 
@@ -498,7 +495,7 @@ impl PhiAgentRuntime {
                         result: &mut response,
                     };
                     if let Err(failure) = runtime.modules.handle(&mut after_event) {
-                        return runtime.continue_failed(failure, "step_tool");
+                        return runtime.continue_failed(failure);
                     }
 
                     let tool_call_message = PhiMessage::tool_call(

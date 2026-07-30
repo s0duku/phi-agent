@@ -1,6 +1,6 @@
 use crate::{
     agent::{PhiAgentRuntime, StepCont, StepInterveneNext},
-    error::PhiErrorKind,
+    error::PhiAgentRuntimeError,
     expr::{DeltaLookup, PhiExprDelta, PhiStepExpr},
     module::{PhiAgentStepEvent, PhiModule},
     session::{PhiAgentStep, PhiModelRetryState},
@@ -40,9 +40,10 @@ fn is_model_retry_failed_step(step: &PhiAgentStep) -> bool {
     };
 
     matches!(
-        error.kind(),
-        PhiErrorKind::ProviderRequest | PhiErrorKind::ProviderResponse
-    ) && error.source_step() == Some("request_provider")
+        error,
+        PhiAgentRuntimeError::ProviderRequest { .. }
+            | PhiAgentRuntimeError::ProviderResponse { .. }
+    )
 }
 
 impl PhiModule for ModelRetryPolicy {
@@ -121,7 +122,10 @@ impl PhiModule for ModelRetryPolicy {
         ))
     }
 
-    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> crate::error::PhiRuntimeResult<()> {
+    fn handle(
+        &mut self,
+        event: &mut PhiAgentStepEvent<'_>,
+    ) -> crate::error::PhiAgentRuntimeResult<()> {
         let (base_expr, step, delta) = match event {
             PhiAgentStepEvent::BeforeCreateNextStep {
                 base_expr,
@@ -194,7 +198,7 @@ impl PhiExprDelta {
 mod tests {
     use super::*;
     use crate::{
-        error::PhiRuntimeError,
+        error::PhiAgentRuntimeError,
         expr::PhiStepExpr,
         message::{PhiHistory, PhiMessage},
         render::{PhiModelResponse, PhiProviderCall, TestClient},
@@ -213,14 +217,13 @@ mod tests {
             &self,
             _request: &PhiProviderCall,
             _messages: &PhiHistory,
-        ) -> crate::error::PhiRuntimeResult<PhiModelResponse> {
+        ) -> crate::error::PhiAgentRuntimeResult<PhiModelResponse> {
             let mut attempts = self.attempts.lock().expect("attempt lock should succeed");
             *attempts += 1;
             if *attempts == 1 {
-                Err(
-                    PhiRuntimeError::provider_request("model request failed: timeout")
-                        .with_source_step("request_provider"),
-                )
+                Err(PhiAgentRuntimeError::provider_request(
+                    "model request failed: timeout",
+                ))
             } else {
                 Ok(PhiModelResponse::unspecified(vec![PhiMessage::assistant(
                     "ok",
@@ -235,12 +238,9 @@ mod tests {
             PhiAgentStep::request_provider("requesting completion", &test_model_defaults()),
             Vec::<PhiMessage>::new(),
         );
-        let session = Session::from_expr(
-            base.branch_failed(
-                PhiRuntimeError::provider_request("model request failed: timeout")
-                    .with_source_step("request_provider"),
-            ),
-        );
+        let session = Session::from_expr(base.branch_failed(
+            PhiAgentRuntimeError::provider_request("model request failed: timeout"),
+        ));
 
         let outcome = crate::tests::support::step_agent_builder(session)
             .with_client(crate::tests::support::stub_client(Vec::new()))
@@ -305,12 +305,9 @@ mod tests {
             Vec::<PhiMessage>::new(),
         )
         .with_model_retry_state(PhiModelRetryState { attempt: 3 });
-        let session = Session::from_expr(
-            retrying_step.branch_failed(
-                PhiRuntimeError::provider_request("model request failed: timeout")
-                    .with_source_step("request_provider"),
-            ),
-        );
+        let session = Session::from_expr(retrying_step.branch_failed(
+            PhiAgentRuntimeError::provider_request("model request failed: timeout"),
+        ));
 
         let outcome = crate::tests::support::step_agent_builder(session)
             .with_client(crate::tests::support::stub_client(Vec::new()))

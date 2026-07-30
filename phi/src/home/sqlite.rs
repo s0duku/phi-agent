@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::error::PhiRuntimeError;
-
-use super::{PhiHome, PhiHomeDoctorReport, PhiHomeEntry, PhiHomePath, PhiHomeUrl};
+use super::{
+    PhiHome, PhiHomeDoctorReport, PhiHomeEntry, PhiHomeError, PhiHomePath, PhiHomeResult,
+    PhiHomeUrl,
+};
 
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
 
@@ -73,16 +74,16 @@ impl PhiHome for SqlitePhiHome {
         }
     }
 
-    fn read_file(&self, source: &PhiHomeUrl) -> crate::error::PhiRuntimeResult<Vec<u8>> {
+    fn read_file(&self, source: &PhiHomeUrl) -> PhiHomeResult<Vec<u8>> {
         if source.scheme() != "phidb" {
-            return Err(PhiRuntimeError::tool_execution(format!(
+            return Err(PhiHomeError::read(format!(
                 "sqlite phi home only supports phidb urls, got {}",
                 source.scheme()
             )));
         }
 
         let conn = self.open_ro().map_err(|error| {
-            PhiRuntimeError::tool_execution(format!(
+            PhiHomeError::read(format!(
                 "failed to open sqlite phi home {}: {error}",
                 self.path.display()
             ))
@@ -94,13 +95,13 @@ impl PhiHome for SqlitePhiHome {
         )
         .optional()
         .map_err(|error| {
-            PhiRuntimeError::tool_execution(format!(
+            PhiHomeError::read(format!(
                 "failed to query sqlite phi home {}: {error}",
                 self.path.display()
             ))
         })?
         .ok_or_else(|| {
-            PhiRuntimeError::tool_execution(format!(
+            PhiHomeError::read(format!(
                 "sqlite phi home entry not found: {}",
                 source.path()
             ))
