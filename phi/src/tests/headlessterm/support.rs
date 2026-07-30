@@ -3,9 +3,9 @@
 use std::io::{Read, Result as IoResult, Write};
 use std::time::Duration;
 
-use crate::headlessterm::HeadlessTerminal;
 use crate::headlessterm::job::{JobAccess, JobAccessResult, JobHandle, JobInfo};
 use crate::headlessterm::worker::rpc;
+use crate::headlessterm::{HeadlessTermError, HeadlessTerminal};
 
 pub(crate) struct EndpointStream(pub(crate) interprocess::local_socket::Stream);
 
@@ -33,7 +33,7 @@ pub(crate) fn exec_job(
     cmd: &str,
     try_wait: Duration,
     expiration: Duration,
-) -> Result<(Option<JobHandle>, JobInfo), String> {
+) -> Result<(Option<JobHandle>, JobInfo), HeadlessTermError> {
     block_on(HeadlessTerminal::new().exec_job(cmd, try_wait, expiration))
 }
 
@@ -41,7 +41,7 @@ pub(crate) fn job_interact(
     handle: JobHandle,
     data: &str,
     try_wait: Duration,
-) -> Result<JobInfo, String> {
+) -> Result<JobInfo, HeadlessTermError> {
     let result = block_on(HeadlessTerminal::new().access_job(
         handle,
         JobAccess::Interact {

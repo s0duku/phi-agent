@@ -17,6 +17,29 @@ pub struct PhiConfig {
     values: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
+pub struct PhiRuntimeSetup {
+    config: PhiConfig,
+    command: crate::agent::PhiAgentCommand,
+}
+
+impl PhiRuntimeSetup {
+    pub fn from_command(config: PhiConfig, command: &crate::agent::PhiAgentCommand) -> Self {
+        Self {
+            config,
+            command: command.clone(),
+        }
+    }
+
+    pub fn config(&self) -> &PhiConfig {
+        &self.config
+    }
+
+    pub fn command(&self) -> &crate::agent::PhiAgentCommand {
+        &self.command
+    }
+}
+
 impl PhiConfig {
     pub fn new(values: BTreeMap<String, String>) -> Self {
         Self { values }

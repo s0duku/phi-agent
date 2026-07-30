@@ -167,15 +167,10 @@ async fn invariant_tool_step_commits_pending_messages_atomically() {
     };
     assert_eq!(id.as_deref(), Some("call_1"));
     assert_eq!(name.as_deref(), Some(shell_tool_name()));
-    assert_eq!(result["tool_ok"], serde_json::json!(true));
-    assert_eq!(result["tool_error"], serde_json::Value::Null);
-    assert_eq!(
-        result["value"]["output"],
-        serde_json::json!(shell_stdout_ok())
-    );
-    assert_eq!(result["value"]["status"], serde_json::json!("exited"));
-    assert_eq!(result["value"]["exit_code"], serde_json::json!(0));
-    assert_eq!(result["value"]["handle"], serde_json::Value::Null);
+    assert_eq!(result["output"], serde_json::json!(shell_stdout_ok()));
+    assert_eq!(result["status"], serde_json::json!("exited"));
+    assert_eq!(result["exit_code"], serde_json::json!(0));
+    assert_eq!(result["handle"], serde_json::Value::Null);
     assert!(matches!(
         outcome.session.step(),
         PhiAgentStep::RequestProvider { detail, .. }

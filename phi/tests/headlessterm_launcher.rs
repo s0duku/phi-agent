@@ -11,15 +11,21 @@ fn detached_container_survives_its_launcher() {
     } else {
         "sleep 30"
     };
+    let command = serde_json::json!({"Shell": {"command": command}}).to_string();
 
     let launched = Command::new(PHI)
-        .args(["headlessterm", "launch-local", &handle, "5000", command])
+        .args(["headlessterm", "launch-local", &handle, "5000", &command])
         .output()
         .expect("container launcher should execute");
     assert!(
         launched.status.success(),
         "container launcher failed: {}",
         String::from_utf8_lossy(&launched.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&launched.stdout)
+            .expect("launcher stdout should be a JSON report"),
+        serde_json::json!({"status": "ready", "handle": handle})
     );
 
     let deadline = Instant::now() + Duration::from_secs(5);

@@ -12,7 +12,25 @@ const EXIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// programs time to establish `nohup` handling before termination of the
 /// terminal session sends SIGHUP to its foreground process group.
 pub(crate) fn build(command: TerminalCommand) -> CommandBuilder {
-    let TerminalCommand::Shell { command } = command;
+    match command {
+        TerminalCommand::Shell { command } => return build_shell(command),
+        TerminalCommand::DockerExec {
+            container,
+            command,
+            shell,
+        } => {
+            let mut builder = CommandBuilder::new("docker");
+            builder.args(["exec", "--interactive", "--tty"]);
+            builder.arg(container);
+            builder.arg(shell);
+            builder.arg("-lc");
+            builder.arg(command);
+            return builder;
+        }
+    }
+}
+
+fn build_shell(command: String) -> CommandBuilder {
     #[cfg(unix)]
     {
         let shell = unix_shell();

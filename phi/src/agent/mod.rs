@@ -19,7 +19,7 @@ pub(crate) use crate::expr::{DeltaLookup, PhiExprDelta, PhiStepExpr};
 #[cfg(test)]
 use crate::module::PhiModule;
 use crate::{
-    config::{ModelRequestDefaults, PhiConfig, ProviderConfig},
+    config::{ModelRequestDefaults, PhiConfig, PhiRuntimeSetup, ProviderConfig},
     error::PhiRuntimeError,
     executor::{PhiExecutor, PhiToolDefinition},
     features::{build_default_modules, build_init_modules, build_runtime_modules},
@@ -131,7 +131,7 @@ pub(crate) struct PhiAgentRuntime {
     model_defaults: ModelRequestDefaults,
     render_template: Option<String>,
     home: Arc<dyn PhiHome>,
-    config: PhiConfig,
+    config: PhiRuntimeSetup,
 }
 
 pub struct PhiAgentBuilder {
@@ -306,7 +306,10 @@ impl PreparedPhiAgentBuilder {
                 model_defaults,
                 render_template,
                 home,
-                config: self.builder.context.config.clone(),
+                config: PhiRuntimeSetup::from_command(
+                    self.builder.context.config.clone(),
+                    &self.builder.context.command,
+                ),
             }),
         })
     }
@@ -349,7 +352,8 @@ impl PhiAgent {
             .runtime
             .as_ref()
             .expect("PhiAgent runtime should exist while building doctor report");
-        let system_prompt = crate::features::configured_system_prompt_from_config(&runtime.config);
+        let system_prompt =
+            crate::features::configured_system_prompt_from_config(runtime.config().config());
         DoctorReport {
             python_plugin: crate::features::plugin_runtime_status(),
             home: runtime.home().doctor_report(),
@@ -437,6 +441,10 @@ impl PhiAgent {
 }
 
 impl PhiAgentRuntime {
+    pub(crate) fn config(&self) -> &PhiRuntimeSetup {
+        &self.config
+    }
+
     pub(crate) fn base_expr(&self) -> &PhiStepExpr {
         &self.base
     }

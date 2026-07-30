@@ -47,4 +47,12 @@ fn headlessterm_help_exposes_launch_local() {
 
     assert!(help.contains("launch-local"));
     assert!(help.contains("Launch a detached local headlessterm worker"));
+    let exec_help = command
+        .find_subcommand_mut("headlessterm")
+        .expect("headlessterm subcommand should exist")
+        .find_subcommand_mut("exec")
+        .expect("headlessterm exec subcommand should exist")
+        .render_help()
+        .to_string();
+    assert!(exec_help.contains("--container"));
 }

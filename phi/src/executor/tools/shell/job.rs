@@ -8,14 +8,14 @@ use crate::{
     agent::PhiAgentRuntime,
     executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     headlessterm::{
-        HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen,
-        TerminalCommand,
+        DEFAULT_TRY_WAIT, HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo,
+        JobStatus, ReturnWhen, TerminalCommand,
     },
 };
 
-const EXEC_WAIT: Duration = Duration::from_secs(60);
+const EXEC_WAIT: Duration = DEFAULT_TRY_WAIT;
 const JOB_EXPIRATION: Duration = Duration::from_secs(10 * 60);
-const DEFAULT_INTERACT_WAIT_MS: u64 = 60_000;
+const DEFAULT_INTERACT_WAIT_MS: u64 = DEFAULT_TRY_WAIT.as_millis() as u64;
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(20);
 
 pub struct ShellJobExecTool;
@@ -83,7 +83,7 @@ impl PhiTool for ShellJobExecTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _runtime: &PhiAgentRuntime,
+        runtime: &PhiAgentRuntime,
     ) -> ToolCallResponse {
         let args = match parse_args::<ExecArgs>(request, self.name()) {
             Ok(args) => args,
@@ -93,9 +93,15 @@ impl PhiTool for ShellJobExecTool {
             return failure(request, self.name(), error);
         }
         let terminal = HeadlessTerminal::new();
+        let command = runtime
+            .config()
+            .command()
+            .container()
+            .map(|container| TerminalCommand::docker_exec(container, args.cmd.clone()))
+            .unwrap_or_else(|| TerminalCommand::shell(args.cmd.clone()));
         let result = terminal
             .exec_job(
-                TerminalCommand::shell(&args.cmd),
+                command,
                 ReturnWhen::output_settled(EXEC_WAIT),
                 JOB_EXPIRATION,
             )
@@ -103,7 +109,7 @@ impl PhiTool for ShellJobExecTool {
 
         match result {
             Ok((handle, info)) => response(request, self.name(), info, handle),
-            Err(error) => failure(request, self.name(), error),
+            Err(error) => headlessterm_failure(request, self.name(), error),
         }
     }
 }
@@ -173,7 +179,7 @@ impl PhiTool for ShellJobInteractTool {
                             "job access returned a terminal snapshot for write request".into(),
                         );
                     }
-                    Err(error) => return failure(request, self.name(), error),
+                    Err(error) => return headlessterm_failure(request, self.name(), error),
                 }
                 tokio::time::sleep(SUBMIT_KEY_DELAY).await;
                 interact(handle, "\r".into(), wait).await
@@ -182,12 +188,16 @@ impl PhiTool for ShellJobInteractTool {
 
         match result {
             Ok(info) => response(request, self.name(), info, Some(JobHandle(handle_value))),
-            Err(error) => failure(request, self.name(), error),
+            Err(error) => headlessterm_failure(request, self.name(), error),
         }
     }
 }
 
-async fn interact(handle: JobHandle, data: String, wait: Duration) -> Result<JobInfo, String> {
+async fn interact(
+    handle: JobHandle,
+    data: String,
+    wait: Duration,
+) -> Result<JobInfo, crate::headlessterm::HeadlessTermError> {
     let terminal = HeadlessTerminal::new();
     let result = terminal
         .access_job(
@@ -200,9 +210,9 @@ async fn interact(handle: JobHandle, data: String, wait: Duration) -> Result<Job
         .await?;
     match result {
         JobAccessResult::Interacted(info) => Ok(info),
-        JobAccessResult::Written(_) => {
-            Err("job access returned a write acknowledgment for interact request".into())
-        }
+        JobAccessResult::Written(_) => Err(crate::headlessterm::HeadlessTermError::protocol(
+            "job access returned a write acknowledgment for interact request",
+        )),
     }
 }
 
@@ -248,7 +258,7 @@ impl PhiTool for ShellJobCloseTool {
 
         match result {
             Ok(info) => response(request, self.name(), info, None),
-            Err(error) => failure(request, self.name(), error),
+            Err(error) => headlessterm_failure(request, self.name(), error),
         }
     }
 }
@@ -287,11 +297,23 @@ fn response(
         "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
     });
 
-    ToolCallResponse::success(request, name, value)
+    ToolCallResponse::new(request, name, value)
 }
 
 fn failure(request: &ToolCallRequest, name: &str, error: String) -> ToolCallResponse {
-    ToolCallResponse::failure(request, name, error, serde_json::Value::Null)
+    ToolCallResponse::new(request, name, serde_json::json!({"error": error}))
+}
+
+fn headlessterm_failure(
+    request: &ToolCallRequest,
+    name: &str,
+    error: crate::headlessterm::HeadlessTermError,
+) -> ToolCallResponse {
+    ToolCallResponse::new(
+        request,
+        name,
+        serde_json::to_value(error).expect("HeadlessTermError should serialize"),
+    )
 }
 
 pub(crate) fn interactive_input(input: Option<String>) -> InteractiveInput {
@@ -380,8 +402,6 @@ mod tests {
                 None,
             );
 
-            assert!(response.output.tool_ok());
-            assert_eq!(response.output.tool_error(), None);
             assert_eq!(response.output.as_value()["status"], expected_status);
             assert_eq!(response.output.as_value()["exit_code"], expected_exit_code);
         }

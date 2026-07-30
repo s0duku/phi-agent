@@ -47,14 +47,7 @@ def protect_plugin_io():
 
 
 def normalize_tool_output(value):
-    return _json.dumps(
-        {
-            "tool_ok": True,
-            "tool_error": None,
-            "value": value,
-        },
-        ensure_ascii=False,
-    )
+    return _json.dumps(value, ensure_ascii=False)
 
 
 def _traceback_entries(exc):
@@ -115,14 +108,7 @@ def normalize_tool_exception(exc):
     location = _tool_exception_location(exc)
     if location is not None:
         payload["location"] = location
-    return _json.dumps(
-        {
-            "tool_ok": False,
-            "tool_error": message,
-            "value": payload,
-        },
-        ensure_ascii=False,
-    )
+    return _json.dumps(payload, ensure_ascii=False)
 
 
 while True:

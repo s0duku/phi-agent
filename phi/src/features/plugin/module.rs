@@ -104,16 +104,15 @@ impl PhiTool for PythonPluginTool {
         {
             Ok(output) => output,
             Err(error) => {
-                return ToolCallResponse::failure(
+                return ToolCallResponse::new(
                     &request_snapshot,
                     self.definition.name.clone(),
-                    error,
-                    serde_json::Value::Null,
+                    serde_json::json!({"error": error}),
                 );
             }
         };
         let output = serde_json::from_str::<ToolCallOutput>(&output)
-            .unwrap_or_else(|_| ToolCallOutput::success(serde_json::Value::String(output)));
+            .unwrap_or_else(|_| ToolCallOutput::new(serde_json::Value::String(output)));
         ToolCallResponse {
             id: request.id.clone(),
             call_id: request.call_id.clone(),
@@ -521,8 +520,6 @@ def badreturn():
             .expect("python tool should execute through executor");
 
         assert_eq!(response.name, "adder");
-        assert!(response.output.tool_ok());
-        assert_eq!(response.output.tool_error(), None);
         assert_eq!(
             *response.output.as_value(),
             serde_json::json!({
@@ -567,8 +564,6 @@ def badreturn():
             .await
             .expect("python exception should still return a tool result");
 
-        assert!(!response.output.tool_ok());
-        assert_eq!(response.output.tool_error(), Some("bad name: alice"));
         let payload = response.output.as_value();
         assert_eq!(payload["type"], serde_json::json!("ValueError"));
         assert_eq!(payload["message"], serde_json::json!("bad name: alice"));
@@ -623,12 +618,6 @@ def badreturn():
             .await
             .expect("non-serializable python output should still return a tool result");
 
-        assert!(!response.output.tool_ok());
-        assert!(
-            response.output.tool_error().is_some_and(
-                |error| error.contains("Object of type object is not JSON serializable")
-            )
-        );
         let payload = response.output.as_value();
         assert_eq!(payload["type"], serde_json::json!("TypeError"));
         assert!(payload["message"].as_str().is_some_and(|message| {

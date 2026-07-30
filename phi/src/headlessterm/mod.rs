@@ -7,7 +7,8 @@ use std::time::Duration;
 use clap::{Args, Subcommand};
 
 pub use job::{
-    JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen, TerminalCommand,
+    DEFAULT_TRY_WAIT, HeadlessTermError, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus,
+    ReturnWhen, TerminalCommand, WorkerLaunchStage,
 };
 
 /// Client for Phi's persistent headlessterm worker.
@@ -24,25 +25,24 @@ impl HeadlessTerminal {
         command: C,
         return_when: W,
         expiration: Duration,
-    ) -> Result<(Option<JobHandle>, JobInfo), String>
+    ) -> Result<(Option<JobHandle>, JobInfo), HeadlessTermError>
     where
         C: Into<TerminalCommand>,
         W: Into<ReturnWhen>,
     {
         worker::client::exec_job(command.into(), return_when.into(), expiration)
-            .map_err(|error| error.to_string())
     }
 
     pub async fn access_job(
         &self,
         handle: JobHandle,
         access: JobAccess,
-    ) -> Result<JobAccessResult, String> {
-        worker::client::access_job(handle, access).map_err(|error| error.to_string())
+    ) -> Result<JobAccessResult, HeadlessTermError> {
+        worker::client::access_job(handle, access)
     }
 
-    pub async fn close_job(&self, handle: JobHandle) -> Result<JobInfo, String> {
-        worker::client::close_job(handle).map_err(|error| error.to_string())
+    pub async fn close_job(&self, handle: JobHandle) -> Result<JobInfo, HeadlessTermError> {
+        worker::client::close_job(handle)
     }
 }
 
@@ -56,7 +56,12 @@ pub struct HeadlessTerminalArgs {
 #[derive(Subcommand)]
 enum HeadlessTerminalCommand {
     Exec {
-        #[arg(long, default_value_t = 1000)]
+        #[arg(
+            long,
+            help = "Execute the command inside an already-running Docker container"
+        )]
+        container: Option<String>,
+        #[arg(long, default_value_t = 60_000)]
         wait_ms: u64,
         #[arg(long, default_value_t = 300_000)]
         expiration_ms: u64,
@@ -66,7 +71,7 @@ enum HeadlessTerminalCommand {
     Write {
         handle: String,
         data: Option<String>,
-        #[arg(long, default_value_t = 1000)]
+        #[arg(long, default_value_t = 60_000)]
         wait_ms: u64,
     },
     Close {
@@ -94,17 +99,24 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
     let terminal = HeadlessTerminal::new();
     match args.command {
         HeadlessTerminalCommand::Exec {
+            container,
             wait_ms,
             expiration_ms,
             command,
         } => {
             let info = terminal
                 .exec_job(
-                    TerminalCommand::shell(command.join(" ")),
+                    match container {
+                        Some(container) => {
+                            TerminalCommand::docker_exec(container, command.join(" "))
+                        }
+                        None => TerminalCommand::shell(command.join(" ")),
+                    },
                     ReturnWhen::output_settled(Duration::from_millis(wait_ms)),
                     Duration::from_millis(expiration_ms),
                 )
-                .await?;
+                .await
+                .map_err(|error| error.to_string())?;
             render(info.1, info.0.as_ref())?;
         }
         HeadlessTerminalCommand::Write {
@@ -120,7 +132,8 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
                         return_when: ReturnWhen::output_settled(Duration::from_millis(wait_ms)),
                     },
                 )
-                .await?;
+                .await
+                .map_err(|error| error.to_string())?;
             let JobAccessResult::Interacted(info) = result else {
                 return Err(
                     "job access returned a write acknowledgment for interact request".into(),
@@ -129,7 +142,13 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
             render(info, None)?;
         }
         HeadlessTerminalCommand::Close { handle } => {
-            render(terminal.close_job(JobHandle(handle)).await?, None)?;
+            render(
+                terminal
+                    .close_job(JobHandle(handle))
+                    .await
+                    .map_err(|error| error.to_string())?,
+                None,
+            )?;
         }
         HeadlessTerminalCommand::LaunchLocal {
             handle,
@@ -137,9 +156,20 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
             command,
         } => {
             let command = command.join(" ");
-            let command =
-                serde_json::from_str(&command).unwrap_or_else(|_| TerminalCommand::shell(command));
-            worker::launch_worker(&handle, Duration::from_millis(expiration_ms), command)?;
+            let report = match serde_json::from_str(&command) {
+                Ok(command) => {
+                    worker::launch_worker(&handle, Duration::from_millis(expiration_ms), command)
+                }
+                Err(error) => worker::WorkerLaunchReport::failed(
+                    worker::WorkerLaunchStage::DecodeCommand,
+                    error.to_string(),
+                ),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&report).map_err(|error| error.to_string())?
+            );
+            report.into_result().map_err(|error| error.to_string())?;
         }
         HeadlessTerminalCommand::Local {
             handle,

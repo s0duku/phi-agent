@@ -550,6 +550,7 @@ struct RunArgs {
     max_steps: Option<usize>,
     max_model_request_retries: Option<usize>,
     template: Option<String>,
+    container: Option<String>,
 }
 
 #[derive(Default)]
@@ -557,6 +558,7 @@ struct StepArgs {
     base: AgentCliArgs,
     max_model_request_retries: Option<usize>,
     template: Option<String>,
+    container: Option<String>,
 }
 
 impl From<&RunArgs> for agent::RunCommandArgs {
@@ -567,6 +569,7 @@ impl From<&RunArgs> for agent::RunCommandArgs {
             max_model_request_retries: value.max_model_request_retries,
             template: value.template.clone(),
             plugin_args: value.base.plugin_args.clone(),
+            container: value.container.clone(),
         }
     }
 }
@@ -578,6 +581,7 @@ impl From<&StepArgs> for agent::StepCommandArgs {
             max_model_request_retries: value.max_model_request_retries,
             template: value.template.clone(),
             plugin_args: value.base.plugin_args.clone(),
+            container: value.container.clone(),
         }
     }
 }
@@ -604,6 +608,7 @@ impl FromArgMatches for RunArgs {
             max_steps: matches.remove_one::<usize>("max_steps"),
             max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
             template: matches.remove_one::<String>("template"),
+            container: matches.remove_one::<String>("container"),
         })
     }
 
@@ -645,6 +650,7 @@ impl Args for RunArgs {
                     .value_parser(clap::value_parser!(usize)),
             )
             .arg(Arg::new("template").long("template").value_name("NAME"))
+            .arg(Arg::new("container").long("container").value_name("NAME"))
             .arg(
                 Arg::new("plugin_args")
                     .raw(true)
@@ -669,6 +675,7 @@ impl FromArgMatches for StepArgs {
             base: parse_agent_cli_args(matches),
             max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
             template: matches.remove_one::<String>("template"),
+            container: matches.remove_one::<String>("container"),
         })
     }
 
@@ -701,6 +708,7 @@ impl Args for StepArgs {
                     .value_parser(clap::value_parser!(usize)),
             )
             .arg(Arg::new("template").long("template").value_name("NAME"))
+            .arg(Arg::new("container").long("container").value_name("NAME"))
             .arg(
                 Arg::new("plugin_args")
                     .raw(true)

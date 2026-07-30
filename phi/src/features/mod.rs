@@ -170,13 +170,11 @@ impl PhiModule for DefaultFailedRecoveryModule {
             && error.source_step() == Some("step_tool")
             && let Some(tool_request) = error.tool_request().cloned()
         {
-            let output = ToolCallOutput::failure(
-                error.detail(),
-                serde_json::json!({
-                    "kind": "tool_not_found",
-                    "tool_name": tool_request.name.clone(),
-                }),
-            );
+            let output = ToolCallOutput::new(serde_json::json!({
+                "error": error.detail(),
+                "kind": "tool_not_found",
+                "tool_name": tool_request.name.clone(),
+            }));
             let rendered_output = serde_json::to_string(&output)
                 .expect("tool-not-found recovery output should serialize");
             runtime.emit_warning(&format!(

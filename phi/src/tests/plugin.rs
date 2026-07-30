@@ -51,6 +51,7 @@ fn plugin_descriptor_captures_build_time_command_view() {
         },
         max_model_request_retries: Some(3),
         template: None,
+        container: None,
     };
     let command = PhiAgentCommand::try_from(StepCommandInput {
         args: &args,

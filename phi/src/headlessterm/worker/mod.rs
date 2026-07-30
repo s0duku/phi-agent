@@ -9,9 +9,12 @@ pub(crate) mod protocol;
 mod pty;
 pub(crate) mod rpc;
 mod server;
+mod startup;
 pub(crate) mod state;
 
 use crate::headlessterm::job::TerminalCommand;
+pub(crate) use crate::headlessterm::job::WorkerLaunchStage;
+pub(crate) use startup::WorkerLaunchReport;
 
 pub(crate) fn worker_entry(
     handle: &str,
@@ -25,6 +28,6 @@ pub(crate) fn launch_worker(
     handle: &str,
     expiration: std::time::Duration,
     command: TerminalCommand,
-) -> Result<(), String> {
+) -> WorkerLaunchReport {
     launcher::launch_worker(handle, command, expiration)
 }

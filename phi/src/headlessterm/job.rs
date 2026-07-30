@@ -1,9 +1,115 @@
 use std::time::Duration;
 
+pub const DEFAULT_TRY_WAIT: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HeadlessTermError {
+    Launch {
+        stage: WorkerLaunchStage,
+        error: String,
+    },
+    Transport {
+        operation: String,
+        error: String,
+    },
+    Protocol {
+        error: String,
+    },
+    Operation {
+        error: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerLaunchStage {
+    DecodeCommand,
+    BindRpc,
+    SpawnCommand,
+    SpawnWorker,
+    AwaitWorker,
+}
+
+impl HeadlessTermError {
+    pub(crate) fn launch(stage: WorkerLaunchStage, error: impl Into<String>) -> Self {
+        Self::Launch {
+            stage,
+            error: error.into(),
+        }
+    }
+
+    pub(crate) fn transport(operation: impl Into<String>, error: impl Into<String>) -> Self {
+        Self::Transport {
+            operation: operation.into(),
+            error: error.into(),
+        }
+    }
+
+    pub(crate) fn protocol(error: impl Into<String>) -> Self {
+        Self::Protocol {
+            error: error.into(),
+        }
+    }
+
+    pub(crate) fn operation(error: impl Into<String>) -> Self {
+        Self::Operation {
+            error: error.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for HeadlessTermError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Launch { stage, error } => {
+                write!(formatter, "worker launch failed at {stage}: {error}")
+            }
+            Self::Transport { operation, error } => {
+                write!(
+                    formatter,
+                    "headlessterm transport failed during {operation}: {error}"
+                )
+            }
+            Self::Protocol { error } => write!(formatter, "headlessterm protocol error: {error}"),
+            Self::Operation { error } => {
+                write!(formatter, "headlessterm operation failed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HeadlessTermError {}
+
+impl std::fmt::Display for WorkerLaunchStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::DecodeCommand => "decode_command",
+            Self::BindRpc => "bind_rpc",
+            Self::SpawnCommand => "spawn_command",
+            Self::SpawnWorker => "spawn_worker",
+            Self::AwaitWorker => "await_worker",
+        };
+        formatter.write_str(name)
+    }
+}
+
 /// A command interpreted by the headlessterm worker.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub enum TerminalCommand {
-    Shell { command: String },
+    Shell {
+        command: String,
+    },
+    DockerExec {
+        container: String,
+        command: String,
+        #[serde(default = "default_container_shell")]
+        shell: String,
+    },
+}
+
+fn default_container_shell() -> String {
+    "/bin/sh".to_owned()
 }
 
 /// The boundary that completes one terminal interaction.
@@ -88,6 +194,14 @@ impl TerminalCommand {
     pub fn shell(command: impl Into<String>) -> Self {
         Self::Shell {
             command: command.into(),
+        }
+    }
+
+    pub fn docker_exec(container: impl Into<String>, command: impl Into<String>) -> Self {
+        Self::DockerExec {
+            container: container.into(),
+            command: command.into(),
+            shell: default_container_shell(),
         }
     }
 }

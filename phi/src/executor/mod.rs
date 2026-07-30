@@ -51,43 +51,20 @@ pub struct ToolCallRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct ToolCallOutput {
-    pub tool_ok: bool,
-    pub tool_error: Option<String>,
-    pub value: serde_json::Value,
-}
+#[serde(transparent)]
+pub struct ToolCallOutput(pub serde_json::Value);
 
 impl ToolCallOutput {
-    pub fn success(value: serde_json::Value) -> Self {
-        Self {
-            tool_ok: true,
-            tool_error: None,
-            value,
-        }
-    }
-
-    pub fn failure(error: impl Into<String>, value: serde_json::Value) -> Self {
-        Self {
-            tool_ok: false,
-            tool_error: Some(error.into()),
-            value,
-        }
-    }
-
-    pub fn tool_ok(&self) -> bool {
-        self.tool_ok
-    }
-
-    pub fn tool_error(&self) -> Option<&str> {
-        self.tool_error.as_deref()
+    pub fn new(value: serde_json::Value) -> Self {
+        Self(value)
     }
 
     pub fn as_value(&self) -> &serde_json::Value {
-        &self.value
+        &self.0
     }
 
     pub fn into_value(self) -> serde_json::Value {
-        self.value
+        self.0
     }
 }
 
@@ -101,7 +78,7 @@ pub struct ToolCallResponse {
 }
 
 impl ToolCallResponse {
-    pub fn success(
+    pub fn new(
         request: &ToolCallRequest,
         name: impl Into<String>,
         value: serde_json::Value,
@@ -110,21 +87,7 @@ impl ToolCallResponse {
             id: request.id.clone(),
             call_id: request.call_id.clone(),
             name: name.into(),
-            output: ToolCallOutput::success(value),
-        }
-    }
-
-    pub fn failure(
-        request: &ToolCallRequest,
-        name: impl Into<String>,
-        error: impl Into<String>,
-        value: serde_json::Value,
-    ) -> Self {
-        Self {
-            id: request.id.clone(),
-            call_id: request.call_id.clone(),
-            name: name.into(),
-            output: ToolCallOutput::failure(error, value),
+            output: ToolCallOutput::new(value),
         }
     }
 }
@@ -145,11 +108,8 @@ pub(crate) trait PhiTool: Send + Sync {
         }
     }
 
-    // Tool execution crosses the same runtime boundary as providers: if a tool
-    // fails semantically, the tool should encode that as ToolCallOutput rather
-    // than escaping through PhiRuntimeResult. The runtime result channel here
-    // is reserved for executor-level dispatch failures outside the tool's own
-    // response semantics.
+    // The tool owns the response schema. Runtime errors are reserved for
+    // executor-level dispatch failures, such as an unknown tool name.
     async fn call(
         &self,
         request: &mut ToolCallRequest,

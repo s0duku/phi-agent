@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use crate::headlessterm::job::{
-    JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen, TerminalCommand,
+    HeadlessTermError, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen,
+    TerminalCommand,
 };
 
 use super::launcher;
@@ -12,8 +13,8 @@ pub(crate) fn exec_job(
     command: TerminalCommand,
     return_when: ReturnWhen,
     expiration: Duration,
-) -> Result<(Option<JobHandle>, JobInfo), String> {
-    let handle = JobHandle::random()?;
+) -> Result<(Option<JobHandle>, JobInfo), HeadlessTermError> {
+    let handle = JobHandle::random().map_err(HeadlessTermError::operation)?;
     launcher::spawn_worker(&handle, command, expiration)?;
     let result = access_job(
         JobHandle(handle.0.clone()),
@@ -23,13 +24,18 @@ pub(crate) fn exec_job(
         },
     )?;
     let JobAccessResult::Interacted(info) = result else {
-        return Err("job access returned a write acknowledgment for interact request".into());
+        return Err(HeadlessTermError::protocol(
+            "job access returned a write acknowledgment for interact request",
+        ));
     };
     let live_handle = matches!(info.status(), JobStatus::Running).then_some(handle);
     Ok((live_handle, info))
 }
 
-pub(crate) fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
+pub(crate) fn access_job(
+    handle: JobHandle,
+    access: JobAccess,
+) -> Result<JobAccessResult, HeadlessTermError> {
     let interacts = matches!(access, JobAccess::Interact { .. });
     let response = send_request(&handle.0, Request::Access(access))?;
     if interacts {
@@ -39,15 +45,15 @@ pub(crate) fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAcce
     }
 }
 
-pub(crate) fn close_job(handle: JobHandle) -> Result<JobInfo, String> {
+pub(crate) fn close_job(handle: JobHandle) -> Result<JobInfo, HeadlessTermError> {
     request(&handle.0, Request::Close)
 }
 
-fn request(handle: &str, request: Request) -> Result<JobInfo, String> {
+fn request(handle: &str, request: Request) -> Result<JobInfo, HeadlessTermError> {
     response_into_job_info(send_request(handle, request)?)
 }
 
-fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, String> {
+fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, HeadlessTermError> {
     match response {
         None => Ok(JobInfo::new(
             JobStatus::NoExist,
@@ -67,20 +73,20 @@ fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, String>
             Duration::from_millis(waited_ms),
         )),
         Some(Response::Failed { error, .. }) => Err(error),
-        Some(Response::Written { .. }) => {
-            Err("job protocol returned write acknowledgment for terminal request".to_owned())
-        }
+        Some(Response::Written { .. }) => Err(HeadlessTermError::protocol(
+            "job protocol returned write acknowledgment for terminal request",
+        )),
     }
 }
 
-fn response_into_status(response: Option<Response>) -> Result<JobStatus, String> {
+fn response_into_status(response: Option<Response>) -> Result<JobStatus, HeadlessTermError> {
     match response {
         None => Ok(JobStatus::NoExist),
         Some(Response::Written { status }) => Ok(job_status(status)),
         Some(Response::Failed { error, .. }) => Err(error),
-        Some(Response::Terminal { .. }) => {
-            Err("job protocol returned terminal snapshot for write request".to_owned())
-        }
+        Some(Response::Terminal { .. }) => Err(HeadlessTermError::protocol(
+            "job protocol returned terminal snapshot for write request",
+        )),
     }
 }
 
@@ -91,22 +97,22 @@ fn job_status(status: Status) -> JobStatus {
     }
 }
 
-fn send_request(handle: &str, request: Request) -> Result<Option<Response>, String> {
+fn send_request(handle: &str, request: Request) -> Result<Option<Response>, HeadlessTermError> {
     let mut stream = match rpc::connect(handle) {
         Ok(stream) => stream,
         Err(error) if is_missing_endpoint(&error) => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(HeadlessTermError::transport("connect", error.to_string())),
     };
     if let Err(error) = rpc::write_frame(&mut stream, &request) {
         if is_disconnected_endpoint(&error) {
             return Ok(None);
         }
-        return Err(error.to_string());
+        return Err(HeadlessTermError::transport("write", error.to_string()));
     }
     match rpc::read_frame(&mut stream) {
         Ok(response) => Ok(Some(response)),
         Err(error) if is_disconnected_endpoint(&error) => Ok(None),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(HeadlessTermError::transport("read", error.to_string())),
     }
 }
 

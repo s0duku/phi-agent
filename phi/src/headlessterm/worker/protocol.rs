@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::headlessterm::job::JobAccess;
+use crate::headlessterm::job::{HeadlessTermError, JobAccess};
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
@@ -21,7 +21,7 @@ pub(crate) enum Response {
     },
     Failed {
         status: Status,
-        error: String,
+        error: HeadlessTermError,
     },
 }
 

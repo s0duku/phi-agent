@@ -1,9 +1,12 @@
+use std::io::{BufRead, BufReader};
+#[cfg(not(test))]
+use std::process::Output;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::headlessterm::job::{JobHandle, TerminalCommand};
+use crate::headlessterm::job::{HeadlessTermError, JobHandle, TerminalCommand, WorkerLaunchStage};
 
-use super::rpc;
+use super::startup::WorkerLaunchReport;
 
 const RPC_READY_WAIT: Duration = Duration::from_secs(5);
 
@@ -11,42 +14,47 @@ pub(super) fn spawn_worker(
     handle: &JobHandle,
     command: TerminalCommand,
     expiration: Duration,
-) -> Result<(), String> {
+) -> Result<(), HeadlessTermError> {
     #[cfg(test)]
     {
         let handle = handle.0.clone();
-        let ready_handle = handle.clone();
-        let command = command.clone();
+        let worker = super::server::PreparedWorker::new(&handle, command, expiration)
+            .map_err(launch_report_error)?;
         std::thread::Builder::new()
             .name(format!("phi-headlessterm-{handle}"))
             .spawn(move || {
-                let _ = super::server::run_worker(&handle, command, expiration);
+                let _ = worker.run();
             })
-            .map_err(|error| error.to_string())?;
-        wait_until_ready(&ready_handle, RPC_READY_WAIT)
+            .map_err(|error| {
+                HeadlessTermError::launch(WorkerLaunchStage::SpawnWorker, error.to_string())
+            })?;
+        Ok(())
     }
     #[cfg(not(test))]
     {
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let status = Command::new(executable)
+        let executable = std::env::current_exe().map_err(|error| {
+            HeadlessTermError::launch(WorkerLaunchStage::SpawnWorker, error.to_string())
+        })?;
+        let output = Command::new(executable)
             .args([
                 "headlessterm",
                 "launch-local",
                 &handle.0,
                 &duration_millis(expiration).to_string(),
-                &serde_json::to_string(&command).map_err(|error| error.to_string())?,
+                &serde_json::to_string(&command)
+                    .map_err(|error| HeadlessTermError::protocol(error.to_string()))?,
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| format!("unable to start phi headlessterm worker: {error}"))?;
-        if !status.success() {
-            return Err(format!(
-                "phi headlessterm launcher exited with status {status}"
-            ));
-        }
-        wait_until_ready(&handle.0, RPC_READY_WAIT)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|error| {
+                HeadlessTermError::launch(
+                    WorkerLaunchStage::SpawnWorker,
+                    format!("unable to start phi headlessterm worker: {error}"),
+                )
+            })?;
+        parse_launch_output(&output)?.into_result()
     }
 }
 
@@ -54,10 +62,20 @@ pub(super) fn launch_worker(
     handle: &str,
     command: TerminalCommand,
     expiration: Duration,
-) -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+) -> WorkerLaunchReport {
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            return WorkerLaunchReport::failed(WorkerLaunchStage::SpawnWorker, error.to_string());
+        }
+    };
     let mut worker = Command::new(executable);
-    let command = serde_json::to_string(&command).map_err(|error| error.to_string())?;
+    let command = match serde_json::to_string(&command) {
+        Ok(command) => command,
+        Err(error) => {
+            return WorkerLaunchReport::failed(WorkerLaunchStage::SpawnWorker, error.to_string());
+        }
+    };
     worker
         .args([
             "headlessterm",
@@ -67,15 +85,50 @@ pub(super) fn launch_worker(
             &command,
         ])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
-    prevent_standard_handle_inheritance()?;
+    if let Err(error) = prevent_standard_handle_inheritance() {
+        return WorkerLaunchReport::failed(WorkerLaunchStage::SpawnWorker, error);
+    }
     configure_detached_worker(&mut worker);
-    worker
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("unable to launch detached phi headlessterm worker: {error}"))
+    let mut worker = match worker.spawn() {
+        Ok(worker) => worker,
+        Err(error) => {
+            return WorkerLaunchReport::failed(
+                WorkerLaunchStage::SpawnWorker,
+                format!("unable to launch detached phi headlessterm worker: {error}"),
+            );
+        }
+    };
+    let Some(stdout) = worker.stdout.take() else {
+        return WorkerLaunchReport::failed(
+            WorkerLaunchStage::AwaitWorker,
+            "detached worker did not expose its launch report",
+        );
+    };
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout)
+            .read_line(&mut line)
+            .map(|_| line)
+            .map_err(|error| error.to_string());
+        let _ = sender.send(result);
+    });
+    match receiver.recv_timeout(RPC_READY_WAIT) {
+        Ok(Ok(line)) => serde_json::from_str(&line).unwrap_or_else(|error| {
+            WorkerLaunchReport::failed(
+                WorkerLaunchStage::AwaitWorker,
+                format!("invalid worker launch report: {error}"),
+            )
+        }),
+        Ok(Err(error)) => WorkerLaunchReport::failed(WorkerLaunchStage::AwaitWorker, error),
+        Err(_) => WorkerLaunchReport::failed(
+            WorkerLaunchStage::AwaitWorker,
+            "timed out waiting for worker launch report",
+        ),
+    }
 }
 
 #[cfg(windows)]
@@ -130,25 +183,31 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn wait_until_ready(handle: &str, wait: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + wait;
-    loop {
-        match rpc::connect(handle) {
-            Ok(_) => return Ok(()),
-            Err(error) if is_missing_endpoint(&error) && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
+#[cfg(not(test))]
+fn parse_launch_output(output: &Output) -> Result<WorkerLaunchReport, HeadlessTermError> {
+    match serde_json::from_slice(&output.stdout) {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            if detail.is_empty() {
+                Err(HeadlessTermError::protocol(format!(
+                    "invalid headlessterm launch report (status {}): {error}",
+                    output.status
+                )))
+            } else {
+                Err(HeadlessTermError::protocol(format!(
+                    "invalid headlessterm launch report (status {}): {error}: {detail}",
+                    output.status
+                )))
             }
-            Err(error) if is_missing_endpoint(&error) => {
-                return Err("job daemon did not become ready".to_owned());
-            }
-            Err(error) => return Err(error.to_string()),
         }
     }
 }
 
-fn is_missing_endpoint(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-    )
+#[cfg(test)]
+fn launch_report_error(report: WorkerLaunchReport) -> HeadlessTermError {
+    report
+        .into_result()
+        .expect_err("failed worker launch report should contain an error")
 }

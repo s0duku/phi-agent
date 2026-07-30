@@ -16,6 +16,7 @@ pub struct RunCommand {
     pub max_model_request_retries: Option<usize>,
     pub template: Option<String>,
     pub plugin_args: Vec<String>,
+    pub container: Option<String>,
     pub quiet: bool,
     pub input_messages: Vec<PhiMessage>,
 }
@@ -25,6 +26,7 @@ pub struct StepCommand {
     pub max_model_request_retries: Option<usize>,
     pub template: Option<String>,
     pub plugin_args: Vec<String>,
+    pub container: Option<String>,
     pub quiet: bool,
     pub input_messages: Vec<PhiMessage>,
 }
@@ -46,6 +48,7 @@ pub struct RunCommandArgs {
     pub max_model_request_retries: Option<usize>,
     pub template: Option<String>,
     pub plugin_args: Vec<String>,
+    pub container: Option<String>,
 }
 
 pub struct StepCommandArgs {
@@ -53,6 +56,7 @@ pub struct StepCommandArgs {
     pub max_model_request_retries: Option<usize>,
     pub template: Option<String>,
     pub plugin_args: Vec<String>,
+    pub container: Option<String>,
 }
 
 pub struct ProbeCommandArgs {
@@ -77,6 +81,7 @@ impl PhiAgentCommand {
             max_model_request_retries: Some(3),
             template: None,
             plugin_args: Vec::new(),
+            container: None,
             quiet: false,
             input_messages: Vec::new(),
         }
@@ -87,6 +92,7 @@ impl PhiAgentCommand {
             max_model_request_retries: Some(3),
             template: None,
             plugin_args: Vec::new(),
+            container: None,
             quiet: false,
             input_messages: Vec::new(),
         }
@@ -125,6 +131,7 @@ impl PhiAgentCommand {
                 .with_max_model_request_retries(args.max_model_request_retries)
                 .with_template(args.template)
                 .with_plugin_args(args.plugin_args)
+                .with_container(args.container)
                 .with_quiet(args.quiet)
                 .with_input_messages(input_messages),
         ))
@@ -145,6 +152,7 @@ impl PhiAgentCommand {
                 .with_max_model_request_retries(args.max_model_request_retries)
                 .with_template(args.template)
                 .with_plugin_args(args.plugin_args)
+                .with_container(args.container)
                 .with_quiet(args.quiet)
                 .with_input_messages(input_messages),
         ))
@@ -163,6 +171,7 @@ impl PhiAgentCommand {
                 .with_max_model_request_retries(args.max_model_request_retries)
                 .with_template(args.template)
                 .with_plugin_args(args.plugin_args)
+                .with_container(args.container)
                 .with_quiet(args.quiet)
                 .with_input_messages(input_messages),
         ))
@@ -184,6 +193,16 @@ impl PhiAgentCommand {
             PhiAgentCommand::Yolo(command) => &command.plugin_args,
             PhiAgentCommand::Step(command) => &command.plugin_args,
             _ => &[],
+        }
+    }
+
+    pub fn container(&self) -> Option<&str> {
+        match self {
+            PhiAgentCommand::Run(command) | PhiAgentCommand::Yolo(command) => {
+                command.container.as_deref()
+            }
+            PhiAgentCommand::Step(command) => command.container.as_deref(),
+            _ => None,
         }
     }
 
@@ -236,6 +255,11 @@ impl RunCommand {
         self
     }
 
+    pub fn with_container(mut self, container: Option<String>) -> Self {
+        self.container = container.filter(|value| !value.trim().is_empty());
+        self
+    }
+
     pub fn with_input_messages(mut self, input_messages: Vec<PhiMessage>) -> Self {
         self.input_messages = input_messages;
         self
@@ -263,6 +287,11 @@ impl StepCommand {
 
     pub fn with_plugin_args(mut self, plugin_args: Vec<String>) -> Self {
         self.plugin_args = plugin_args;
+        self
+    }
+
+    pub fn with_container(mut self, container: Option<String>) -> Self {
+        self.container = container.filter(|value| !value.trim().is_empty());
         self
     }
 

@@ -205,7 +205,7 @@ impl PhiTool for RewriteArgumentsInsideTool {
         _runtime: &crate::agent::PhiAgentRuntime,
     ) -> ToolCallResponse {
         request.arguments = serde_json::json!({ "value": "rewritten-inside-tool" });
-        ToolCallResponse::success(request, self.name(), serde_json::json!({ "ok": true }))
+        ToolCallResponse::new(request, self.name(), serde_json::json!({ "ok": true }))
     }
 }
 
@@ -1013,15 +1013,10 @@ async fn tool_step_commits_pending_assistant_then_tool_call_then_result() {
     };
     assert_eq!(id.as_deref(), Some("call_1"));
     assert_eq!(name.as_deref(), Some(shell_tool_name()));
-    assert_eq!(result["tool_ok"], serde_json::json!(true));
-    assert_eq!(result["tool_error"], serde_json::Value::Null);
-    assert_eq!(
-        result["value"]["output"],
-        serde_json::json!(shell_stdout_ok())
-    );
-    assert_eq!(result["value"]["status"], serde_json::json!("exited"));
-    assert_eq!(result["value"]["exit_code"], serde_json::json!(0));
-    assert_eq!(result["value"]["handle"], serde_json::Value::Null);
+    assert_eq!(result["output"], serde_json::json!(shell_stdout_ok()));
+    assert_eq!(result["status"], serde_json::json!("exited"));
+    assert_eq!(result["exit_code"], serde_json::json!(0));
+    assert_eq!(result["handle"], serde_json::Value::Null);
 }
 
 #[tokio::test]
@@ -1111,20 +1106,14 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
     };
     assert_eq!(id.as_deref(), Some("call_missing"));
     assert_eq!(name.as_deref(), Some("no_exist"));
-    assert_eq!(result["tool_ok"], serde_json::json!(false));
-    assert_eq!(
-        result["tool_error"],
-        serde_json::json!("assistant requested unknown tool: no_exist")
-    );
-    assert_eq!(result["value"]["kind"], serde_json::json!("tool_not_found"));
-    assert_eq!(result["value"]["tool_name"], serde_json::json!("no_exist"));
+    assert_eq!(result["kind"], serde_json::json!("tool_not_found"));
+    assert_eq!(result["tool_name"], serde_json::json!("no_exist"));
     let warnings = warnings
         .lock()
         .expect("warning mutex should not be poisoned")
         .clone();
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("structured tool_not_found result for no_exist"));
-    assert!(warnings[0].contains("\"tool_ok\":false"));
     assert!(warnings[0].contains("\"kind\":\"tool_not_found\""));
     assert!(warnings[0].contains("\"tool_name\":\"no_exist\""));
     assert!(matches!(
@@ -1273,7 +1262,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     assert!(matches!(
         &history[3],
         PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. })
-            if id.as_deref() == Some("call_1") && result["tool_ok"] == serde_json::json!(true)
+            if id.as_deref() == Some("call_1") && result["status"] == serde_json::json!("exited")
     ));
     assert!(matches!(
         &history[4],
@@ -1283,7 +1272,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
         &history[5],
         PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. })
             if id.as_deref() == Some("call_missing")
-                && result["tool_ok"] == serde_json::json!(false)
+                && result["kind"] == serde_json::json!("tool_not_found")
     ));
     assert_eq!(history.len(), 6);
     assert!(matches!(

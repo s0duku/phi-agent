@@ -476,7 +476,7 @@ mod tests {
         let rendered = pretty_tool_result_event(
             "bash",
             "call_123",
-            &ToolCallOutput::success(serde_json::json!({
+            &ToolCallOutput::new(serde_json::json!({
                 "status": 0,
                 "timed_out": false,
                 "duration_ms": 12,
@@ -487,7 +487,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash call_123\ntool_error: null\ntool_ok: true\nvalue:\n\tduration_ms: 12\n\tstatus: 0\n\tstderr:\n\tstdout:\n\t\thello\n\ttimed_out: false"
+            "\n[tool:result]\nbash call_123\nduration_ms: 12\nstatus: 0\nstderr:\nstdout:\n\thello\ntimed_out: false"
         );
     }
 
@@ -496,7 +496,7 @@ mod tests {
         let rendered = pretty_tool_result_event(
             "bash_job",
             "call_123",
-            &ToolCallOutput::success(serde_json::json!({
+            &ToolCallOutput::new(serde_json::json!({
                 "status": "running",
                 "exit_code": null,
                 "handle": "mira-kest",
@@ -507,7 +507,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\nbash_job call_123\ntool_error: null\ntool_ok: true\nvalue:\n\texit_code: null\n\thandle: mira-kest\n\toutput:\n\t\tready\n\tstatus: running\n\twaited_ms: 1500"
+            "\n[tool:result]\nbash_job call_123\nexit_code: null\nhandle: mira-kest\noutput:\n\tready\nstatus: running\nwaited_ms: 1500"
         );
     }
 
@@ -516,7 +516,7 @@ mod tests {
         let rendered = pretty_tool_result_event(
             "job_interact",
             "call_123",
-            &ToolCallOutput::success(serde_json::json!({
+            &ToolCallOutput::new(serde_json::json!({
                 "status": "running",
                 "handle": "mira-kest",
                 "waited_ms": 60000,
@@ -526,7 +526,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&rendered),
-            "\n[tool:result]\njob_interact call_123\ntool_error: null\ntool_ok: true\nvalue:\n\thandle: mira-kest\n\toutput:\n\tstatus: running\n\twaited_ms: 60000"
+            "\n[tool:result]\njob_interact call_123\nhandle: mira-kest\noutput:\nstatus: running\nwaited_ms: 60000"
         );
     }
 
@@ -571,7 +571,7 @@ mod tests {
             PhiMessage::tool_result(
                 Some("call_123".to_string()),
                 Some("bash".to_string()),
-                serde_json::to_value(ToolCallOutput::success(serde_json::json!({
+                serde_json::to_value(ToolCallOutput::new(serde_json::json!({
                     "status": 0,
                     "stdout": "ok\n",
                 })))
@@ -582,7 +582,7 @@ mod tests {
 
         assert_eq!(
             strip_ansi(&pretty_history(&history)),
-            "\n[user]\nhello\n\n[tool:call]\nbash #call_123\ncommand: pwd\n\n[tool:result]\nbash call_123\ntool_error: null\ntool_ok: true\nvalue:\n\tstatus: 0\n\tstdout:\n\t\tok\n\n[assistant]\ndone"
+            "\n[user]\nhello\n\n[tool:call]\nbash #call_123\ncommand: pwd\n\n[tool:result]\nbash call_123\nstatus: 0\nstdout:\n\tok\n\n[assistant]\ndone"
         );
     }
 

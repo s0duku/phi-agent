@@ -1,13 +1,14 @@
 use std::io;
 use std::time::Duration;
 
-use interprocess::local_socket::traits::Listener as _;
+use interprocess::local_socket::{Listener, traits::Listener as _};
 
-use crate::headlessterm::job::{JobAccess, TerminalCommand};
+use crate::headlessterm::job::{HeadlessTermError, JobAccess, TerminalCommand, WorkerLaunchStage};
 
 use super::lease::ActivityExpiration;
 use super::process::RunningJob;
 use super::protocol::{Request, Response, Status};
+use super::startup::WorkerLaunchReport;
 use super::state::PendingTerminalResponse;
 use super::{interaction, rpc};
 
@@ -18,46 +19,93 @@ pub(super) fn run_worker(
     command: TerminalCommand,
     expiration: Duration,
 ) -> Result<(), String> {
-    let listener = rpc::bind(handle).map_err(|error| error.to_string())?;
-    let mut job = RunningJob::spawn(command)?;
-    let mut activity = ActivityExpiration::new(expiration, CLIENT_IO_GRACE);
-    let mut terminal_flushed = false;
+    let worker = match PreparedWorker::new(handle, command, expiration) {
+        Ok(worker) => worker,
+        Err(report) => {
+            write_launch_report(&report)?;
+            return report.into_result().map_err(|error| error.to_string());
+        }
+    };
+    write_launch_report(&WorkerLaunchReport::ready(handle))?;
+    worker.run()
+}
 
-    loop {
-        job.observe_terminal()?;
-        let was_exited = job.has_exited();
-        job.refresh_status()?;
-        if !was_exited && job.has_exited() {
-            activity.observe_exit();
-        }
-        if terminal_flushed && job.reached_eof() {
-            return Ok(());
-        }
+pub(super) struct PreparedWorker {
+    listener: Listener,
+    job: RunningJob,
+    expiration: Duration,
+}
+
+impl PreparedWorker {
+    pub(super) fn new(
+        handle: &str,
+        command: TerminalCommand,
+        expiration: Duration,
+    ) -> Result<Self, WorkerLaunchReport> {
+        let listener = rpc::bind(handle).map_err(|error| {
+            WorkerLaunchReport::failed(WorkerLaunchStage::BindRpc, error.to_string())
+        })?;
+        let job = RunningJob::spawn(command)
+            .map_err(|error| WorkerLaunchReport::failed(WorkerLaunchStage::SpawnCommand, error))?;
+        Ok(Self {
+            listener,
+            job,
+            expiration,
+        })
+    }
+
+    pub(super) fn run(self) -> Result<(), String> {
+        let listener = self.listener;
+        let mut job = self.job;
+        let expiration = self.expiration;
+        let mut activity = ActivityExpiration::new(expiration, CLIENT_IO_GRACE);
+        let mut terminal_flushed = false;
 
         loop {
-            match listener.accept() {
-                Ok(mut stream) => {
-                    let outcome = serve(&mut stream, &mut job)?;
-                    if outcome.handled {
-                        activity.observe_interaction();
-                    }
-                    terminal_flushed |= outcome.terminal_flushed;
-                    if outcome.should_exit {
-                        return Ok(());
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(error.to_string()),
+            job.observe_terminal()?;
+            let was_exited = job.has_exited();
+            job.refresh_status()?;
+            if !was_exited && job.has_exited() {
+                activity.observe_exit();
             }
-        }
+            if terminal_flushed && job.reached_eof() {
+                return Ok(());
+            }
 
-        if activity.elapsed() {
-            job.expire()?;
-            return Ok(());
+            loop {
+                match listener.accept() {
+                    Ok(mut stream) => {
+                        let outcome = serve(&mut stream, &mut job)?;
+                        if outcome.handled {
+                            activity.observe_interaction();
+                        }
+                        terminal_flushed |= outcome.terminal_flushed;
+                        if outcome.should_exit {
+                            return Ok(());
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+
+            if activity.elapsed() {
+                job.expire()?;
+                return Ok(());
+            }
+            std::thread::sleep(interaction::POLL_INTERVAL);
         }
-        std::thread::sleep(interaction::POLL_INTERVAL);
     }
+}
+
+fn write_launch_report(report: &WorkerLaunchReport) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let mut stdout = std::io::stdout().lock();
+    serde_json::to_writer(&mut stdout, report).map_err(|error| error.to_string())?;
+    stdout.write_all(b"\n").map_err(|error| error.to_string())?;
+    stdout.flush().map_err(|error| error.to_string())
 }
 
 struct ServeOutcome {
@@ -119,7 +167,10 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
             let status = job
                 .refresh_status()?
                 .map_or(Status::Running, Status::Exited);
-            let response = Response::Failed { status, error };
+            let response = Response::Failed {
+                status,
+                error: HeadlessTermError::operation(error),
+            };
             return write_response(stream, response, None, close_requested, false, job);
         }
     };

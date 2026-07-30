@@ -38,18 +38,14 @@ pub fn maybe_truncate_text(text: &str, threshold_tokens: usize, preview_bytes: u
 }
 
 pub fn sanitize_tool_call_output(
-    mut output: ToolCallOutput,
+    output: ToolCallOutput,
     limits: ToolOutputLimits,
 ) -> ToolCallOutput {
-    if let Some(error) = output.tool_error.as_mut() {
-        *error = maybe_truncate_text(error, limits.output_threshold_tokens, limits.preview_bytes);
-    }
-    output.value = sanitize_json_string_leaves(
-        output.value,
+    ToolCallOutput::new(sanitize_json_string_leaves(
+        output.into_value(),
         limits.output_threshold_tokens,
         limits.preview_bytes,
-    );
-    output
+    ))
 }
 
 pub fn sanitize_json_string_leaves(
@@ -261,20 +257,18 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_tool_call_output_error_and_value() {
-        let output = ToolCallOutput::failure(
-            "x".repeat(400),
-            serde_json::json!({
-                "stdout": "y".repeat(400)
-            }),
-        );
+    fn sanitizes_tool_call_output_value() {
+        let output = ToolCallOutput::new(serde_json::json!({
+            "error": "x".repeat(400),
+            "stdout": "y".repeat(400)
+        }));
 
         let sanitized = sanitize_tool_call_output(output, ToolOutputLimits::new(64, 48));
 
         assert!(
-            sanitized
-                .tool_error()
-                .expect("error should remain present")
+            sanitized.as_value()["error"]
+                .as_str()
+                .expect("error should remain a string")
                 .contains("Warning: truncated output")
         );
         assert!(
