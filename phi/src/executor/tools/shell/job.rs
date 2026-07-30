@@ -6,11 +6,11 @@ use serde::Deserialize;
 
 use crate::{
     agent::PhiAgentRuntime,
-    container::{
-        JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus,
-        LocalShellJobContainer,
-    },
     executor::{PhiTool, ToolCallRequest, ToolCallResponse},
+    headlessterm::{
+        HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen,
+        TerminalCommand,
+    },
 };
 
 const EXEC_WAIT: Duration = Duration::from_secs(60);
@@ -92,12 +92,14 @@ impl PhiTool for ShellJobExecTool {
         if let Err(error) = prepare_local_jobs() {
             return failure(request, self.name(), error);
         }
-        let result = <LocalShellJobContainer as JobContainer>::exec_job(
-            &args.cmd,
-            EXEC_WAIT,
-            JOB_EXPIRATION,
-        )
-        .await;
+        let terminal = HeadlessTerminal::new();
+        let result = terminal
+            .exec_job(
+                TerminalCommand::shell(&args.cmd),
+                ReturnWhen::output_settled(EXEC_WAIT),
+                JOB_EXPIRATION,
+            )
+            .await;
 
         match result {
             Ok((handle, info)) => response(request, self.name(), info, handle),
@@ -158,11 +160,10 @@ impl PhiTool for ShellJobInteractTool {
         let result = match interactive_input(args.input) {
             InteractiveInput::Direct(data) => interact(handle, data, wait).await,
             InteractiveInput::Submit(data) => {
-                let written = <LocalShellJobContainer as JobContainer>::access_job(
-                    JobHandle(handle.0.clone()),
-                    JobAccess::Write { data },
-                )
-                .await;
+                let terminal = HeadlessTerminal::new();
+                let written = terminal
+                    .access_job(JobHandle(handle.0.clone()), JobAccess::Write { data })
+                    .await;
                 match written {
                     Ok(JobAccessResult::Written(_)) => {}
                     Ok(JobAccessResult::Interacted(_)) => {
@@ -187,14 +188,16 @@ impl PhiTool for ShellJobInteractTool {
 }
 
 async fn interact(handle: JobHandle, data: String, wait: Duration) -> Result<JobInfo, String> {
-    let result = <LocalShellJobContainer as JobContainer>::access_job(
-        handle,
-        JobAccess::Interact {
-            data,
-            try_wait: wait,
-        },
-    )
-    .await?;
+    let terminal = HeadlessTerminal::new();
+    let result = terminal
+        .access_job(
+            handle,
+            JobAccess::Interact {
+                data,
+                return_when: ReturnWhen::output_settled(wait),
+            },
+        )
+        .await?;
     match result {
         JobAccessResult::Interacted(info) => Ok(info),
         JobAccessResult::Written(_) => {
@@ -239,8 +242,9 @@ impl PhiTool for ShellJobCloseTool {
         if let Err(error) = prepare_local_jobs() {
             return failure(request, self.name(), error);
         }
-        let result =
-            <LocalShellJobContainer as JobContainer>::close_job(JobHandle(args.handle)).await;
+        let result = HeadlessTerminal::new()
+            .close_job(JobHandle(args.handle))
+            .await;
 
         match result {
             Ok(info) => response(request, self.name(), info, None),

@@ -3,9 +3,9 @@
 use std::io::{Read, Result as IoResult, Write};
 use std::time::Duration;
 
-use crate::container::job::{JobAccess, JobAccessResult, JobHandle, JobInfo};
-use crate::container::local::rpc;
-use crate::container::{JobContainer, LocalShellJobContainer};
+use crate::headlessterm::HeadlessTerminal;
+use crate::headlessterm::job::{JobAccess, JobAccessResult, JobHandle, JobInfo};
+use crate::headlessterm::worker::rpc;
 
 pub(crate) struct EndpointStream(pub(crate) interprocess::local_socket::Stream);
 
@@ -34,9 +34,7 @@ pub(crate) fn exec_job(
     try_wait: Duration,
     expiration: Duration,
 ) -> Result<(Option<JobHandle>, JobInfo), String> {
-    block_on(<LocalShellJobContainer as JobContainer>::exec_job(
-        cmd, try_wait, expiration,
-    ))
+    block_on(HeadlessTerminal::new().exec_job(cmd, try_wait, expiration))
 }
 
 pub(crate) fn job_interact(
@@ -44,11 +42,11 @@ pub(crate) fn job_interact(
     data: &str,
     try_wait: Duration,
 ) -> Result<JobInfo, String> {
-    let result = block_on(<LocalShellJobContainer as JobContainer>::access_job(
+    let result = block_on(HeadlessTerminal::new().access_job(
         handle,
         JobAccess::Interact {
             data: data.to_owned(),
-            try_wait,
+            return_when: try_wait.into(),
         },
     ))?;
     match result {

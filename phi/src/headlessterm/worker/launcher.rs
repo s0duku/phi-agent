@@ -1,26 +1,26 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::container::job::JobHandle;
+use crate::headlessterm::job::{JobHandle, TerminalCommand};
 
 use super::rpc;
 
 const RPC_READY_WAIT: Duration = Duration::from_secs(5);
 
-pub(super) fn spawn_container(
+pub(super) fn spawn_worker(
     handle: &JobHandle,
-    command: &str,
+    command: TerminalCommand,
     expiration: Duration,
 ) -> Result<(), String> {
     #[cfg(test)]
     {
         let handle = handle.0.clone();
         let ready_handle = handle.clone();
-        let command = command.to_owned();
+        let command = command.clone();
         std::thread::Builder::new()
-            .name(format!("phi-container-{handle}"))
+            .name(format!("phi-headlessterm-{handle}"))
             .spawn(move || {
-                let _ = super::server::run_container(&handle, &command, expiration);
+                let _ = super::server::run_worker(&handle, command, expiration);
             })
             .map_err(|error| error.to_string())?;
         wait_until_ready(&ready_handle, RPC_READY_WAIT)
@@ -30,40 +30,41 @@ pub(super) fn spawn_container(
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let status = Command::new(executable)
             .args([
-                "container",
+                "headlessterm",
                 "launch-local",
                 &handle.0,
                 &duration_millis(expiration).to_string(),
-                command,
+                &serde_json::to_string(&command).map_err(|error| error.to_string())?,
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|error| format!("unable to start phi local container: {error}"))?;
+            .map_err(|error| format!("unable to start phi headlessterm worker: {error}"))?;
         if !status.success() {
             return Err(format!(
-                "phi container launcher exited with status {status}"
+                "phi headlessterm launcher exited with status {status}"
             ));
         }
         wait_until_ready(&handle.0, RPC_READY_WAIT)
     }
 }
 
-pub(super) fn launch_container(
+pub(super) fn launch_worker(
     handle: &str,
-    command: &str,
+    command: TerminalCommand,
     expiration: Duration,
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut worker = Command::new(executable);
+    let command = serde_json::to_string(&command).map_err(|error| error.to_string())?;
     worker
         .args([
-            "container",
+            "headlessterm",
             "local",
             handle,
             &duration_millis(expiration).to_string(),
-            command,
+            &command,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -74,7 +75,7 @@ pub(super) fn launch_container(
     worker
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("unable to launch detached phi container: {error}"))
+        .map_err(|error| format!("unable to launch detached phi headlessterm worker: {error}"))
 }
 
 #[cfg(windows)]

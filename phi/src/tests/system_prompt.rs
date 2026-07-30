@@ -86,7 +86,7 @@ async fn phi_system_does_not_prepend_existing_history() {
 
     let seen_messages = Arc::new(Mutex::new(Vec::new()));
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
     let mut builder = isolated_step_agent_builder(session)

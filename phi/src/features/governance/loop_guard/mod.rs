@@ -104,12 +104,12 @@ impl LoopGuardPolicy {
             "loop detected by {}: {}",
             detection.detector, detection.detail
         ))
-        .with_source_step("request_complete"))
+        .with_source_step("request_provider"))
     }
 }
 
-fn request_complete_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
-    expr.find_ancestor(|step| matches!(step, PhiAgentStep::RequestComplete { .. }))
+fn request_provider_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
+    expr.find_ancestor(|step| matches!(step, PhiAgentStep::RequestProvider { .. }))
 }
 
 fn is_loop_guard_failed_step(step: &PhiAgentStep) -> bool {
@@ -118,7 +118,7 @@ fn is_loop_guard_failed_step(step: &PhiAgentStep) -> bool {
     };
 
     error.kind() == PhiErrorKind::ModelCandidateRejected
-        && error.source_step() == Some("request_complete")
+        && error.source_step() == Some("request_provider")
 }
 
 impl PhiModule for LoopGuardPolicy {
@@ -129,7 +129,7 @@ impl PhiModule for LoopGuardPolicy {
     }
 
     fn probe(&self, runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
-        let ancestor = request_complete_ancestor(runtime.base_expr());
+        let ancestor = request_provider_ancestor(runtime.base_expr());
         let rejected_attempts = ancestor
             .and_then(PhiStepExpr::loop_guard_rejected_attempts)
             .unwrap_or(0);
@@ -178,7 +178,7 @@ impl PhiModule for LoopGuardPolicy {
                 self.max_retries
             ));
             delta.unbind_loop_guard_rejected_attempts();
-            let step = runtime.request_complete_step("resuming after exhausted loop guard budget");
+            let step = runtime.request_provider_step("resuming after exhausted loop guard budget");
             return Ok(crate::agent::StepBounce::ReplaceBaseStep(
                 runtime, step, delta,
             ));
@@ -188,7 +188,7 @@ impl PhiModule for LoopGuardPolicy {
             .next_rejected_attempts
             .expect("loop guard intervention should compute next rejected attempts");
         delta.bind_loop_guard_rejected_attempts(next_rejected_attempts);
-        let step = runtime.request_complete_step("retrying completion after loop-guard rejection");
+        let step = runtime.request_provider_step("retrying completion after loop-guard rejection");
         let _ = next;
         let _ = cont;
         Ok(crate::agent::StepBounce::ReplaceBaseStep(
@@ -227,7 +227,7 @@ impl PhiModule for LoopGuardPolicy {
                 step,
                 delta,
             } => {
-                if !matches!(step, PhiAgentStep::RequestComplete { .. }) {
+                if !matches!(step, PhiAgentStep::RequestProvider { .. }) {
                     return Ok(());
                 }
 
@@ -336,7 +336,7 @@ mod tests {
     fn loop_guard_retry_raises_temperature_for_retry_request() {
         let session = Session::from_expr(
             crate::expr::PhiStepExpr::new(
-                PhiAgentStep::request_complete(
+                PhiAgentStep::request_provider(
                     "requesting completion",
                     &crate::tests::support::test_model_defaults(),
                 ),
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn loop_guard_retry_state_clears_after_leaving_failed_retry_path() {
         let session = Session::from_root(
-            PhiAgentStep::completed("done"),
+            PhiAgentStep::turn_end("done"),
             vec![PhiMessage::user("hello")],
         );
         let expr = session.into_expr();
@@ -383,7 +383,7 @@ mod tests {
             detectors: vec![Box::new(NoopDetector)],
         };
         let expr = Session::from_root(
-            PhiAgentStep::completed("done"),
+            PhiAgentStep::turn_end("done"),
             vec![PhiMessage::user("hello")],
         )
         .into_expr();
@@ -402,9 +402,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exhausted_loop_guard_budget_resets_to_clean_request_complete_step() {
+    async fn exhausted_loop_guard_budget_resets_to_clean_request_provider_step() {
         let retrying_step = crate::expr::PhiStepExpr::new(
-            PhiAgentStep::request_complete(
+            PhiAgentStep::request_provider(
                 "requesting completion",
                 &crate::tests::support::test_model_defaults(),
             ),
@@ -414,7 +414,7 @@ mod tests {
         let session = Session::from_expr(
             retrying_step.branch_failed(
                 PhiRuntimeError::model_candidate_rejected("loop detected")
-                    .with_source_step("request_complete"),
+                    .with_source_step("request_provider"),
             ),
         );
 
@@ -431,7 +431,7 @@ mod tests {
             .await;
 
         match outcome.session.step() {
-            PhiAgentStep::RequestComplete { detail, .. } => {
+            PhiAgentStep::RequestProvider { detail, .. } => {
                 assert_eq!(detail, "resuming after exhausted loop guard budget");
             }
             step => panic!("expected clean request-complete step, got {step:?}"),

@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use super::interaction::{self, InteractionState};
 use super::protocol::Status;
 use super::pty::PtySession;
-use super::terminal::{PendingTerminalResponse, TerminalDelivery, TerminalObservation};
+use crate::headlessterm::job::{ReturnWhen, TerminalCommand};
+
+use super::state::{PendingTerminalResponse, TerminalDelivery, TerminalObservation};
 
 const POLL_INTERVAL: Duration = interaction::POLL_INTERVAL;
 const CLOSE_GRACE: Duration = Duration::from_millis(250);
@@ -24,7 +26,7 @@ pub(super) struct CompletedInteraction {
 }
 
 impl RunningJob {
-    pub(super) fn spawn(command: &str) -> Result<Self, String> {
+    pub(super) fn spawn(command: TerminalCommand) -> Result<Self, String> {
         let mut pty = PtySession::spawn(command)?;
         let observation = pty.capture()?;
         let observed_at = Instant::now();
@@ -64,13 +66,13 @@ impl RunningJob {
     pub(super) fn interact(
         &mut self,
         input: &[u8],
-        wait: Duration,
+        return_when: ReturnWhen,
     ) -> Result<CompletedInteraction, String> {
         let started_at = Instant::now();
         if !input.is_empty() {
             self.pty.write_all(input)?;
         }
-        let mut interaction = self.interactions.begin(wait);
+        let mut interaction = self.interactions.begin(return_when);
         loop {
             let observed_at = self.observe_terminal_activity()?;
             interaction.observe(&self.observation, observed_at);

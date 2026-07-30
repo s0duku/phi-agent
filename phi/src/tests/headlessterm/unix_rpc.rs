@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use crate::container::job::{JobAccess, JobHandle, JobStatus};
-use crate::container::local::protocol::{Request, Response, Status};
-use crate::container::local::rpc;
-use crate::tests::container::support::{connect, exec_job, job_interact};
+use crate::headlessterm::job::{JobAccess, JobHandle, JobStatus, ReturnWhen};
+use crate::headlessterm::worker::protocol::{Request, Response, Status};
+use crate::headlessterm::worker::rpc;
+use crate::tests::headlessterm::support::{connect, exec_job, job_interact};
 
 const EXPIRATION: Duration = Duration::from_secs(5);
 
@@ -64,7 +64,7 @@ fn maximum_wait_value_still_returns_when_the_shell_exits() {
 
     let request = Request::Access(JobAccess::Interact {
         data: String::new(),
-        try_wait: Duration::MAX,
+        return_when: ReturnWhen::output_settled(Duration::MAX),
     });
     let mut stream = connect(&handle.0).unwrap();
     rpc::write_frame(&mut stream, &request).unwrap();

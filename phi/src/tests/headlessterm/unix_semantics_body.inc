@@ -2,8 +2,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use std::time::Duration;
 
-use crate::container::job::JobStatus;
-use crate::tests::container::support::exec_job;
+use crate::headlessterm::job::JobStatus;
+use crate::tests::headlessterm::support::exec_job;
 
 const WAIT: Duration = Duration::from_secs(2);
 const EXPIRATION: Duration = Duration::from_secs(2);
@@ -50,7 +50,7 @@ fn run_container(command: &str) -> ShellResult {
     let status = match info.status() {
         JobStatus::Exited(code) => *code,
         JobStatus::Running => panic!("shell was still running: {command}"),
-        JobStatus::NoExist => panic!("container disappeared: {command}"),
+        JobStatus::NoExist => panic!("headlessterm worker disappeared: {command}"),
     };
     ShellResult {
         status,

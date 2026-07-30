@@ -77,7 +77,7 @@ impl PhiModule for RejectFirstModelResponseModule {
             self.rejected = true;
             return Err(
                 PhiRuntimeError::module("module rejected first model response")
-                    .with_source_step("request_complete"),
+                    .with_source_step("request_provider"),
             );
         }
         Ok(())
@@ -107,7 +107,7 @@ fn pending_tool_session(
 #[tokio::test]
 async fn invariant_model_step_with_tool_call_keeps_history_clean() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("list files")],
     );
 
@@ -178,7 +178,7 @@ async fn invariant_tool_step_commits_pending_messages_atomically() {
     assert_eq!(result["value"]["handle"], serde_json::Value::Null);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -219,7 +219,7 @@ async fn invariant_failed_tool_step_drops_pending_messages_and_resumes_cleanly()
     assert_eq!(resumed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "resuming from failed step"
     ));
 }
@@ -227,7 +227,7 @@ async fn invariant_failed_tool_step_drops_pending_messages_and_resumes_cleanly()
 #[tokio::test]
 async fn invariant_completed_and_failed_steps_only_resume_never_execute_immediately() {
     let completed = Session::from_root(
-        PhiAgentStep::completed("done"),
+        PhiAgentStep::turn_end("done"),
         vec![PhiMessage::user("hello"), PhiMessage::assistant("world")],
     );
     let resumed_completed = default_step_agent_builder(completed)
@@ -243,7 +243,7 @@ async fn invariant_completed_and_failed_steps_only_resume_never_execute_immediat
     );
     assert!(matches!(
         resumed_completed.step(),
-        PhiAgentStep::RequestComplete { .. }
+        PhiAgentStep::RequestProvider { .. }
     ));
 
     let failed = Session::from_root(
@@ -260,14 +260,14 @@ async fn invariant_completed_and_failed_steps_only_resume_never_execute_immediat
     assert_eq!(resumed_failed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed_failed.step(),
-        PhiAgentStep::RequestComplete { .. }
+        PhiAgentStep::RequestProvider { .. }
     ));
 }
 
 #[tokio::test]
 async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
 
@@ -321,14 +321,14 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
     );
     assert!(matches!(
         yolo_outcome.session.step(),
-        PhiAgentStep::Completed { .. }
+        PhiAgentStep::TurnEnd { .. }
     ));
 }
 
 #[tokio::test]
 async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("inspect files")],
     );
     let client = SequenceProvider {
@@ -365,6 +365,6 @@ async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() 
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Completed { .. }
+        PhiAgentStep::TurnEnd { .. }
     ));
 }

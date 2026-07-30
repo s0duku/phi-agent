@@ -49,7 +49,7 @@ async fn command_template_renders_transient_provider_messages_only() {
 
     let seen_messages = Arc::new(Mutex::new(Vec::new()));
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
     let command = crate::agent::PhiAgentCommand::Step(
@@ -100,7 +100,7 @@ async fn phi_template_from_home_config_is_used_when_command_template_is_absent()
 
     let seen_messages = Arc::new(Mutex::new(Vec::new()));
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
     let command = crate::agent::PhiAgentCommand::Step(crate::agent::PhiAgentCommand::step());

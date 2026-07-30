@@ -9,6 +9,7 @@ use super::{PhiProviderCall, PhiRender, approx_history_token_count, approx_text_
 const AUTO_COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 const COMPACT_SUMMARY_MAX_TOKENS: u64 = 4_096;
 const COMPACT_PROMPT: &str = include_str!("../prompts/compact.txt");
+const COMPACT_SUMMARY_PREFIX: &str = "[CONTEXT CHECKPOINT SUMMARY]";
 
 pub(super) async fn compact_history(
     render: &PhiRender,
@@ -115,7 +116,9 @@ pub(super) async fn compact_history(
 
     let mut next_history = history.iter().take(index).cloned().collect::<Vec<_>>();
     next_history.extend(prefix);
-    next_history.push(PhiMessage::user(summary));
+    next_history.push(PhiMessage::user(format!(
+        "{COMPACT_SUMMARY_PREFIX}\n{summary}"
+    )));
 
     Ok(next_history.into())
 }
@@ -205,7 +208,9 @@ mod tests {
         assert_eq!(messages[0], PhiMessage::system("sys"));
         assert_eq!(
             messages.last(),
-            Some(&PhiMessage::user("summary from provider"))
+            Some(&PhiMessage::user(
+                "[CONTEXT CHECKPOINT SUMMARY]\nsummary from provider"
+            ))
         );
         assert!(matches!(
             &messages[1],

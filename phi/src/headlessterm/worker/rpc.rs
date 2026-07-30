@@ -8,9 +8,9 @@ use interprocess::local_socket::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::container::job::JobHandle;
+use crate::headlessterm::job::JobHandle;
 
-const ENDPOINT_PREFIX: &str = "phi-container-";
+const ENDPOINT_PREFIX: &str = "phi-headlessterm-";
 const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
 
 pub(crate) fn bind(handle: &str) -> io::Result<Listener> {
@@ -82,7 +82,7 @@ fn endpoint_path(name: &str) -> PathBuf {
     #[cfg(unix)]
     {
         std::env::temp_dir()
-            .join(format!("phi-container-{}", unsafe { libc::geteuid() }))
+            .join(format!("phi-headlessterm-{}", unsafe { libc::geteuid() }))
             .join(name)
     }
     #[cfg(windows)]

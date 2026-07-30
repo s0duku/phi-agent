@@ -1,4 +1,4 @@
-use crate::container::job::JobHandle;
+use crate::headlessterm::job::JobHandle;
 
 #[test]
 fn random_handle_has_the_shared_encoding() {

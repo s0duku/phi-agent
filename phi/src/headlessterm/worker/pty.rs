@@ -4,18 +4,19 @@ use std::thread;
 
 use portable_pty::{Child, PtySize, native_pty_system};
 
-use super::terminal::{
-    HeadlessTerminal, PendingTerminalResponse, TerminalActivity, TerminalDelivery,
-    TerminalObservation,
+use crate::headlessterm::job::TerminalCommand;
+
+use super::state::{
+    PendingTerminalResponse, TerminalActivity, TerminalDelivery, TerminalObservation, TerminalState,
 };
-use super::{platform, supervisor};
+use super::{command, platform};
 
 pub(crate) struct PtySession {
     _master: Box<dyn portable_pty::MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
-    terminal: HeadlessTerminal,
+    terminal: TerminalState,
     eof: bool,
     exit_status: Option<i8>,
     #[cfg(unix)]
@@ -23,7 +24,7 @@ pub(crate) struct PtySession {
 }
 
 impl PtySession {
-    pub(crate) fn spawn(command: &str) -> Result<Self, String> {
+    pub(crate) fn spawn(command: TerminalCommand) -> Result<Self, String> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -36,7 +37,7 @@ impl PtySession {
         platform::disable_pty_echo(&*pair.master).map_err(|error| error.to_string())?;
         #[cfg(unix)]
         let process_group_leader = pair.master.process_group_leader();
-        let builder = supervisor::command(command);
+        let builder = command::build(command);
         let child = pair
             .slave
             .spawn_command(builder)
@@ -73,7 +74,7 @@ impl PtySession {
             child,
             writer,
             output_rx,
-            terminal: HeadlessTerminal::new(),
+            terminal: TerminalState::new(),
             eof: false,
             exit_status: None,
             #[cfg(unix)]

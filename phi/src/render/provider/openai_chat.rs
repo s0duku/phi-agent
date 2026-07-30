@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::{PhiModelResponse, PhiProvider, PhiProviderCall};
 use crate::{
@@ -341,12 +341,24 @@ impl ProviderMessage {
 pub struct ProviderAssistantMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     pub tool_calls: Vec<ProviderToolCall>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "reasoning_content")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+}
+
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl ProviderAssistantMessage {
@@ -890,6 +902,21 @@ mod tests {
             "unexpected error detail: {}",
             error.detail()
         );
+    }
+
+    #[test]
+    fn provider_assistant_message_accepts_null_tool_calls() {
+        let message: ProviderAssistantMessage = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": "Codex is ready",
+            "reasoning_content": "started",
+            "tool_calls": null
+        }))
+        .expect("null tool_calls should be treated as no tool calls");
+
+        assert_eq!(message.content.as_deref(), Some("Codex is ready"));
+        assert_eq!(message.reasoning_content.as_deref(), Some("started"));
+        assert!(message.tool_calls.is_empty());
     }
 
     #[test]

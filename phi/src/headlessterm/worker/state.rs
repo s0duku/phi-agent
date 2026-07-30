@@ -1,23 +1,28 @@
-//! Persistent headless-terminal state and its delivery transaction.
+//! Persistent headlessterm state and its delivery transaction.
 //!
 //! PTY bytes are processed into an observation, the observation produces a pending
 //! response, and successful transport acknowledges its delivery checkpoint.
 
 use vte::{Params, Perform};
 
-mod output;
-use output::{OutputDelivery, TerminalOutput};
+mod journal;
+use journal::{OutputDelivery, OutputJournal, OutputSelector};
 
 const ROWS: u16 = 24;
 const COLS: u16 = 80;
 const SCROLLBACK_ROWS: usize = 1_000;
 const OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
-pub(crate) struct HeadlessTerminal {
+pub(crate) struct TerminalEmulator {
     parser: vte::Parser,
     dispatcher: Dispatcher,
     screen: vt100::Parser,
-    output: TerminalOutput,
+    output: OutputJournal,
+}
+
+pub(crate) struct TerminalState {
+    emulator: TerminalEmulator,
+    selector: OutputSelector,
 }
 
 pub(crate) struct PendingTerminalResponse {
@@ -47,20 +52,19 @@ pub(crate) struct TerminalUpdate {
     pub(crate) replies: Vec<Vec<u8>>,
 }
 
-impl HeadlessTerminal {
-    pub(crate) fn new() -> Self {
+impl TerminalEmulator {
+    fn new() -> Self {
         Self {
             parser: vte::Parser::new(),
             dispatcher: Dispatcher::default(),
             screen: vt100::Parser::new(ROWS, COLS, SCROLLBACK_ROWS),
-            output: TerminalOutput::new(),
+            output: OutputJournal::new(),
         }
     }
 
-    pub(crate) fn process(&mut self, bytes: &[u8]) -> TerminalUpdate {
+    fn process(&mut self, bytes: &[u8]) -> TerminalUpdate {
         let was_alternate_screen = self.screen.screen().alternate_screen();
         self.parser.advance(&mut self.dispatcher, bytes);
-
         let mut replies = Vec::new();
         let mut output = false;
         let events: Vec<_> = self.dispatcher.events.drain(..).collect();
@@ -72,22 +76,16 @@ impl HeadlessTerminal {
                         .append(&bytes, SCROLLBACK_ROWS, OUTPUT_MAX_BYTES);
                     self.screen.process(&bytes);
                 }
-                TerminalEvent::Query(query) => {
-                    replies.push(query.reply(self.screen.screen()));
-                }
+                TerminalEvent::Query(query) => replies.push(query.reply(self.screen.screen())),
             }
         }
-        let alternate_screen_activity =
-            was_alternate_screen || self.screen.screen().alternate_screen();
         TerminalUpdate {
-            activity: TerminalActivity::new(output, alternate_screen_activity),
+            activity: TerminalActivity::new(
+                output,
+                was_alternate_screen || self.screen.screen().alternate_screen(),
+            ),
             replies,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_output(&self) -> bool {
-        self.output.has_pending()
     }
 
     fn rendered_rows(&self) -> Vec<String> {
@@ -107,14 +105,35 @@ impl HeadlessTerminal {
         rows.extend((0..ROWS).map(|row| screen.contents_between(row, 0, row, COLS)));
         rows
     }
+}
+
+impl TerminalState {
+    pub(crate) fn new() -> Self {
+        Self {
+            emulator: TerminalEmulator::new(),
+            selector: OutputSelector,
+        }
+    }
+
+    pub(crate) fn process(&mut self, bytes: &[u8]) -> TerminalUpdate {
+        self.emulator.process(bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_output(&self) -> bool {
+        self.emulator.output.has_pending()
+    }
 
     pub(crate) fn observe(&self, activity: TerminalActivity) -> TerminalObservation {
-        let rendered_rows = self.rendered_rows();
+        let rendered_rows = self.emulator.rendered_rows();
         TerminalObservation {
             activity,
-            changed_since_checkpoint: self.output.changed_since_checkpoint(&rendered_rows),
-            stream_end_offset: self.output.end_offset(),
-            stream_truncated: self.output.truncated(),
+            changed_since_checkpoint: self
+                .emulator
+                .output
+                .changed_since_checkpoint(&rendered_rows),
+            stream_end_offset: self.emulator.output.end_offset(),
+            stream_truncated: self.emulator.output.truncated(),
             rendered_rows,
         }
     }
@@ -123,7 +142,7 @@ impl HeadlessTerminal {
         &self,
         observation: &TerminalObservation,
     ) -> PendingTerminalResponse {
-        let pending = self.output.pending_response(observation);
+        let pending = self.selector.select(&self.emulator.output, observation);
         PendingTerminalResponse {
             output: pending.text,
             truncated: pending.truncated,
@@ -132,14 +151,14 @@ impl HeadlessTerminal {
     }
 
     pub(crate) fn acknowledge(&mut self, delivery: TerminalDelivery) {
-        self.output.acknowledge(delivery.0);
+        self.emulator.output.acknowledge(delivery.0);
     }
 
     #[cfg(test)]
     pub(crate) fn output(&self) -> (String, bool) {
         let observation = self.observe(TerminalActivity::default());
-        let pending = self.output.pending_response(&observation);
-        (self.output.stream(&observation), pending.truncated)
+        let pending = self.selector.select(&self.emulator.output, &observation);
+        (self.emulator.output.stream(&observation), pending.truncated)
     }
 
     #[cfg(test)]

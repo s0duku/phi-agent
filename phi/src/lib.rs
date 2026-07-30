@@ -13,11 +13,11 @@
 pub mod agent;
 mod banner;
 pub mod config;
-pub mod container;
 pub mod error;
 pub mod executor;
 pub(crate) mod expr;
 pub mod features;
+pub mod headlessterm;
 pub mod home;
 pub mod message;
 pub mod module;
@@ -103,7 +103,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Container(args) => container::run(args).await.map_err(Into::into),
+        Command::HeadlessTerminal(args) => headlessterm::run(args).await.map_err(Into::into),
         Command::Run(args) => run_agent(cli.home.as_deref(), args).await,
         Command::Yolo(args) => yolo_agent(cli.home.as_deref(), args).await,
         Command::Step(args) => step_agent(cli.home.as_deref(), args).await,
@@ -219,7 +219,7 @@ async fn run_cli_agent(
             true
         } else if yolo {
             match session.step() {
-                PhiAgentStep::Completed { .. } => true,
+                PhiAgentStep::TurnEnd { .. } => true,
                 PhiAgentStep::Failed { .. } if previous_was_failed => true,
                 PhiAgentStep::Failed { .. } => {
                     previous_was_failed = true;
@@ -466,7 +466,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     #[command(
-        about = "Repeat the primitive `step` evaluation with more autonomy, continuing through recoverable failures until Completed",
+        about = "Repeat the primitive `step` evaluation with more autonomy, continuing through recoverable failures until TurnEnd",
         before_help = banner::startup_banner()
     )]
     Yolo(RunArgs),
@@ -500,7 +500,8 @@ enum Command {
         before_help = banner::startup_banner()
     )]
     Doctor(DoctorArgs),
-    Container(container::ContainerArgs),
+    #[command(name = "headlessterm")]
+    HeadlessTerminal(headlessterm::HeadlessTerminalArgs),
 }
 
 #[derive(Args, Default)]

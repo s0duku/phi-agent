@@ -32,7 +32,7 @@ impl PhiModule for RewriteInterveneModule {
         let delta = runtime.base_delta().clone();
         Ok(StepBounce::ReplaceBaseStep(
             runtime,
-            PhiAgentStep::completed("rewritten by intervene"),
+            PhiAgentStep::turn_end("rewritten by intervene"),
             delta,
         ))
     }
@@ -50,7 +50,7 @@ impl PhiModule for StopInterveneModule {
         let delta = runtime.cur_delta().clone();
         Ok(StepBounce::CreateNextStep(
             runtime,
-            PhiAgentStep::completed("stopped by intervene"),
+            PhiAgentStep::turn_end("stopped by intervene"),
             delta,
         ))
     }
@@ -73,7 +73,7 @@ impl PhiModule for CountingInterveneModule {
 #[tokio::test]
 async fn intervene_rewrites_step_before_default_eval() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
 
@@ -87,7 +87,7 @@ async fn intervene_rewrites_step_before_default_eval() {
 
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Completed { detail } if detail == "rewritten by intervene"
+        PhiAgentStep::TurnEnd { detail } if detail == "rewritten by intervene"
     ));
 }
 
@@ -95,7 +95,7 @@ async fn intervene_rewrites_step_before_default_eval() {
 async fn intervene_may_stop_before_later_modules_run() {
     let calls = Arc::new(AtomicUsize::new(0));
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
 

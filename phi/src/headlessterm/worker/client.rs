@@ -1,23 +1,25 @@
 use std::time::Duration;
 
-use crate::container::job::{JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus};
+use crate::headlessterm::job::{
+    JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen, TerminalCommand,
+};
 
 use super::launcher;
 use super::protocol::{Request, Response, Status};
 use super::rpc;
 
-pub(super) fn exec_job(
-    command: &str,
-    try_wait: Duration,
+pub(crate) fn exec_job(
+    command: TerminalCommand,
+    return_when: ReturnWhen,
     expiration: Duration,
 ) -> Result<(Option<JobHandle>, JobInfo), String> {
     let handle = JobHandle::random()?;
-    launcher::spawn_container(&handle, command, expiration)?;
+    launcher::spawn_worker(&handle, command, expiration)?;
     let result = access_job(
         JobHandle(handle.0.clone()),
         JobAccess::Interact {
             data: String::new(),
-            try_wait,
+            return_when,
         },
     )?;
     let JobAccessResult::Interacted(info) = result else {
@@ -27,7 +29,7 @@ pub(super) fn exec_job(
     Ok((live_handle, info))
 }
 
-pub(super) fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
+pub(crate) fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
     let interacts = matches!(access, JobAccess::Interact { .. });
     let response = send_request(&handle.0, Request::Access(access))?;
     if interacts {
@@ -37,7 +39,7 @@ pub(super) fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAcce
     }
 }
 
-pub(super) fn close_job(handle: JobHandle) -> Result<JobInfo, String> {
+pub(crate) fn close_job(handle: JobHandle) -> Result<JobInfo, String> {
     request(&handle.0, Request::Close)
 }
 

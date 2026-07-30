@@ -1,4 +1,4 @@
-use crate::tests::container::support::exec_job;
+use crate::tests::headlessterm::support::exec_job;
 
 #[test]
 fn short_job_returns_output_and_no_live_handle() {

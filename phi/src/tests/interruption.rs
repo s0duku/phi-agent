@@ -30,7 +30,7 @@ impl TestClient for PendingProvider {
 #[tokio::test]
 async fn interrupted_step_leaves_the_pre_call_session_checkpoint_serializable() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("keep me")],
     );
     let started = Arc::new(Notify::new());

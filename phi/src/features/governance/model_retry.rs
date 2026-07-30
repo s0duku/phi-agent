@@ -30,8 +30,8 @@ impl ModelRetryPolicy {
     }
 }
 
-fn request_complete_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
-    expr.find_ancestor(|step| matches!(step, PhiAgentStep::RequestComplete { .. }))
+fn request_provider_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
+    expr.find_ancestor(|step| matches!(step, PhiAgentStep::RequestProvider { .. }))
 }
 
 fn is_model_retry_failed_step(step: &PhiAgentStep) -> bool {
@@ -42,7 +42,7 @@ fn is_model_retry_failed_step(step: &PhiAgentStep) -> bool {
     matches!(
         error.kind(),
         PhiErrorKind::ProviderRequest | PhiErrorKind::ProviderResponse
-    ) && error.source_step() == Some("request_complete")
+    ) && error.source_step() == Some("request_provider")
 }
 
 impl PhiModule for ModelRetryPolicy {
@@ -53,7 +53,7 @@ impl PhiModule for ModelRetryPolicy {
     }
 
     fn probe(&self, runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
-        let ancestor = request_complete_ancestor(runtime.base_expr());
+        let ancestor = request_provider_ancestor(runtime.base_expr());
         let attempt = ancestor
             .and_then(PhiStepExpr::model_retry_state)
             .map(|retry| retry.attempt);
@@ -98,7 +98,7 @@ impl PhiModule for ModelRetryPolicy {
                 self.max_retries
             ));
             delta.unbind_model_retry_state();
-            let step = runtime.request_complete_step("resuming after exhausted model retry budget");
+            let step = runtime.request_provider_step("resuming after exhausted model retry budget");
             return Ok(crate::agent::StepBounce::ReplaceBaseStep(
                 runtime, step, delta,
             ));
@@ -110,7 +110,7 @@ impl PhiModule for ModelRetryPolicy {
         delta.bind_model_retry_state(PhiModelRetryState {
             attempt: next_attempt,
         });
-        let step = runtime.request_complete_step(format!(
+        let step = runtime.request_provider_step(format!(
             "retrying model request ({next_attempt}/{})",
             self.max_retries
         ));
@@ -136,7 +136,7 @@ impl PhiModule for ModelRetryPolicy {
             _ => return Ok(()),
         };
 
-        if !matches!(step, PhiAgentStep::RequestComplete { .. }) {
+        if !matches!(step, PhiAgentStep::RequestProvider { .. }) {
             return Ok(());
         }
 
@@ -219,7 +219,7 @@ mod tests {
             if *attempts == 1 {
                 Err(
                     PhiRuntimeError::provider_request("model request failed: timeout")
-                        .with_source_step("request_complete"),
+                        .with_source_step("request_provider"),
                 )
             } else {
                 Ok(PhiModelResponse::unspecified(vec![PhiMessage::assistant(
@@ -232,13 +232,13 @@ mod tests {
     #[tokio::test]
     async fn failed_model_request_resumes_previous_step_until_budget_exhausted() {
         let base = PhiStepExpr::new(
-            PhiAgentStep::request_complete("requesting completion", &test_model_defaults()),
+            PhiAgentStep::request_provider("requesting completion", &test_model_defaults()),
             Vec::<PhiMessage>::new(),
         );
         let session = Session::from_expr(
             base.branch_failed(
                 PhiRuntimeError::provider_request("model request failed: timeout")
-                    .with_source_step("request_complete"),
+                    .with_source_step("request_provider"),
             ),
         );
 
@@ -252,7 +252,7 @@ mod tests {
 
         assert!(matches!(
             outcome.session.step(),
-            PhiAgentStep::RequestComplete { detail, .. }
+            PhiAgentStep::RequestProvider { detail, .. }
                 if detail == "retrying model request (1/3)"
         ));
         let expr = outcome.session.clone().into_expr();
@@ -265,7 +265,7 @@ mod tests {
     #[tokio::test]
     async fn provider_retry_state_flows_without_store() {
         let session = Session::from_root(
-            PhiAgentStep::request_complete("ready", &test_model_defaults()),
+            PhiAgentStep::request_provider("ready", &test_model_defaults()),
             Vec::new(),
         );
         let attempts = Arc::new(Mutex::new(0));
@@ -284,13 +284,13 @@ mod tests {
         agent.step().await;
         assert!(matches!(
             agent.session().step(),
-            PhiAgentStep::RequestComplete { detail, .. }
+            PhiAgentStep::RequestProvider { detail, .. }
                 if detail == "retrying model request (1/3)"
         ));
         agent.step().await;
         let outcome = agent.into_session();
 
-        assert!(matches!(outcome.step(), PhiAgentStep::Completed { .. }));
+        assert!(matches!(outcome.step(), PhiAgentStep::TurnEnd { .. }));
         assert_eq!(*attempts.lock().expect("attempt lock should succeed"), 2);
         assert_eq!(
             outcome.history().to_messages(),
@@ -299,16 +299,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exhausted_model_retry_budget_resets_to_clean_request_complete_step() {
+    async fn exhausted_model_retry_budget_resets_to_clean_request_provider_step() {
         let retrying_step = PhiStepExpr::new(
-            PhiAgentStep::request_complete("retrying model request (3/3)", &test_model_defaults()),
+            PhiAgentStep::request_provider("retrying model request (3/3)", &test_model_defaults()),
             Vec::<PhiMessage>::new(),
         )
         .with_model_retry_state(PhiModelRetryState { attempt: 3 });
         let session = Session::from_expr(
             retrying_step.branch_failed(
                 PhiRuntimeError::provider_request("model request failed: timeout")
-                    .with_source_step("request_complete"),
+                    .with_source_step("request_provider"),
             ),
         );
 
@@ -321,7 +321,7 @@ mod tests {
             .await;
 
         match outcome.session.step() {
-            PhiAgentStep::RequestComplete { detail, .. } => {
+            PhiAgentStep::RequestProvider { detail, .. } => {
                 assert_eq!(detail, "resuming after exhausted model retry budget");
             }
             step => panic!("expected clean request-complete step, got {step:?}"),

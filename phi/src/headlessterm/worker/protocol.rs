@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::container::job::JobAccess;
+use crate::headlessterm::job::JobAccess;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {

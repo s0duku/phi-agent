@@ -1,23 +1,24 @@
 use std::time::Duration;
 
-use crate::container::{
-    JobAccess, JobAccessResult, JobContainer, JobHandle, JobInfo, JobStatus, LocalShellJobContainer,
-};
 use crate::executor::PhiTool;
 use crate::executor::tools::shell::job::{
     InteractArgs, InteractiveInput, ShellJobExecTool, ShellJobInteractTool, interactive_input,
 };
+use crate::headlessterm::{
+    HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus,
+};
 
 async fn access_interact(handle: JobHandle, data: &str, try_wait: Duration) -> JobInfo {
-    let result = <LocalShellJobContainer as JobContainer>::access_job(
-        handle,
-        JobAccess::Interact {
-            data: data.to_owned(),
-            try_wait,
-        },
-    )
-    .await
-    .unwrap();
+    let result = HeadlessTerminal::new()
+        .access_job(
+            handle,
+            JobAccess::Interact {
+                data: data.to_owned(),
+                return_when: try_wait.into(),
+            },
+        )
+        .await
+        .unwrap();
     match result {
         JobAccessResult::Interacted(info) => info,
         JobAccessResult::Written(_) => panic!("interact returned write acknowledgment"),
@@ -131,13 +132,14 @@ fn windows_interact_submits_each_multiline_input_line_with_enter() {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_linear_output_beyond_one_screen_remains_complete() {
-    let (_, info) = <LocalShellJobContainer as JobContainer>::exec_job(
-        "1..100 | ForEach-Object { Write-Output \"line-$_\" }",
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    let (_, info) = HeadlessTerminal::new()
+        .exec_job(
+            "1..100 | ForEach-Object { Write-Output \"line-$_\" }",
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
 
     assert!(matches!(info.status(), JobStatus::Exited(0)));
     assert_eq!(info.outputs().lines().count(), 100);
@@ -147,13 +149,14 @@ async fn windows_linear_output_beyond_one_screen_remains_complete() {
 
 #[tokio::test]
 async fn running_job_expires_without_interaction() {
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
-        long_running_command(),
-        Duration::ZERO,
-        Duration::from_millis(300),
-    )
-    .await
-    .unwrap();
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(
+            long_running_command(),
+            Duration::ZERO,
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
@@ -165,13 +168,10 @@ async fn running_job_expires_without_interaction() {
 #[tokio::test]
 async fn interaction_restarts_running_job_expiration() {
     let expiration = Duration::from_millis(500);
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
-        long_running_command(),
-        Duration::ZERO,
-        expiration,
-    )
-    .await
-    .unwrap();
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(long_running_command(), Duration::ZERO, expiration)
+        .await
+        .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
@@ -205,13 +205,10 @@ async fn nohup_process_survives_shell_exit_and_container_expiration() {
         marker.display()
     );
 
-    let (handle, info) = <LocalShellJobContainer as JobContainer>::exec_job(
-        &command,
-        Duration::from_secs(2),
-        Duration::from_millis(50),
-    )
-    .await
-    .unwrap();
+    let (handle, info) = HeadlessTerminal::new()
+        .exec_job(&command, Duration::from_secs(2), Duration::from_millis(50))
+        .await
+        .unwrap();
     assert!(handle.is_none());
     assert!(matches!(info.status(), JobStatus::Exited(0)));
 
@@ -229,13 +226,10 @@ async fn attached_background_process_ends_with_terminal_session() {
         marker.display()
     );
 
-    let (handle, info) = <LocalShellJobContainer as JobContainer>::exec_job(
-        &command,
-        Duration::from_secs(2),
-        Duration::from_secs(2),
-    )
-    .await
-    .unwrap();
+    let (handle, info) = HeadlessTerminal::new()
+        .exec_job(&command, Duration::from_secs(2), Duration::from_secs(2))
+        .await
+        .unwrap();
     assert!(handle.is_none());
     assert!(matches!(info.status(), JobStatus::Exited(0)));
 
@@ -258,7 +252,7 @@ fn background_marker(label: &str) -> std::path::PathBuf {
 #[cfg(unix)]
 #[tokio::test]
 async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
+    let (handle, initial) = HeadlessTerminal::new().exec_job(
         "IFS= read -r value; if IFS= read -r -t 0.2 extra; then printf 'extra:%s' \"$extra\"; else printf 'received:%s' \"$value\"; fi",
         Duration::from_millis(20),
         Duration::from_secs(5),
@@ -276,13 +270,14 @@ async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
 #[cfg(unix)]
 #[tokio::test]
 async fn pty_line_discipline_does_not_echo_submitted_input() {
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
-        "IFS= read -r value; printf done",
-        Duration::from_millis(20),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(
+            "IFS= read -r value; printf done",
+            Duration::from_millis(20),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
 
     let info = access_interact(handle.unwrap(), "private-input\r", Duration::from_secs(2)).await;
@@ -293,13 +288,14 @@ async fn pty_line_discipline_does_not_echo_submitted_input() {
 #[cfg(unix)]
 #[tokio::test]
 async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
-        "IFS= read -r value; printf 'value:<%s>' \"$value\"",
-        Duration::from_millis(20),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(
+            "IFS= read -r value; printf 'value:<%s>' \"$value\"",
+            Duration::from_millis(20),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
@@ -315,13 +311,14 @@ async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
 #[cfg(unix)]
 #[tokio::test]
 async fn persistent_job_can_be_read_and_closed() {
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
-        "printf ready; sleep 10",
-        Duration::from_secs(1),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(
+            "printf ready; sleep 10",
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
     assert_eq!(initial.outputs(), "ready");
     let handle = handle.unwrap();
@@ -330,7 +327,8 @@ async fn persistent_job_can_be_read_and_closed() {
     assert!(matches!(read.status(), JobStatus::Running));
     assert!(read.outputs().is_empty());
 
-    let closed = <LocalShellJobContainer as JobContainer>::close_job(JobHandle(handle.0.clone()))
+    let closed = HeadlessTerminal::new()
+        .close_job(JobHandle(handle.0.clone()))
         .await
         .unwrap();
     assert!(matches!(closed.status(), JobStatus::Exited(_)));
@@ -341,24 +339,22 @@ async fn persistent_job_can_be_read_and_closed() {
 #[cfg(unix)]
 #[tokio::test]
 async fn write_preserves_output_for_the_next_interaction_delta() {
-    let (handle, initial) = <LocalShellJobContainer as JobContainer>::exec_job(
-        line_input_command(),
-        Duration::ZERO,
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(line_input_command(), Duration::ZERO, Duration::from_secs(5))
+        .await
+        .unwrap();
     assert!(matches!(initial.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
-    let result = <LocalShellJobContainer as JobContainer>::access_job(
-        JobHandle(handle.0.clone()),
-        JobAccess::Write {
-            data: "preserved".into(),
-        },
-    )
-    .await
-    .unwrap();
+    let result = HeadlessTerminal::new()
+        .access_job(
+            JobHandle(handle.0.clone()),
+            JobAccess::Write {
+                data: "preserved".into(),
+            },
+        )
+        .await
+        .unwrap();
     let JobAccessResult::Written(status) = result else {
         panic!("write returned terminal snapshot");
     };
@@ -369,7 +365,7 @@ async fn write_preserves_output_for_the_next_interaction_delta() {
     assert!(read.outputs().contains("before"));
     assert!(read.outputs().contains("received:preserved"));
 
-    let _ = <LocalShellJobContainer as JobContainer>::close_job(handle).await;
+    let _ = HeadlessTerminal::new().close_job(handle).await;
 }
 
 #[cfg(unix)]

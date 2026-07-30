@@ -2,5 +2,5 @@
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/src/tests/container/unix_semantics_body.inc"
+    "/src/tests/headlessterm/unix_semantics_body.inc"
 ));

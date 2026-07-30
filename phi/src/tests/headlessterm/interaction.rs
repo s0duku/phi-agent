@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
-use crate::container::local::interaction::InteractionState;
-use crate::container::local::lease::ActivityExpiration;
-use crate::container::local::terminal::TerminalObservation;
+use crate::headlessterm::ReturnWhen;
+use crate::headlessterm::worker::interaction::InteractionState;
+use crate::headlessterm::worker::lease::ActivityExpiration;
+use crate::headlessterm::worker::state::TerminalObservation;
 
 #[test]
 fn activity_expiration_applies_to_running_jobs() {
@@ -49,7 +50,7 @@ fn startup_grace_only_applies_before_first_interaction() {
 fn linear_output_adds_a_shorter_settle_deadline() {
     let now = Instant::now();
     let state = InteractionState::default();
-    let mut interaction = state.begin_at(Duration::from_secs(5), now);
+    let mut interaction = state.begin_at(ReturnWhen::output_settled(Duration::from_secs(5)), now);
     interaction.observe(&TerminalObservation::from_facts(true, true, false), now);
 
     assert_eq!(

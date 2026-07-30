@@ -5,8 +5,8 @@ use clap::{Args, Subcommand};
 use super::Session;
 use crate::{
     banner,
-    container::{JobContainer, JobHandle, LocalShellJobContainer},
     features::pretty_history,
+    headlessterm::{HeadlessTerminal, JobHandle},
     message::{PhiMessage, PhiToolMessage},
 };
 
@@ -67,8 +67,9 @@ async fn delete(args: SessionDeleteArgs) -> Result<(), Box<dyn std::error::Error
     let mut close_errors = Vec::new();
 
     for handle in handles {
-        if let Err(error) =
-            <LocalShellJobContainer as JobContainer>::close_job(JobHandle(handle.clone())).await
+        if let Err(error) = HeadlessTerminal::new()
+            .close_job(JobHandle(handle.clone()))
+            .await
         {
             close_errors.push(format!("{handle}: {error}"));
         }
@@ -127,7 +128,7 @@ mod tests {
     #[test]
     fn finds_unique_running_job_handles_only() {
         let session = Session::from_root(
-            PhiAgentStep::completed("done"),
+            PhiAgentStep::turn_end("done"),
             vec![
                 PhiMessage::tool_result(
                     Some("one".to_owned()),
@@ -167,7 +168,7 @@ mod tests {
                 .as_nanos()
         ));
         let session = Session::from_root(
-            PhiAgentStep::completed("done"),
+            PhiAgentStep::turn_end("done"),
             vec![PhiMessage::user("hello")],
         );
         session.save(&path).unwrap();

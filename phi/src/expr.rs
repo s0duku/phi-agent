@@ -12,7 +12,7 @@ use crate::{
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct PhiStepExpr {
-    #[serde(default = "crate::session::serde_default_request_complete_step")]
+    #[serde(default = "crate::session::serde_default_request_provider_step")]
     step: PhiAgentStep,
     #[serde(default, skip_serializing_if = "PhiExprDelta::is_empty")]
     delta: PhiExprDelta,
@@ -289,7 +289,7 @@ impl PhiStepExpr {
 impl PhiStepExpr {
     pub(crate) fn empty_root() -> Self {
         Self::new(
-            crate::session::serde_default_request_complete_step(),
+            crate::session::serde_default_request_provider_step(),
             PhiHistory::default(),
         )
     }
@@ -299,13 +299,13 @@ impl PhiStepExpr {
 mod step_expr_tests {
     use super::*;
     use crate::message::PhiMessage;
-    use crate::session::serde_default_request_complete_step;
+    use crate::session::serde_default_request_provider_step;
 
     #[test]
     fn clone_shares_parent_expr() {
         let expr = PhiStepExpr::branch(
             PhiStepExpr::empty_root(),
-            serde_default_request_complete_step(),
+            serde_default_request_provider_step(),
             PhiExprDelta::default(),
         );
 
@@ -331,12 +331,12 @@ mod step_expr_tests {
     #[test]
     fn store_only_mutates_current_delta_store() {
         let base = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: PhiExprDelta::from(vec![PhiMessage::user("earlier")]),
             expr: None,
         };
         let mut expr = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: PhiExprDelta::default(),
             expr: Some(Arc::new(base)),
         };
@@ -363,7 +363,7 @@ mod step_expr_tests {
     #[test]
     fn lookup_prefers_current_delta_before_parent_expr() {
         let base = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: {
                 let mut delta = PhiExprDelta::default();
                 delta.bind("name", "base");
@@ -373,7 +373,7 @@ mod step_expr_tests {
             expr: None,
         };
         let mut expr = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: PhiExprDelta::default(),
             expr: Some(Arc::new(base)),
         };
@@ -388,7 +388,7 @@ mod step_expr_tests {
     #[test]
     fn unstore_blocks_parent_lookup() {
         let base = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: {
                 let mut delta = PhiExprDelta::default();
                 delta.bind("retry_state", 3);
@@ -397,7 +397,7 @@ mod step_expr_tests {
             expr: None,
         };
         let mut expr = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: PhiExprDelta::default(),
             expr: Some(Arc::new(base)),
         };
@@ -410,7 +410,7 @@ mod step_expr_tests {
     #[test]
     fn incompatible_current_store_binding_does_not_fall_back_to_parent() {
         let base = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: {
                 let mut delta = PhiExprDelta::default();
                 delta.bind("count", 7);
@@ -419,7 +419,7 @@ mod step_expr_tests {
             expr: None,
         };
         let mut expr = PhiStepExpr {
-            step: serde_default_request_complete_step(),
+            step: serde_default_request_provider_step(),
             delta: PhiExprDelta::default(),
             expr: Some(Arc::new(base)),
         };

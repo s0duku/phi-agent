@@ -211,7 +211,7 @@ impl PhiModule for DefaultFailedRecoveryModule {
                 runtime.cur_delta().clone()
             };
             let step =
-                runtime.request_complete_step("tool result committed; model response is pending");
+                runtime.request_provider_step("tool result committed; model response is pending");
             return Ok(StepBounce::ReplaceBaseStep(runtime, step, delta));
         }
 
@@ -222,7 +222,7 @@ impl PhiModule for DefaultFailedRecoveryModule {
             } else {
                 runtime.cur_delta().clone()
             };
-            let step = runtime.request_complete_step("resuming from failed step");
+            let step = runtime.request_provider_step("resuming from failed step");
             return Ok(StepBounce::ReplaceBaseStep(runtime, step, delta));
         }
         next.call(runtime, cont)

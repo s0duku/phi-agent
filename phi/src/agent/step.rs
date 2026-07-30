@@ -134,9 +134,9 @@ impl PhiAgentRuntime {
     }
 
     fn compact_resume_step(&self) -> PhiAgentStep {
-        self.find_ancestor(|step| matches!(step, PhiAgentStep::RequestComplete { .. }))
+        self.find_ancestor(|step| matches!(step, PhiAgentStep::RequestProvider { .. }))
             .map(|ancestor| ancestor.step().clone())
-            .unwrap_or_else(|| self.request_complete_step("ready"))
+            .unwrap_or_else(|| self.request_provider_step("ready"))
     }
 
     fn continue_failed(
@@ -205,17 +205,17 @@ impl PhiAgentRuntime {
         if index >= self.modules.len() {
             return match self.base_step().clone() {
                 PhiAgentStep::RequestCompact => self.step_request_compact(cont),
-                PhiAgentStep::RequestComplete { .. } => self.request_complete(cont),
+                PhiAgentStep::RequestProvider { .. } => self.request_provider(cont),
                 PhiAgentStep::RequestExecutor {
                     pending_messages,
                     tool_calls,
                     ..
                 } => self.step_tool(pending_messages, tool_calls, cont),
-                // Completed is a pure step-level transition: once a turn has
+                // TurnEnd is a pure step-level transition: once a turn has
                 // finished cleanly, the next explicit step should mechanically
                 // resume from a fresh completion request.
-                PhiAgentStep::Completed { .. } => {
-                    let step = self.request_complete_step("resuming from completed step");
+                PhiAgentStep::TurnEnd { .. } => {
+                    let step = self.request_provider_step("resuming from turn-end step");
                     let delta = self.cur_delta().clone();
                     StepBounce::CreateNextStep(self, step, delta)
                 }
@@ -307,13 +307,13 @@ impl PhiAgentRuntime {
         )
     }
 
-    fn request_complete(mut self, _cont: StepCont) -> StepBounce {
+    fn request_provider(mut self, _cont: StepCont) -> StepBounce {
         let original_history = self.history();
-        let mut request = self.request_complete_request(
+        let mut request = self.request_provider_request(
             self.base_step()
-                .request_complete_call()
+                .request_provider_call()
                 .cloned()
-                .expect("request_complete requires a request_complete step"),
+                .expect("request_provider requires a request_provider step"),
         );
         let mut request_history = original_history.clone();
         let step = self.base_step().clone();
@@ -325,7 +325,7 @@ impl PhiAgentRuntime {
             request: &mut request,
         };
         if let Err(failure) = self.modules.handle(&mut before_event) {
-            return self.continue_failed(failure, "request_complete");
+            return self.continue_failed(failure, "request_provider");
         }
         let request_history_tail = appended_history_tail(&original_history, &request_history);
 
@@ -348,7 +348,7 @@ impl PhiAgentRuntime {
                     {
                         Ok(response_messages) => response_messages,
                         Err(failure) => {
-                            return runtime.continue_failed(failure, "request_complete");
+                            return runtime.continue_failed(failure, "request_provider");
                         }
                     };
 
@@ -359,7 +359,7 @@ impl PhiAgentRuntime {
                         let mut after_event =
                             PhiAgentStepEvent::AfterModelResponse { message: assistant };
                         if let Err(failure) = runtime.modules.handle(&mut after_event) {
-                            return runtime.continue_failed(failure, "request_complete");
+                            return runtime.continue_failed(failure, "request_provider");
                         }
                     }
 
@@ -393,7 +393,7 @@ impl PhiAgentRuntime {
                         messages: &response_messages_without_tool_call,
                     };
                     if let Err(failure) = runtime.modules.handle(&mut after_response_event) {
-                        return runtime.continue_failed(failure, "request_complete");
+                        return runtime.continue_failed(failure, "request_provider");
                     }
 
                     if !tool_calls.is_empty() {
@@ -426,14 +426,14 @@ impl PhiAgentRuntime {
                     }
                     let delta = runtime.cur_delta().clone();
                     if turn_state == PhiModelTurnState::Continue {
-                        let step = runtime.request_complete_step(
+                        let step = runtime.request_provider_step(
                             "provider response requires another model request",
                         );
                         return StepBounce::CreateNextStep(runtime, step, delta);
                     }
                     StepBounce::CreateNextStep(
                         runtime,
-                        PhiAgentStep::completed(
+                        PhiAgentStep::turn_end(
                             "model response committed; no tool execution is pending",
                         ),
                         delta,
@@ -451,7 +451,7 @@ impl PhiAgentRuntime {
     ) -> StepBounce {
         let mut tool_calls = tool_calls.into_iter();
         let Some(mut request) = tool_calls.next() else {
-            let step = self.request_complete_step("no tool execution is pending");
+            let step = self.request_provider_step("no tool execution is pending");
             let delta = if self.cur_delta().is_empty() {
                 self.base_delta().clone()
             } else {
@@ -531,7 +531,7 @@ impl PhiAgentRuntime {
                     runtime.commit_message(tool_call_message);
                     runtime.commit_tool_result(tool_result_message);
                     let step = if remaining_tool_calls.is_empty() {
-                        runtime.request_complete_step(
+                        runtime.request_provider_step(
                             "tool result committed; model response is pending",
                         )
                     } else {

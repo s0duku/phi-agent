@@ -1,8 +1,8 @@
-use crate::container::local::terminal::HeadlessTerminal;
+use crate::headlessterm::worker::state::TerminalState;
 
 #[test]
 fn cursor_report_is_answered_and_not_exposed_as_command_output() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let first = terminal.process(b"hello");
     assert!(first.activity.displayed());
     assert_eq!(terminal.rendered_output(), "hello");
@@ -15,7 +15,7 @@ fn cursor_report_is_answered_and_not_exposed_as_command_output() {
 
 #[test]
 fn fragmented_terminal_queries_remain_protocol_messages() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     assert!(!terminal.process(b"\x1b[").activity.displayed());
     assert_eq!(terminal.rendered_output(), "");
 
@@ -27,7 +27,7 @@ fn fragmented_terminal_queries_remain_protocol_messages() {
 
 #[test]
 fn queries_are_removed_without_disturbing_adjacent_output() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let update = terminal.process(b"before\x1b[6nafter\r\n");
 
     assert!(update.activity.displayed());
@@ -37,7 +37,7 @@ fn queries_are_removed_without_disturbing_adjacent_output() {
 
 #[test]
 fn utf8_split_across_pty_reads_is_not_corrupted() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let bytes = "进度".as_bytes();
 
     assert!(!terminal.process(&bytes[..2]).activity.displayed());
@@ -50,7 +50,7 @@ fn utf8_split_across_pty_reads_is_not_corrupted() {
 
 #[test]
 fn display_controls_are_preserved_while_the_screen_tracks_refreshes() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let update = terminal.process(b"working 1\rworking 2\x08!\r\x1b[2Kdone");
 
     assert!(update.activity.displayed());
@@ -60,7 +60,7 @@ fn display_controls_are_preserved_while_the_screen_tracks_refreshes() {
 
 #[test]
 fn private_display_controls_keep_their_wire_order() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let update = terminal.process(b"\x1b[?25lbusy\x1b[?25h");
 
     assert!(update.activity.displayed());
@@ -68,8 +68,8 @@ fn private_display_controls_keep_their_wire_order() {
 }
 
 #[test]
-fn device_and_size_queries_have_headless_terminal_responses() {
-    let mut terminal = HeadlessTerminal::new();
+fn device_and_size_queries_have_headlessterm_responses() {
+    let mut terminal = TerminalState::new();
     let update = terminal.process(b"\x1b[5n\x1b[c\x1b[>c\x1b[18t");
 
     assert!(!update.activity.displayed());
@@ -87,7 +87,7 @@ fn device_and_size_queries_have_headless_terminal_responses() {
 
 #[test]
 fn output_is_read_as_a_stream_delta_and_preserves_terminal_controls() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     terminal.process(b"first\n\x1b[2Ksecond\x1b[6n");
     let (output, truncated) = terminal.output();
 
@@ -100,7 +100,7 @@ fn output_is_read_as_a_stream_delta_and_preserves_terminal_controls() {
 
 #[test]
 fn observation_pins_delta_to_one_checkpoint_candidate() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let first = terminal.process(b"first");
     let observation = terminal.observe(first.activity);
     terminal.process(b"\r\x1b[2Ksecond");
@@ -116,7 +116,7 @@ fn observation_pins_delta_to_one_checkpoint_candidate() {
 
 #[test]
 fn identical_screen_redraw_is_observable_without_a_visible_change() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     terminal.process(b"same");
     terminal.acknowledge_output();
     let update = terminal.process(b"\r\x1b[2Ksame");
@@ -128,7 +128,7 @@ fn identical_screen_redraw_is_observable_without_a_visible_change() {
 
 #[test]
 fn alternate_screen_activity_is_preserved_across_terminal_updates() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     let entered = terminal.process(b"\x1b[?1049hloading");
     let refreshed = terminal.process(b"\r\x1b[2Kready");
 
@@ -138,7 +138,7 @@ fn alternate_screen_activity_is_preserved_across_terminal_updates() {
 
 #[test]
 fn bounded_output_reports_when_old_lines_were_discarded() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     for index in 0..1_001 {
         terminal.process(format!("line-{index}\n").as_bytes());
     }
@@ -151,7 +151,7 @@ fn bounded_output_reports_when_old_lines_were_discarded() {
 
 #[test]
 fn initial_rendered_output_includes_scrollback_and_visible_screen() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     for index in 1..=40 {
         terminal.process(format!("line-{index}\r\n").as_bytes());
     }
@@ -173,7 +173,7 @@ fn initial_rendered_output_includes_scrollback_and_visible_screen() {
 
 #[test]
 fn rendered_output_after_acknowledgement_only_contains_changed_rows() {
-    let mut terminal = HeadlessTerminal::new();
+    let mut terminal = TerminalState::new();
     terminal.process(b"header\r\nworking");
     terminal.acknowledge_output();
 

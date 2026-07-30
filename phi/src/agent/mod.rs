@@ -102,7 +102,7 @@ impl PhiAgentBuildContext {
             }
             delta.push_message(message);
         }
-        let step = PhiAgentStep::request_complete("ready to request the model", &defaults);
+        let step = PhiAgentStep::request_provider("ready to request the model", &defaults);
         let expr = match parent {
             Some(parent) => PhiStepExpr::branch(parent, step, delta),
             None => PhiStepExpr::new(step, delta),
@@ -427,7 +427,7 @@ impl PhiAgent {
         loop {
             self.step().await;
             match self.session().step() {
-                PhiAgentStep::Completed { .. } => return,
+                PhiAgentStep::TurnEnd { .. } => return,
                 PhiAgentStep::Failed { .. } if previous_was_failed => return,
                 PhiAgentStep::Failed { .. } => previous_was_failed = true,
                 _ => previous_was_failed = false,
@@ -508,14 +508,14 @@ impl PhiAgentRuntime {
         )
     }
 
-    pub(crate) fn request_complete_step(&self, detail: impl Into<String>) -> PhiAgentStep {
-        PhiAgentStep::request_complete_with_call(
+    pub(crate) fn request_provider_step(&self, detail: impl Into<String>) -> PhiAgentStep {
+        PhiAgentStep::request_provider_with_call(
             detail,
             render::PhiProviderCall::from_parts(&self.model_defaults, self.tool_definitions()),
         )
     }
 
-    pub(crate) fn request_complete_request(
+    pub(crate) fn request_provider_request(
         &self,
         request: render::PhiProviderCall,
     ) -> render::PhiProviderCall {

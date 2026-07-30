@@ -60,7 +60,7 @@ fn plugin_descriptor_captures_build_time_command_view() {
 
     let builder = crate::agent::PhiAgent::builder(
         crate::session::Session::from_root(
-            crate::session::PhiAgentStep::request_complete(
+            crate::session::PhiAgentStep::request_provider(
                 "ready",
                 &crate::tests::support::test_model_defaults(),
             ),

@@ -1,6 +1,16 @@
-/*
- Job Container offers api to manage command job persistantly and backendly
-*/
+use std::time::Duration;
+
+/// A command interpreted by the headlessterm worker.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub enum TerminalCommand {
+    Shell { command: String },
+}
+
+/// The boundary that completes one terminal interaction.
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+pub enum ReturnWhen {
+    OutputSettled { try_wait: Duration },
+}
 
 pub enum JobStatus {
     Running,
@@ -24,14 +34,9 @@ pub enum JobAccess {
     Write { data: String },
     /// Write input and acquire the output delta since the previous interaction.
     ///
-    /// `try_wait` is the maximum duration to wait for the job to exit or for terminal
-    /// output activity to settle. Output activity is used as a heuristic that
-    /// meaningful new output is ready, so the request returns after the activity
-    /// is followed by the configured quiet period. With no output activity, it
-    /// waits for the full duration.
     Interact {
         data: String,
-        try_wait: std::time::Duration,
+        return_when: ReturnWhen,
     },
 }
 
@@ -79,24 +84,42 @@ impl JobHandle {
     }
 }
 
-#[async_trait::async_trait]
-pub trait JobContainer {
-    /// Start a command and acquire its initial output delta.
-    ///
-    /// `try_wait` bounds only the initial wait for output activity to settle or for
-    /// the process to exit. Output activity acts as a heuristic that meaningful
-    /// initial output is ready.
-    /// `expiration` is the inactivity lifetime of a still-running container;
-    /// once it elapses without another access, the container terminates the job
-    /// and releases its resources.
-    async fn exec_job(
-        cmd: &str,
-        try_wait: std::time::Duration,
-        expiration: std::time::Duration,
-    ) -> Result<(Option<JobHandle>, JobInfo), String>;
-    async fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String>;
+impl TerminalCommand {
+    pub fn shell(command: impl Into<String>) -> Self {
+        Self::Shell {
+            command: command.into(),
+        }
+    }
+}
 
-    async fn close_job(handle: JobHandle) -> Result<JobInfo, String>;
+impl From<String> for TerminalCommand {
+    fn from(command: String) -> Self {
+        Self::shell(command)
+    }
+}
+
+impl From<&str> for TerminalCommand {
+    fn from(command: &str) -> Self {
+        Self::shell(command)
+    }
+}
+
+impl From<&String> for TerminalCommand {
+    fn from(command: &String) -> Self {
+        Self::shell(command)
+    }
+}
+
+impl ReturnWhen {
+    pub const fn output_settled(try_wait: Duration) -> Self {
+        Self::OutputSettled { try_wait }
+    }
+}
+
+impl From<Duration> for ReturnWhen {
+    fn from(try_wait: Duration) -> Self {
+        Self::output_settled(try_wait)
+    }
 }
 
 impl JobInfo {

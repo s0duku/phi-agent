@@ -16,8 +16,8 @@ pub struct PhiModelRetryState {
     pub attempt: usize,
 }
 
-pub(crate) fn serde_default_request_complete_step() -> PhiAgentStep {
-    PhiAgentStep::request_complete(
+pub(crate) fn serde_default_request_provider_step() -> PhiAgentStep {
+    PhiAgentStep::request_provider(
         "ready",
         &ModelRequestDefaults::from_config(&PhiConfig::default())
             .expect("empty settings should always produce fallback model defaults"),
@@ -28,7 +28,7 @@ pub(crate) fn serde_default_request_complete_step() -> PhiAgentStep {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PhiAgentStep {
     RequestCompact,
-    RequestComplete {
+    RequestProvider {
         detail: String,
         #[serde(flatten)]
         call: PhiProviderCall,
@@ -40,7 +40,7 @@ pub enum PhiAgentStep {
         tool_calls: Vec<ToolCallRequest>,
     },
     Compacted,
-    Completed {
+    TurnEnd {
         detail: String,
     },
     Failed {
@@ -49,15 +49,15 @@ pub enum PhiAgentStep {
 }
 
 impl PhiAgentStep {
-    pub fn request_complete(detail: impl Into<String>, defaults: &ModelRequestDefaults) -> Self {
-        Self::RequestComplete {
+    pub fn request_provider(detail: impl Into<String>, defaults: &ModelRequestDefaults) -> Self {
+        Self::RequestProvider {
             detail: detail.into(),
             call: PhiProviderCall::from_parts(defaults, Vec::new()),
         }
     }
 
-    pub fn request_complete_with_call(detail: impl Into<String>, call: PhiProviderCall) -> Self {
-        Self::RequestComplete {
+    pub fn request_provider_with_call(detail: impl Into<String>, call: PhiProviderCall) -> Self {
+        Self::RequestProvider {
             detail: detail.into(),
             call,
         }
@@ -79,8 +79,8 @@ impl PhiAgentStep {
         }
     }
 
-    pub fn completed(detail: impl Into<String>) -> Self {
-        Self::Completed {
+    pub fn turn_end(detail: impl Into<String>) -> Self {
+        Self::TurnEnd {
             detail: detail.into(),
         }
     }
@@ -93,9 +93,9 @@ impl PhiAgentStep {
         match self {
             Self::RequestCompact => "request compact",
             Self::Compacted => "after compacted",
-            Self::RequestComplete { detail, .. }
+            Self::RequestProvider { detail, .. }
             | Self::RequestExecutor { detail, .. }
-            | Self::Completed { detail } => detail,
+            | Self::TurnEnd { detail } => detail,
             Self::Failed { error } => &error.detail(),
         }
     }
@@ -108,11 +108,11 @@ impl PhiAgentStep {
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed { .. } | Self::Failed { .. })
+        matches!(self, Self::TurnEnd { .. } | Self::Failed { .. })
     }
 
-    pub fn request_complete_call(&self) -> Option<&PhiProviderCall> {
-        let Self::RequestComplete { call, .. } = self else {
+    pub fn request_provider_call(&self) -> Option<&PhiProviderCall> {
+        let Self::RequestProvider { call, .. } = self else {
             return None;
         };
         Some(call)

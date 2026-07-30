@@ -1,5 +1,7 @@
 use portable_pty::CommandBuilder;
 
+use crate::headlessterm::job::TerminalCommand;
+
 #[cfg(unix)]
 const EXIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -9,7 +11,8 @@ const EXIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// alive briefly after the user shell exits gives asynchronously launched
 /// programs time to establish `nohup` handling before termination of the
 /// terminal session sends SIGHUP to its foreground process group.
-pub(crate) fn command(command: &str) -> CommandBuilder {
+pub(crate) fn build(command: TerminalCommand) -> CommandBuilder {
+    let TerminalCommand::Shell { command } = command;
     #[cfg(unix)]
     {
         let shell = unix_shell();

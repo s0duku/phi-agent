@@ -5,7 +5,9 @@
 
 use std::time::{Duration, Instant};
 
-use super::terminal::TerminalObservation;
+use crate::headlessterm::job::ReturnWhen;
+
+use super::state::TerminalObservation;
 
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const OUTPUT_SETTLE_PERIOD: Duration = POLL_INTERVAL.saturating_mul(15);
@@ -33,17 +35,22 @@ impl InteractionState {
         update_settle_deadline(&mut self.settle_deadline, classify(observation), at);
     }
 
-    pub(crate) fn begin(&self, wait: Duration) -> TerminalInteraction {
-        self.begin_at(wait, Instant::now())
+    pub(crate) fn begin<W: Into<ReturnWhen>>(&self, return_when: W) -> TerminalInteraction {
+        self.begin_at(return_when, Instant::now())
     }
 
     pub(crate) fn acknowledge(&mut self) {
         self.settle_deadline = None;
     }
 
-    pub(crate) fn begin_at(&self, wait: Duration, now: Instant) -> TerminalInteraction {
+    pub(crate) fn begin_at<W: Into<ReturnWhen>>(
+        &self,
+        return_when: W,
+        now: Instant,
+    ) -> TerminalInteraction {
+        let ReturnWhen::OutputSettled { try_wait } = return_when.into();
         TerminalInteraction {
-            wait_deadline: now.checked_add(wait),
+            wait_deadline: now.checked_add(try_wait),
             settle_deadline: self.settle_deadline,
         }
     }

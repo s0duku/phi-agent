@@ -13,7 +13,7 @@ fn detached_container_survives_its_launcher() {
     };
 
     let launched = Command::new(PHI)
-        .args(["container", "launch-local", &handle, "5000", command])
+        .args(["headlessterm", "launch-local", &handle, "5000", command])
         .output()
         .expect("container launcher should execute");
     assert!(
@@ -25,7 +25,7 @@ fn detached_container_survives_its_launcher() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let ready = loop {
         let output = Command::new(PHI)
-            .args(["container", "write", "--wait-ms", "0", &handle])
+            .args(["headlessterm", "write", "--wait-ms", "0", &handle])
             .output()
             .expect("container access should execute");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -49,7 +49,7 @@ fn detached_container_survives_its_launcher() {
     );
 
     let closed = Command::new(PHI)
-        .args(["container", "close", &handle])
+        .args(["headlessterm", "close", &handle])
         .output()
         .expect("container close should execute");
     assert!(

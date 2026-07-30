@@ -4,7 +4,7 @@ use vte::{Params, Perform};
 
 use super::TerminalObservation;
 
-pub(super) struct TerminalOutput {
+pub(super) struct OutputJournal {
     bytes: VecDeque<u8>,
     line_count: usize,
     truncated: bool,
@@ -22,7 +22,7 @@ struct TerminalCheckpoint {
     rendered_rows: Vec<String>,
 }
 
-struct OutputPolicy;
+pub(super) struct OutputSelector;
 
 pub(super) struct PendingOutput {
     pub(super) text: String,
@@ -30,7 +30,7 @@ pub(super) struct PendingOutput {
     pub(super) delivery: OutputDelivery,
 }
 
-impl TerminalOutput {
+impl OutputJournal {
     pub(super) fn new() -> Self {
         Self {
             bytes: VecDeque::new(),
@@ -80,21 +80,6 @@ impl TerminalOutput {
         self.truncated
     }
 
-    pub(super) fn pending_response(&self, observation: &TerminalObservation) -> PendingOutput {
-        let stream = self.stream(observation);
-        let text = OutputPolicy::render(&stream, &self.checkpoint, observation);
-        PendingOutput {
-            text,
-            truncated: observation.stream_truncated(),
-            delivery: OutputDelivery {
-                checkpoint: TerminalCheckpoint {
-                    stream_offset: observation.stream_end_offset(),
-                    rendered_rows: observation.rendered_rows().to_vec(),
-                },
-            },
-        }
-    }
-
     pub(super) fn stream(&self, observation: &TerminalObservation) -> String {
         let observed = observation
             .stream_end_offset()
@@ -124,7 +109,26 @@ impl TerminalOutput {
     }
 }
 
-impl OutputPolicy {
+impl OutputSelector {
+    pub(super) fn select(
+        &self,
+        journal: &OutputJournal,
+        observation: &TerminalObservation,
+    ) -> PendingOutput {
+        let stream = journal.stream(observation);
+        let text = Self::render(&stream, &journal.checkpoint, observation);
+        PendingOutput {
+            text,
+            truncated: observation.stream_truncated(),
+            delivery: OutputDelivery {
+                checkpoint: TerminalCheckpoint {
+                    stream_offset: observation.stream_end_offset(),
+                    rendered_rows: observation.rendered_rows().to_vec(),
+                },
+            },
+        }
+    }
+
     fn render(
         stream: &str,
         checkpoint: &TerminalCheckpoint,
@@ -290,7 +294,9 @@ impl Perform for LinearOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalObservation, TerminalOutput, linear_output, rendered_difference};
+    use super::{
+        OutputJournal, OutputSelector, TerminalObservation, linear_output, rendered_difference,
+    };
 
     #[test]
     fn linear_crlf_and_styles_render_as_an_increment() {
@@ -318,12 +324,12 @@ mod tests {
 
     #[test]
     fn delivery_only_acknowledges_the_observed_prefix() {
-        let mut output = TerminalOutput::new();
+        let mut output = OutputJournal::new();
         output.append(b"first\n", 1_000, 1024);
         let first =
             TerminalObservation::from_rendered_rows(vec!["first".to_owned()], output.end_offset);
         output.append(b"second\n", 1_000, 1024);
-        let pending = output.pending_response(&first);
+        let pending = OutputSelector.select(&output, &first);
         assert_eq!(output.stream(&first), "first\n");
 
         output.acknowledge(pending.delivery);
@@ -331,7 +337,7 @@ mod tests {
             vec!["first".to_owned(), "second".to_owned()],
             output.end_offset,
         );
-        let pending = output.pending_response(&second);
+        let pending = OutputSelector.select(&output, &second);
         assert_eq!(output.stream(&second), "second\n");
         assert_eq!(pending.text, "second");
     }

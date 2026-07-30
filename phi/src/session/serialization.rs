@@ -182,7 +182,7 @@ mod tests {
                 .as_nanos()
         ));
         let session = Session::from_root(
-            PhiAgentStep::completed("done"),
+            PhiAgentStep::turn_end("done"),
             vec![PhiMessage::user("hello from phi")],
         );
 
@@ -234,11 +234,11 @@ mod tests {
     #[test]
     fn session_uses_phi_step_expr_storage() {
         let root = PhiStepExpr::new(
-            PhiAgentStep::completed("root"),
+            PhiAgentStep::turn_end("root"),
             vec![PhiMessage::user("hello")],
         );
         let session = Session::from_expr(root.commit(
-            PhiAgentStep::request_complete(
+            PhiAgentStep::request_provider(
                 "next",
                 &crate::config::ModelRequestDefaults {
                     model: "test-model".into(),
@@ -254,8 +254,8 @@ mod tests {
 
         let json = serde_json::to_value(&session).unwrap();
         assert_eq!(json["frames"].as_array().unwrap().len(), 2);
-        assert_eq!(json["frames"][0]["step"]["kind"], "completed");
-        assert_eq!(json["frames"][1]["step"]["kind"], "request_complete");
+        assert_eq!(json["frames"][0]["step"]["kind"], "turn_end");
+        assert_eq!(json["frames"][1]["step"]["kind"], "request_provider");
 
         let loaded: Session = serde_json::from_value(json).unwrap();
         assert_eq!(loaded.history(), session.history());
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn session_serializes_structured_delta_store() {
         let root = PhiStepExpr::new(
-            PhiAgentStep::completed("root"),
+            PhiAgentStep::turn_end("root"),
             vec![PhiMessage::user("hello")],
         )
         .with_store("count", 3)
@@ -296,10 +296,10 @@ mod tests {
 
     #[test]
     fn round_trips_deep_session_without_nested_expr_json() {
-        let mut expr = PhiStepExpr::new(PhiAgentStep::completed("root"), PhiHistory::default());
+        let mut expr = PhiStepExpr::new(PhiAgentStep::turn_end("root"), PhiHistory::default());
         for index in 0..512 {
             expr = expr.commit(
-                PhiAgentStep::completed(format!("frame-{index}")),
+                PhiAgentStep::turn_end(format!("frame-{index}")),
                 PhiHistory::default(),
             );
         }
@@ -318,7 +318,7 @@ mod tests {
             br#"{
                 "frames": [
                     {
-                        "step": {"kind": "completed", "detail": "done"},
+                        "step": {"kind": "turn_end", "detail": "done"},
                         "delta": {
                             "history": [{"role": "user", "content": "hello"}]
                         }

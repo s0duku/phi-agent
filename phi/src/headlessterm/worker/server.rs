@@ -3,19 +3,19 @@ use std::time::Duration;
 
 use interprocess::local_socket::traits::Listener as _;
 
-use crate::container::job::JobAccess;
+use crate::headlessterm::job::{JobAccess, TerminalCommand};
 
 use super::lease::ActivityExpiration;
 use super::process::RunningJob;
 use super::protocol::{Request, Response, Status};
-use super::terminal::PendingTerminalResponse;
+use super::state::PendingTerminalResponse;
 use super::{interaction, rpc};
 
 const CLIENT_IO_GRACE: Duration = Duration::from_secs(5);
 
-pub(super) fn run_container(
+pub(super) fn run_worker(
     handle: &str,
-    command: &str,
+    command: TerminalCommand,
     expiration: Duration,
 ) -> Result<(), String> {
     let listener = rpc::bind(handle).map_err(|error| error.to_string())?;
@@ -94,16 +94,16 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
                 Ok(OperationResult::Written(status))
             })
         }
-        Request::Access(JobAccess::Interact { data, try_wait }) => {
-            job.interact(data.as_bytes(), try_wait).map(|interaction| {
+        Request::Access(JobAccess::Interact { data, return_when }) => job
+            .interact(data.as_bytes(), return_when)
+            .map(|interaction| {
                 let (status, waited, pending) = interaction.into_parts();
                 OperationResult::Terminal {
                     status,
                     waited,
                     pending,
                 }
-            })
-        }
+            }),
         Request::Close => job.close().and_then(|status| {
             job.observe_terminal()?;
             Ok(OperationResult::Terminal {
@@ -157,7 +157,7 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
 fn write_response(
     stream: &mut impl ReadWrite,
     response: Response,
-    delivery: Option<super::terminal::TerminalDelivery>,
+    delivery: Option<super::state::TerminalDelivery>,
     close_requested: bool,
     terminal_finished: bool,
     job: &mut RunningJob,

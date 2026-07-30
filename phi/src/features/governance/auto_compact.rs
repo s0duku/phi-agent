@@ -34,7 +34,7 @@ impl PhiModule for AutoCompactPolicy {
         next: StepInterveneNext,
     ) -> StepInterveneResult {
         let expr = runtime.base_expr();
-        let PhiAgentStep::RequestComplete { .. } = expr.step() else {
+        let PhiAgentStep::RequestProvider { .. } = expr.step() else {
             return next.call(runtime, cont);
         };
 
@@ -54,9 +54,9 @@ impl PhiModule for AutoCompactPolicy {
 
         let request = runtime
             .base_step()
-            .request_complete_call()
+            .request_provider_call()
             .cloned()
-            .expect("request complete should produce a provider call");
+            .expect("request provider should produce a provider call");
         let token_count = match runtime.provider_history_token_count(&request, &history) {
             Ok(token_count) => token_count,
             Err(error) => return Err(StepInterveneError::new(runtime, error)),
@@ -107,9 +107,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clean_request_complete_is_replaced_by_request_compact() {
+    async fn clean_request_provider_is_replaced_by_request_compact() {
         let defaults = crate::tests::support::test_model_defaults();
-        let original = PhiAgentStep::request_complete("custom request", &defaults);
+        let original = PhiAgentStep::request_provider("custom request", &defaults);
         let session = Session::from_root(original.clone(), vec![PhiMessage::user("hello")]);
         let outcome = PhiAgent::builder(session, PhiAgentCommand::Step(PhiAgentCommand::step()))
             .with_home(Arc::new(crate::home::LocalPhiHome::new(
@@ -133,27 +133,27 @@ mod tests {
         assert_eq!(
             resume
                 .step()
-                .request_complete_call()
+                .request_provider_call()
                 .map(|call| call.model.as_str()),
             original
-                .request_complete_call()
+                .request_provider_call()
                 .map(|call| call.model.as_str()),
         );
         assert!(
             resume
                 .step()
-                .request_complete_call()
+                .request_provider_call()
                 .is_some_and(|call| call.tools.is_empty()),
             "resume step should stay tool-free",
         );
     }
 
     #[tokio::test]
-    async fn retrying_request_complete_is_not_compacted() {
+    async fn retrying_request_provider_is_not_compacted() {
         let defaults = crate::tests::support::test_model_defaults();
         let session = Session::from_expr(
             crate::expr::PhiStepExpr::new(
-                PhiAgentStep::request_complete("retrying", &defaults),
+                PhiAgentStep::request_provider("retrying", &defaults),
                 vec![PhiMessage::user("hello")],
             )
             .with_model_retry_state(crate::session::PhiModelRetryState { attempt: 1 }),
@@ -179,11 +179,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loop_guard_request_complete_is_not_compacted() {
+    async fn loop_guard_request_provider_is_not_compacted() {
         let defaults = crate::tests::support::test_model_defaults();
         let session = Session::from_expr(
             crate::expr::PhiStepExpr::new(
-                PhiAgentStep::request_complete("loop retry", &defaults),
+                PhiAgentStep::request_provider("loop retry", &defaults),
                 vec![PhiMessage::user("hello")],
             )
             .with_loop_guard_rejected_attempts(1),

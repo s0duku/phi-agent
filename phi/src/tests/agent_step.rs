@@ -61,7 +61,7 @@ impl PhiModule for RejectAfterModelResponseModule {
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterModelResponse { .. } = event {
             return Err(PhiRuntimeError::module("module rejected model response")
-                .with_source_step("request_complete"));
+                .with_source_step("request_provider"));
         }
         Ok(())
     }
@@ -249,7 +249,7 @@ impl TestClient for ModelResponseProvider {
 }
 
 #[tokio::test]
-async fn request_complete_merges_custom_tools_from_config() {
+async fn request_provider_merges_custom_tools_from_config() {
     let _lock = env_lock();
     let root = unique_temp_dir("phi-request-complete-tools");
     std::fs::create_dir_all(&root).expect("temp home root should be creatable");
@@ -262,7 +262,7 @@ async fn request_complete_merges_custom_tools_from_config() {
 
     let captured_request = Arc::new(Mutex::new(None));
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
     let outcome = crate::agent::PhiAgent::builder(
@@ -301,9 +301,9 @@ async fn request_complete_merges_custom_tools_from_config() {
 }
 
 #[tokio::test]
-async fn request_complete_commits_assistant_response_before_completion() {
+async fn request_provider_commits_assistant_response_before_completion() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
     let outcome = crate::agent::PhiAgent::builder(
@@ -326,7 +326,7 @@ async fn request_complete_commits_assistant_response_before_completion() {
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Completed { detail }
+        PhiAgentStep::TurnEnd { detail }
         if detail == "model response committed; no tool execution is pending"
     ));
 }
@@ -334,7 +334,7 @@ async fn request_complete_commits_assistant_response_before_completion() {
 #[tokio::test]
 async fn provider_continue_response_commits_assistant_and_requests_another_completion() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("inspect files")],
     );
     let outcome = step_agent_builder(session)
@@ -358,7 +358,7 @@ async fn provider_continue_response_commits_assistant_and_requests_another_compl
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "provider response requires another model request"
     ));
 }
@@ -433,7 +433,10 @@ async fn request_compact_retains_recent_user_tail_and_compacts_everything_else()
     ));
     assert_eq!(history[2], PhiMessage::user("second"));
     assert_eq!(history[3], PhiMessage::user("third"));
-    assert_eq!(history[4], PhiMessage::user("summary"));
+    assert_eq!(
+        history[4],
+        PhiMessage::user("[CONTEXT CHECKPOINT SUMMARY]\nsummary")
+    );
 
     let expr = outcome.session.clone().into_expr();
     let compacted = &expr;
@@ -498,7 +501,7 @@ async fn before_model_request_rewrites_explicit_request_payload() {
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
 
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
 
@@ -541,7 +544,7 @@ async fn before_model_request_rewrites_explicit_request_payload() {
 #[tokio::test]
 async fn after_model_rejection_does_not_commit_partial_model_history() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
 
@@ -565,7 +568,7 @@ async fn after_model_rejection_does_not_commit_partial_model_history() {
 #[tokio::test]
 async fn after_model_response_rewrites_are_committed_for_all_assistant_messages() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("hello")],
     );
 
@@ -625,7 +628,7 @@ async fn failed_step_without_default_module_stays_failed() {
 
     assert!(matches!(
         resumed.session.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "resuming from failed step"
     ));
 }
@@ -672,7 +675,7 @@ async fn tool_call_message_commits_rewritten_request_payload() {
 #[tokio::test]
 async fn tool_call_only_response_transitions_to_request_executor() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("list files")],
     );
 
@@ -740,7 +743,7 @@ async fn tool_internal_argument_rewrite_is_committed_into_history() {
 #[tokio::test]
 async fn assistant_and_tool_call_response_stays_pending_until_tool_step_commits() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("list files")],
     );
 
@@ -774,7 +777,7 @@ async fn assistant_and_tool_call_response_stays_pending_until_tool_step_commits(
 async fn echo_events_follow_response_parse_and_tool_evaluation_boundaries() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("list files")],
     );
 
@@ -828,7 +831,7 @@ async fn echo_events_follow_response_parse_and_tool_evaluation_boundaries() {
 #[tokio::test]
 async fn multiple_tool_calls_response_transitions_to_request_executor_queue() {
     let session = Session::from_root(
-        PhiAgentStep::request_complete("ready", &test_model_defaults()),
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("run two commands")],
     );
 
@@ -929,7 +932,7 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
     ));
     assert!(matches!(
         second.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1126,7 +1129,7 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
     assert!(warnings[0].contains("\"tool_name\":\"no_exist\""));
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1186,7 +1189,7 @@ async fn unknown_tool_recovery_drops_remaining_tool_queue_by_default() {
     assert_eq!(recovered.history().len(), 4);
     assert!(matches!(
         recovered.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1285,7 +1288,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     assert_eq!(history.len(), 6);
     assert!(matches!(
         recovered.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1329,7 +1332,7 @@ async fn failed_tool_step_resumes_from_clean_history_on_next_step() {
     assert_eq!(resumed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed.step(),
-        PhiAgentStep::RequestComplete { detail, .. }
+        PhiAgentStep::RequestProvider { detail, .. }
         if detail == "resuming from failed step"
     ));
 }

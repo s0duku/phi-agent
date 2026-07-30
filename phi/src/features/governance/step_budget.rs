@@ -23,7 +23,7 @@ impl PhiModule for StepBudgetPolicy {
         cont: StepCont,
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
-        if !matches!(runtime.base_step(), PhiAgentStep::RequestComplete { .. }) {
+        if !matches!(runtime.base_step(), PhiAgentStep::RequestProvider { .. }) {
             return next.call(runtime, cont);
         }
 
@@ -31,7 +31,7 @@ impl PhiModule for StepBudgetPolicy {
             let delta = runtime.cur_delta().clone();
             return Ok(crate::agent::StepBounce::CreateNextStep(
                 runtime,
-                PhiAgentStep::completed(format!("max steps reached: {}", self.max_steps)),
+                PhiAgentStep::turn_end(format!("max steps reached: {}", self.max_steps)),
                 delta,
             ));
         }
@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn step_budget_completes_at_step_boundary_beyond_limit() {
         let session = Session::from_root(
-            PhiAgentStep::request_complete("ready", &test_model_defaults()),
+            PhiAgentStep::request_provider("ready", &test_model_defaults()),
             vec![
                 crate::message::PhiMessage::user("one"),
                 crate::message::PhiMessage::assistant("two"),
@@ -68,7 +68,7 @@ mod tests {
 
         assert!(matches!(
             outcome.session.step(),
-            PhiAgentStep::Completed { detail }
+            PhiAgentStep::TurnEnd { detail }
             if detail == "max steps reached: 2"
         ));
     }
