@@ -55,7 +55,7 @@ fn linear_output_adds_a_shorter_settle_deadline() {
 
     assert_eq!(
         interaction.remaining_at(now + Duration::from_millis(100)),
-        Some(Duration::from_millis(1400))
+        Some(Duration::from_millis(1900))
     );
 }
 
@@ -66,10 +66,7 @@ fn pending_output_carries_its_settle_deadline_into_a_new_wait() {
     state.observe(&TerminalObservation::from_facts(true, true, false), now);
     let interaction = state.begin_at(Duration::from_secs(5), now);
 
-    assert_eq!(
-        interaction.remaining_at(now),
-        Some(Duration::from_millis(1500))
-    );
+    assert_eq!(interaction.remaining_at(now), Some(Duration::from_secs(2)));
 }
 
 #[test]
@@ -78,7 +75,7 @@ fn output_already_settled_returns_immediately() {
     let mut state = InteractionState::default();
     state.observe(
         &TerminalObservation::from_facts(true, true, false),
-        now - Duration::from_secs(2),
+        now - Duration::from_secs(3),
     );
     let interaction = state.begin_at(Duration::from_secs(5), now);
 
@@ -112,7 +109,7 @@ fn interactive_screen_activity_has_a_bounded_sample_window() {
 
     assert_eq!(
         interaction.remaining_at(now + Duration::from_millis(1400)),
-        Some(Duration::from_millis(100))
+        Some(Duration::from_millis(600))
     );
 }
 

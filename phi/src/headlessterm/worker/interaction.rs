@@ -10,7 +10,7 @@ use crate::headlessterm::job::ReturnWhen;
 use super::state::TerminalObservation;
 
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
-const OUTPUT_SETTLE_PERIOD: Duration = POLL_INTERVAL.saturating_mul(15);
+const OUTPUT_SETTLE_PERIOD: Duration = POLL_INTERVAL.saturating_mul(20);
 
 #[derive(Default)]
 pub(crate) struct InteractionState {
