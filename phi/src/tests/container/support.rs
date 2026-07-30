@@ -29,26 +29,26 @@ pub(crate) fn connect(handle: &str) -> std::io::Result<EndpointStream> {
     rpc::connect(handle).map(EndpointStream)
 }
 
-pub(crate) fn job_exec(
+pub(crate) fn exec_job(
     cmd: &str,
-    wait: Duration,
+    try_wait: Duration,
     expiration: Duration,
 ) -> Result<(Option<JobHandle>, JobInfo), String> {
-    block_on(<LocalShellJobContainer as JobContainer>::job_exec(
-        cmd, wait, expiration,
+    block_on(<LocalShellJobContainer as JobContainer>::exec_job(
+        cmd, try_wait, expiration,
     ))
 }
 
 pub(crate) fn job_interact(
     handle: JobHandle,
     data: &str,
-    wait: Duration,
+    try_wait: Duration,
 ) -> Result<JobInfo, String> {
-    let result = block_on(<LocalShellJobContainer as JobContainer>::job_access(
+    let result = block_on(<LocalShellJobContainer as JobContainer>::access_job(
         handle,
         JobAccess::Interact {
             data: data.to_owned(),
-            wait,
+            try_wait,
         },
     ))?;
     match result {

@@ -85,7 +85,7 @@ pub async fn run(args: ContainerArgs) -> Result<(), String> {
             command,
         } => {
             let command = command.join(" ");
-            let (handle, info) = <LocalShellJobContainer as JobContainer>::job_exec(
+            let (handle, info) = <LocalShellJobContainer as JobContainer>::exec_job(
                 &command,
                 Duration::from_millis(wait_ms),
                 Duration::from_millis(expiration_ms),
@@ -98,11 +98,11 @@ pub async fn run(args: ContainerArgs) -> Result<(), String> {
             data,
             wait_ms,
         } => {
-            let result = <LocalShellJobContainer as JobContainer>::job_access(
+            let result = <LocalShellJobContainer as JobContainer>::access_job(
                 JobHandle(handle),
                 JobAccess::Interact {
                     data: data.unwrap_or_default(),
-                    wait: Duration::from_millis(wait_ms),
+                    try_wait: Duration::from_millis(wait_ms),
                 },
             )
             .await?;
@@ -115,7 +115,7 @@ pub async fn run(args: ContainerArgs) -> Result<(), String> {
         }
         ContainerCommand::Close { handle } => {
             let info =
-                <LocalShellJobContainer as JobContainer>::job_close(JobHandle(handle)).await?;
+                <LocalShellJobContainer as JobContainer>::close_job(JobHandle(handle)).await?;
             render(info, None)?;
         }
         ContainerCommand::LaunchLocal {

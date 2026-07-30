@@ -5,13 +5,13 @@ use std::time::Duration;
 use crate::container::job::{JobAccess, JobHandle, JobStatus};
 use crate::container::local::protocol::{Request, Response, Status};
 use crate::container::local::rpc;
-use crate::tests::container::support::{connect, job_exec, job_interact};
+use crate::tests::container::support::{connect, exec_job, job_interact};
 
 const EXPIRATION: Duration = Duration::from_secs(5);
 
 #[test]
 fn repeated_serial_interactions_keep_one_container_consistent() {
-    let (handle, info) = job_exec("cat", Duration::ZERO, EXPIRATION).unwrap();
+    let (handle, info) = exec_job("cat", Duration::ZERO, EXPIRATION).unwrap();
     assert!(matches!(info.status(), JobStatus::Running));
     let handle = handle.unwrap();
     assert!(info.outputs().is_empty());
@@ -42,7 +42,7 @@ fn repeated_serial_interactions_keep_one_container_consistent() {
 
 #[test]
 fn initial_response_preserves_output_beyond_the_visible_terminal_page() {
-    let (_, info) = job_exec(
+    let (_, info) = exec_job(
         "for i in $(seq 1 100); do printf 'line-%s\\n' \"$i\"; done",
         Duration::from_secs(2),
         EXPIRATION,
@@ -53,18 +53,18 @@ fn initial_response_preserves_output_beyond_the_visible_terminal_page() {
     assert!(info.outputs().contains("line-1\n"));
     assert!(info.outputs().contains("line-100"));
     assert_eq!(info.outputs().lines().count(), 100);
-    assert!(!info.output_truncated());
+    assert!(!info.truncated());
 }
 
 #[test]
 fn maximum_wait_value_still_returns_when_the_shell_exits() {
-    let (handle, info) = job_exec("sleep 2; exit 17", Duration::ZERO, EXPIRATION).unwrap();
+    let (handle, info) = exec_job("sleep 2; exit 17", Duration::ZERO, EXPIRATION).unwrap();
     assert!(matches!(info.status(), JobStatus::Running));
     let handle = handle.unwrap();
 
     let request = Request::Access(JobAccess::Interact {
         data: String::new(),
-        wait: Duration::MAX,
+        try_wait: Duration::MAX,
     });
     let mut stream = connect(&handle.0).unwrap();
     rpc::write_frame(&mut stream, &request).unwrap();

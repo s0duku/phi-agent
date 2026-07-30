@@ -68,7 +68,7 @@ async fn delete(args: SessionDeleteArgs) -> Result<(), Box<dyn std::error::Error
 
     for handle in handles {
         if let Err(error) =
-            <LocalShellJobContainer as JobContainer>::job_close(JobHandle(handle.clone())).await
+            <LocalShellJobContainer as JobContainer>::close_job(JobHandle(handle.clone())).await
         {
             close_errors.push(format!("{handle}: {error}"));
         }

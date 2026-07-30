@@ -16,7 +16,7 @@ pub(crate) enum Response {
     Terminal {
         status: Status,
         output: String,
-        output_truncated: bool,
+        truncated: bool,
         waited_ms: u64,
     },
     Failed {

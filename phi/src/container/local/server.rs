@@ -94,8 +94,8 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
                 Ok(OperationResult::Written(status))
             })
         }
-        Request::Access(JobAccess::Interact { data, wait }) => {
-            job.interact(data.as_bytes(), wait).map(|interaction| {
+        Request::Access(JobAccess::Interact { data, try_wait }) => {
+            job.interact(data.as_bytes(), try_wait).map(|interaction| {
                 let (status, waited, pending) = interaction.into_parts();
                 OperationResult::Terminal {
                     status,
@@ -130,12 +130,12 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
             waited,
             pending,
         } => {
-            let (output, output_truncated, delivery) = pending.into_parts();
+            let (output, truncated, delivery) = pending.into_parts();
             (
                 Response::Terminal {
                     status,
                     output,
-                    output_truncated,
+                    truncated,
                     waited_ms: duration_millis(waited),
                 },
                 Some(delivery),

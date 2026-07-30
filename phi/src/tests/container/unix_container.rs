@@ -14,7 +14,7 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
         .unwrap();
     runtime.block_on(async {
         let (handle, initial) =
-            <crate::container::LocalShellJobContainer as JobContainer>::job_exec(
+            <crate::container::LocalShellJobContainer as JobContainer>::exec_job(
                 "printf ready; sleep 10",
                 Duration::from_secs(1),
                 EXPIRATION,
@@ -25,11 +25,11 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
         assert_eq!(initial.outputs(), "ready");
         let handle = handle.unwrap();
 
-        let read = <crate::container::LocalShellJobContainer as JobContainer>::job_access(
+        let read = <crate::container::LocalShellJobContainer as JobContainer>::access_job(
             JobHandle(handle.0.clone()),
             JobAccess::Interact {
                 data: String::new(),
-                wait: Duration::ZERO,
+                try_wait: Duration::ZERO,
             },
         )
         .await
@@ -40,7 +40,7 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
         assert!(matches!(read.status(), JobStatus::Running));
         assert!(read.outputs().is_empty());
 
-        let closed = <crate::container::LocalShellJobContainer as JobContainer>::job_close(handle)
+        let closed = <crate::container::LocalShellJobContainer as JobContainer>::close_job(handle)
             .await
             .unwrap();
         assert!(matches!(closed.status(), JobStatus::Exited(_)));

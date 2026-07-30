@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::container::job::JobStatus;
-use crate::tests::container::support::job_exec;
+use crate::tests::container::support::exec_job;
 
 const WAIT: Duration = Duration::from_secs(2);
 const EXPIRATION: Duration = Duration::from_secs(2);
@@ -45,7 +45,7 @@ fn run_bash(command: &str) -> ShellResult {
 }
 
 fn run_container(command: &str) -> ShellResult {
-    let (handle, info) = job_exec(command, WAIT, EXPIRATION).unwrap();
+    let (handle, info) = exec_job(command, WAIT, EXPIRATION).unwrap();
     assert!(handle.is_none(), "shell did not finish: {command}");
     let status = match info.status() {
         JobStatus::Exited(code) => *code,

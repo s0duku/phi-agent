@@ -11,7 +11,7 @@ pub enum JobStatus {
 pub struct JobInfo {
     status: JobStatus,
     output: String,
-    output_truncated: bool,
+    truncated: bool,
     waited: std::time::Duration,
 }
 
@@ -24,14 +24,14 @@ pub enum JobAccess {
     Write { data: String },
     /// Write input and acquire the output delta since the previous interaction.
     ///
-    /// `wait` is the maximum duration to wait for the job to exit or for terminal
+    /// `try_wait` is the maximum duration to wait for the job to exit or for terminal
     /// output activity to settle. Output activity is used as a heuristic that
     /// meaningful new output is ready, so the request returns after the activity
     /// is followed by the configured quiet period. With no output activity, it
     /// waits for the full duration.
     Interact {
         data: String,
-        wait: std::time::Duration,
+        try_wait: std::time::Duration,
     },
 }
 
@@ -83,33 +83,33 @@ impl JobHandle {
 pub trait JobContainer {
     /// Start a command and acquire its initial output delta.
     ///
-    /// `wait` bounds only the initial wait for output activity to settle or for
+    /// `try_wait` bounds only the initial wait for output activity to settle or for
     /// the process to exit. Output activity acts as a heuristic that meaningful
     /// initial output is ready.
     /// `expiration` is the inactivity lifetime of a still-running container;
     /// once it elapses without another access, the container terminates the job
     /// and releases its resources.
-    async fn job_exec(
+    async fn exec_job(
         cmd: &str,
-        wait: std::time::Duration,
+        try_wait: std::time::Duration,
         expiration: std::time::Duration,
     ) -> Result<(Option<JobHandle>, JobInfo), String>;
-    async fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String>;
+    async fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String>;
 
-    async fn job_close(handle: JobHandle) -> Result<JobInfo, String>;
+    async fn close_job(handle: JobHandle) -> Result<JobInfo, String>;
 }
 
 impl JobInfo {
     pub(crate) fn new(
         status: JobStatus,
         output: String,
-        output_truncated: bool,
+        truncated: bool,
         waited: std::time::Duration,
     ) -> Self {
         Self {
             status,
             output,
-            output_truncated,
+            truncated,
             waited,
         }
     }
@@ -122,8 +122,8 @@ impl JobInfo {
         &self.output
     }
 
-    pub fn output_truncated(&self) -> bool {
-        self.output_truncated
+    pub fn truncated(&self) -> bool {
+        self.truncated
     }
 
     /// Time spent waiting for process exit or terminal output to settle.
@@ -133,6 +133,6 @@ impl JobInfo {
     }
 
     pub fn into_parts(self) -> (JobStatus, String, bool, std::time::Duration) {
-        (self.status, self.output, self.output_truncated, self.waited)
+        (self.status, self.output, self.truncated, self.waited)
     }
 }

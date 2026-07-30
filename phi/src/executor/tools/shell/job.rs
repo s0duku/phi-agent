@@ -92,7 +92,7 @@ impl PhiTool for ShellJobExecTool {
         if let Err(error) = prepare_local_jobs() {
             return failure(request, self.name(), error);
         }
-        let result = <LocalShellJobContainer as JobContainer>::job_exec(
+        let result = <LocalShellJobContainer as JobContainer>::exec_job(
             &args.cmd,
             EXEC_WAIT,
             JOB_EXPIRATION,
@@ -158,7 +158,7 @@ impl PhiTool for ShellJobInteractTool {
         let result = match interactive_input(args.input) {
             InteractiveInput::Direct(data) => interact(handle, data, wait).await,
             InteractiveInput::Submit(data) => {
-                let written = <LocalShellJobContainer as JobContainer>::job_access(
+                let written = <LocalShellJobContainer as JobContainer>::access_job(
                     JobHandle(handle.0.clone()),
                     JobAccess::Write { data },
                 )
@@ -187,9 +187,12 @@ impl PhiTool for ShellJobInteractTool {
 }
 
 async fn interact(handle: JobHandle, data: String, wait: Duration) -> Result<JobInfo, String> {
-    let result = <LocalShellJobContainer as JobContainer>::job_access(
+    let result = <LocalShellJobContainer as JobContainer>::access_job(
         handle,
-        JobAccess::Interact { data, wait },
+        JobAccess::Interact {
+            data,
+            try_wait: wait,
+        },
     )
     .await?;
     match result {
@@ -237,7 +240,7 @@ impl PhiTool for ShellJobCloseTool {
             return failure(request, self.name(), error);
         }
         let result =
-            <LocalShellJobContainer as JobContainer>::job_close(JobHandle(args.handle)).await;
+            <LocalShellJobContainer as JobContainer>::close_job(JobHandle(args.handle)).await;
 
         match result {
             Ok(info) => response(request, self.name(), info, None),
@@ -260,7 +263,7 @@ fn response(
     info: JobInfo,
     handle: Option<JobHandle>,
 ) -> ToolCallResponse {
-    let (status, output, output_truncated, waited) = info.into_parts();
+    let (status, output, truncated, waited) = info.into_parts();
     let (status_name, exit_code, running) = match status {
         JobStatus::Running => ("running", None, true),
         JobStatus::Exited(code) => ("exited", Some(code), false),
@@ -275,7 +278,7 @@ fn response(
         "status": status_name,
         "exit_code": exit_code,
         "output": output,
-        "output_truncated": output_truncated,
+        "truncated": truncated,
         "handle": handle,
         "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
     });
@@ -348,6 +351,8 @@ mod tests {
         );
 
         assert_eq!(response.output.as_value()["waited_ms"], 123);
+        assert_eq!(response.output.as_value()["truncated"], false);
+        assert!(response.output.as_value().get("output_truncated").is_none());
         assert!(response.output.as_value().get("screen").is_none());
     }
 

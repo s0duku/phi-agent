@@ -6,18 +6,18 @@ use super::launcher;
 use super::protocol::{Request, Response, Status};
 use super::rpc;
 
-pub(super) fn job_exec(
+pub(super) fn exec_job(
     command: &str,
-    wait: Duration,
+    try_wait: Duration,
     expiration: Duration,
 ) -> Result<(Option<JobHandle>, JobInfo), String> {
     let handle = JobHandle::random()?;
     launcher::spawn_container(&handle, command, expiration)?;
-    let result = job_access(
+    let result = access_job(
         JobHandle(handle.0.clone()),
         JobAccess::Interact {
             data: String::new(),
-            wait,
+            try_wait,
         },
     )?;
     let JobAccessResult::Interacted(info) = result else {
@@ -27,7 +27,7 @@ pub(super) fn job_exec(
     Ok((live_handle, info))
 }
 
-pub(super) fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
+pub(super) fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
     let interacts = matches!(access, JobAccess::Interact { .. });
     let response = send_request(&handle.0, Request::Access(access))?;
     if interacts {
@@ -37,7 +37,7 @@ pub(super) fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAcce
     }
 }
 
-pub(super) fn job_close(handle: JobHandle) -> Result<JobInfo, String> {
+pub(super) fn close_job(handle: JobHandle) -> Result<JobInfo, String> {
     request(&handle.0, Request::Close)
 }
 
@@ -56,12 +56,12 @@ fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, String>
         Some(Response::Terminal {
             status,
             output,
-            output_truncated,
+            truncated,
             waited_ms,
         }) => Ok(JobInfo::new(
             job_status(status),
             output,
-            output_truncated,
+            truncated,
             Duration::from_millis(waited_ms),
         )),
         Some(Response::Failed { error, .. }) => Err(error),

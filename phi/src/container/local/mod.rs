@@ -33,19 +33,19 @@ pub(crate) fn launch_container(
 
 #[async_trait::async_trait]
 impl JobContainer for LocalShellJobContainer {
-    async fn job_exec(
+    async fn exec_job(
         cmd: &str,
-        wait: std::time::Duration,
+        try_wait: std::time::Duration,
         expiration: std::time::Duration,
     ) -> Result<(Option<JobHandle>, JobInfo), String> {
-        client::job_exec(cmd, wait, expiration)
+        client::exec_job(cmd, try_wait, expiration)
     }
 
-    async fn job_access(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
-        client::job_access(handle, access)
+    async fn access_job(handle: JobHandle, access: JobAccess) -> Result<JobAccessResult, String> {
+        client::access_job(handle, access)
     }
 
-    async fn job_close(handle: JobHandle) -> Result<JobInfo, String> {
-        client::job_close(handle)
+    async fn close_job(handle: JobHandle) -> Result<JobInfo, String> {
+        client::close_job(handle)
     }
 }
