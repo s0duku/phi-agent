@@ -112,7 +112,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Yolo(args) => yolo_agent(cli.home.as_deref(), args).await,
         Command::Step(args) => step_agent(cli.home.as_deref(), args).await,
         Command::Doctor(args) => doctor_runtime(cli.home.as_deref(), args),
-        Command::Session(args) => session::command::run(args).await,
+        Command::Session(args) => session::command::run(cli.home.as_deref(), args).await,
         Command::Probe(args) => probe_session_command(cli.home.as_deref(), args),
         Command::Home(args) => home::command::run(args),
     }
@@ -138,10 +138,29 @@ async fn step_agent(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
-    let Some(session) = session_input.session_for_agent(!input_messages.is_empty()) else {
+    if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("step");
+    }
+    let Some(session) = session_input.session_for_agent() else {
+        if input_messages.is_empty() {
+            return print_subcommand_help("step");
+        }
+        let home = load_home(home_spec)?;
+        let session = new_session(home.as_ref())?;
+        emit_new_session_history(&session, args.base.quiet);
+        return run_step_with_input(args, session_input, input_messages, session, home).await;
     };
     let home = load_home(home_spec)?;
+    run_step_with_input(args, session_input, input_messages, session, home).await
+}
+
+async fn run_step_with_input(
+    args: StepArgs,
+    session_input: SessionInput,
+    input_messages: Vec<PhiMessage>,
+    session: Session,
+    home: std::sync::Arc<dyn home::PhiHome>,
+) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
 
     let (session, interrupted) = run_cli_agent(
@@ -162,13 +181,49 @@ async fn run_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let max_steps = forced_max_steps.or(args.max_steps);
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
-    let Some(session) = session_input.session_for_agent(!input_messages.is_empty()) else {
+    if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("run");
+    }
+    let Some(session) = session_input.session_for_agent() else {
+        if input_messages.is_empty() {
+            return print_subcommand_help("run");
+        }
+        let home = load_home(home_spec)?;
+        let session = new_session(home.as_ref())?;
+        emit_new_session_history(&session, args.base.quiet);
+        return run_with_input(
+            args,
+            forced_max_steps,
+            session_input,
+            input_messages,
+            session,
+            home,
+        )
+        .await;
     };
     let home = load_home(home_spec)?;
+    run_with_input(
+        args,
+        forced_max_steps,
+        session_input,
+        input_messages,
+        session,
+        home,
+    )
+    .await
+}
+
+async fn run_with_input(
+    args: RunArgs,
+    forced_max_steps: Option<usize>,
+    session_input: SessionInput,
+    input_messages: Vec<PhiMessage>,
+    session: Session,
+    home: std::sync::Arc<dyn home::PhiHome>,
+) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
+    let max_steps = forced_max_steps.or(args.max_steps);
 
     let (session, interrupted) = run_cli_agent(
         session,
@@ -189,13 +244,49 @@ async fn yolo_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let max_steps = forced_max_steps.or(args.max_steps);
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
-    let Some(session) = session_input.session_for_agent(!input_messages.is_empty()) else {
+    if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("yolo");
+    }
+    let Some(session) = session_input.session_for_agent() else {
+        if input_messages.is_empty() {
+            return print_subcommand_help("yolo");
+        }
+        let home = load_home(home_spec)?;
+        let session = new_session(home.as_ref())?;
+        emit_new_session_history(&session, args.base.quiet);
+        return yolo_with_input(
+            args,
+            forced_max_steps,
+            session_input,
+            input_messages,
+            session,
+            home,
+        )
+        .await;
     };
     let home = load_home(home_spec)?;
+    yolo_with_input(
+        args,
+        forced_max_steps,
+        session_input,
+        input_messages,
+        session,
+        home,
+    )
+    .await
+}
+
+async fn yolo_with_input(
+    args: RunArgs,
+    forced_max_steps: Option<usize>,
+    session_input: SessionInput,
+    input_messages: Vec<PhiMessage>,
+    session: Session,
+    home: std::sync::Arc<dyn home::PhiHome>,
+) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
+    let max_steps = forced_max_steps.or(args.max_steps);
 
     let (session, interrupted) = run_cli_agent(
         session,
@@ -322,10 +413,9 @@ fn doctor_runtime(
 }
 
 impl SessionInput {
-    fn session_for_agent(&self, has_input_messages: bool) -> Option<Session> {
+    fn session_for_agent(&self) -> Option<Session> {
         match self {
             Self::Pipeline(session) | Self::FileBacked { session, .. } => Some(session.clone()),
-            Self::NoInput if has_input_messages => Some(Session::empty()),
             Self::NoInput | Self::MissingFile { .. } => None,
         }
     }
@@ -335,6 +425,28 @@ impl SessionInput {
             Self::FileBacked { path, .. } => Some(path.as_path()),
             Self::NoInput | Self::Pipeline(_) | Self::MissingFile { .. } => None,
         }
+    }
+}
+
+pub(crate) fn new_session(home: &dyn home::PhiHome) -> Result<Session, Box<dyn std::error::Error>> {
+    let config = home.config()?;
+    let defaults = config::ModelRequestDefaults::from_config(&config)?;
+    let history = features::configured_system_prompt_from_config(&config)
+        .map(PhiMessage::system)
+        .into_iter()
+        .collect::<Vec<_>>();
+    Ok(Session::from_root(
+        PhiAgentStep::request_provider("ready", &defaults),
+        history,
+    ))
+}
+
+fn emit_new_session_history(session: &Session, quiet: bool) {
+    if quiet {
+        return;
+    }
+    for message in session.history().iter() {
+        eprintln!("{}", features::pretty_message(message));
     }
 }
 

@@ -67,5 +67,5 @@ fn session_help_exposes_explicit_new_command() {
         .to_string();
 
     assert!(help.contains("new"));
-    assert!(help.contains("Create a new empty session file"));
+    assert!(help.contains("Create a new initialized session file"));
 }

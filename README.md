@@ -11,13 +11,15 @@
 
 ---
 
-**Phi** is a cli agent without heavy TUI, simply take everyhing from command arguments and enviroment variables, work with session through **stdin** and **stdout**.
 
-Phi reads input from command arguments, environment variables, `PhiHome`, and optional session JSON on stdin, then writes the updated session back to stdout or a session file.
 
 ![Phi demo 1](assets/demo1.gif) ![Phi demo 2](assets/demo2.gif)
 
-## Usage
+## Phi Agent
+
+**Phi** is a cli agent without heavy TUI, simply take everyhing from command arguments and enviroment variables, work with session through **stdin** and **stdout**.
+
+Phi reads input from command arguments, environment variables, `PhiHome`, and optional session JSON on stdin, then writes the updated session back to stdout or a session file.
 
 Phi treats agent execution as step-by-step session evaluation.
 
@@ -25,27 +27,16 @@ Phi treats agent execution as step-by-step session evaluation.
 - `run` keeps stepping until the session reaches its next boundary.
 - `yolo` keeps stepping more aggressively through Phi's default recovery path.
 
-The current step is stored in `phase`, while `messages` are committed history only. Pending work such as provider requests, compact requests, or tool execution is represented in the step state first and is only appended to history when that step commits cleanly.
+## Why Phi
+
+* **Headless Terminal**, `phi` can run command with headless terminal, so it can use GDB and other REPL command.
+* **Outside Cointainer**, instead of put `phi` into a container, `phi` takes advantage of headless terminal, use container's enviroment directly. 
+  * `docker run -dit --name phi-test-run docker.io/library/alpine /bin/sh`
+  * `phi yolo --user "list file" --container phi-test-run`
+* **Free Rollback**, `phi` use s-expression style to store the history, which allow easy to rollback.
+
 
 ## Config
-
-Phi reads configuration from process environment first, then from the selected `PhiHome` `config.toml`, then from built-in defaults.
-
-Common environment variables:
-
-- `PHI_PROVIDER`: provider backend, currently `openai_chat`, `openai_response`, or `fake`
-- `PHI_MODEL`: model name
-- `PHI_KEY`: API key
-- `PHI_API`: API base URL, default `https://api.openai.com/v1`
-- `PHI_SYSTEM`: override system prompt
-- `PHI_CONTEXT_TOKENS`: target provider context window for auto-compact
-- `PHI_MAX_STEPS`: default scheduler step budget
-- `PHI_TOOL_THRESHOLD_TOKENS`
-- `PHI_TOOL_PREVIEW_BYTES`
-- `PHI_TEMPLATE`: default render template name
-- `PHI_PYTHON`: explicit Python executable for plugin runtime probing
-
-When `PHI_SYSTEM` is not set, Phi uses the built-in prompt from `phi/src/prompts/system.txt`.
 
 Example OpenAI-compatible setup:
 
@@ -53,7 +44,10 @@ Example OpenAI-compatible setup:
 export PHI_PROVIDER=openai_chat
 export PHI_MODEL=gpt-5
 export PHI_KEY=your_api_key
+export PHI_SYSTEM=""
 ```
+
+Or you can use `~/.phi/config.toml` to store this config
 
 ## Sessions
 
@@ -73,6 +67,7 @@ In pipeline mode:
 If you pass `[SESSION]`, Phi switches to file-backed session mode:
 
 ```bash
+phi session new work.session
 phi run work.session --user "Hello"
 echo "follow up" | phi run work.session
 ```

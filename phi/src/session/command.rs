@@ -19,7 +19,7 @@ pub struct SessionArgs {
 #[derive(Subcommand)]
 pub enum SessionCommand {
     #[command(
-        about = "Create a new empty session file without overwriting an existing path",
+        about = "Create a new initialized session file without overwriting an existing path",
         before_help = banner::startup_banner()
     )]
     New(SessionNewArgs),
@@ -52,16 +52,20 @@ pub struct SessionDeleteArgs {
     pub file: PathBuf,
 }
 
-pub async fn run(args: SessionArgs) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    home_spec: Option<&str>,
+    args: SessionArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
-        SessionCommand::New(args) => new(args),
+        SessionCommand::New(args) => new(home_spec, args),
         SessionCommand::History(args) => history(args),
         SessionCommand::Delete(args) => delete(args).await,
     }
 }
 
-fn new(args: SessionNewArgs) -> Result<(), Box<dyn std::error::Error>> {
-    Session::empty().create(args.file)
+fn new(home_spec: Option<&str>, args: SessionNewArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let home = crate::home::load_home(home_spec)?;
+    crate::new_session(home.as_ref())?.create(args.file)
 }
 
 fn history(args: SessionHistoryArgs) -> Result<(), Box<dyn std::error::Error>> {

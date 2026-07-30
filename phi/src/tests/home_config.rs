@@ -75,7 +75,7 @@ fn home_config_provides_base_settings_and_env_overrides_them() {
 }
 
 #[test]
-fn home_config_is_visible_while_deriving_init_middleware() {
+fn home_config_is_committed_when_constructing_a_session() {
     let _lock = env_lock();
     let root = unique_temp_dir("phi-home-config-init-middleware");
     fs::create_dir_all(&root).expect("temp home root should be creatable");
@@ -90,19 +90,11 @@ fn home_config_is_visible_while_deriving_init_middleware() {
         std::env::remove_var("PHI_SYSTEM");
     }
 
-    let mut builder = ambient_step_agent_builder(Session::empty())
-        .with_home(Arc::new(LocalPhiHome::new(root.clone())))
-        .prepare()
-        .expect("builder should merge home config before module derivation");
-    let init_modules = crate::features::build_init_modules(builder.context());
-    builder = builder.with_module_layout(init_modules);
-    let agent = builder
-        .with_client(stub_client(Vec::new()))
-        .build()
-        .expect("agent build should succeed with home config");
+    let session = crate::new_session(&LocalPhiHome::new(root.clone()))
+        .expect("session should initialize with home config");
 
     assert_eq!(
-        agent.session().history(),
+        session.history(),
         &[PhiMessage::system("You are the home-config system prompt.")]
     );
 

@@ -148,6 +148,15 @@ mod build_context_tests {
                 PhiMessage::assistant("prefill"),
             ])
         );
+        assert_eq!(
+            Session::from_expr(expr.clone()).history(),
+            &[
+                PhiMessage::user("old input"),
+                PhiMessage::assistant("old output"),
+                PhiMessage::user("new input"),
+                PhiMessage::assistant("prefill"),
+            ]
+        );
         let parent = expr
             .expr()
             .cloned()

@@ -231,15 +231,7 @@ fn bootstrap_messages(context: &PhiAgentBuildContext) -> Vec<PhiMessage> {
     if matches!(context.command, PhiAgentCommand::Probe(_)) {
         return Vec::new();
     }
-
-    let mut messages = Vec::new();
-    if context.session.history().is_empty()
-        && let Some(system_prompt) = configured_system_prompt(context)
-    {
-        messages.push(PhiMessage::system(system_prompt));
-    }
-    messages.extend(command_input_messages(&context.command));
-    messages
+    command_input_messages(&context.command)
 }
 
 fn command_requires_user_input(command: &PhiAgentCommand) -> bool {

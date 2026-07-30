@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use crate::{
     error::PhiAgentRuntimeResult,
+    home::LocalPhiHome,
     message::{PhiHistory, PhiMessage},
     render::{PhiModelResponse, PhiProviderCall, TestClient},
     session::{PhiAgentStep, Session},
@@ -34,15 +35,22 @@ impl TestClient for CaptureProvider {
 }
 
 #[tokio::test]
-async fn phi_system_bootstraps_new_session_as_first_message() {
+async fn phi_system_is_committed_when_session_is_created() {
     let _lock = env_lock();
     let previous = std::env::var_os("PHI_SYSTEM");
     unsafe {
         std::env::set_var("PHI_SYSTEM", "You are the bootstrap system prompt.");
     }
 
+    let session = crate::new_session(&LocalPhiHome::new(crate::tests::support::unique_test_home()))
+        .expect("session should initialize from home config");
+    assert_eq!(
+        session.history(),
+        &[PhiMessage::system("You are the bootstrap system prompt.")]
+    );
+
     let seen_messages = Arc::new(Mutex::new(Vec::new()));
-    let mut builder = isolated_step_agent_builder(Session::empty())
+    let mut builder = isolated_step_agent_builder(session)
         .prepare()
         .expect("builder should prepare successfully");
     let init_modules = crate::features::build_init_modules(builder.context());
@@ -121,15 +129,20 @@ async fn phi_system_does_not_prepend_existing_history() {
 }
 
 #[tokio::test]
-async fn built_in_system_prompt_bootstraps_when_not_configured() {
+async fn built_in_system_prompt_is_committed_when_session_is_created() {
     let _lock = env_lock();
     let previous = std::env::var_os("PHI_SYSTEM");
     unsafe {
         std::env::remove_var("PHI_SYSTEM");
     }
 
+    let session = crate::new_session(&LocalPhiHome::new(crate::tests::support::unique_test_home()))
+        .expect("session should initialize from default config");
+    let default_prompt = include_str!("../prompts/system.txt").trim();
+    assert_eq!(session.history(), &[PhiMessage::system(default_prompt)]);
+
     let seen_messages = Arc::new(Mutex::new(Vec::new()));
-    let mut builder = isolated_step_agent_builder(Session::empty())
+    let mut builder = isolated_step_agent_builder(session)
         .prepare()
         .expect("builder should prepare successfully");
     let init_modules = crate::features::build_init_modules(builder.context());
@@ -144,7 +157,6 @@ async fn built_in_system_prompt_bootstraps_when_not_configured() {
         .run_single_step()
         .await;
 
-    let default_prompt = include_str!("../prompts/system.txt").trim();
     assert_eq!(
         *seen_messages
             .lock()

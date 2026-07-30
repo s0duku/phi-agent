@@ -36,8 +36,7 @@ fn missing_file_backed_session_is_not_treated_as_a_new_session() {
 
 #[test]
 fn no_session_only_starts_when_cli_messages_are_present() {
-    assert!(SessionInput::NoInput.session_for_agent(false).is_none());
-    assert!(SessionInput::NoInput.session_for_agent(true).is_some());
+    assert!(SessionInput::NoInput.session_for_agent().is_none());
 }
 
 #[test]
@@ -47,5 +46,5 @@ fn missing_file_never_starts_a_new_session() {
         stdin_user_message: Some("hello".to_owned()),
     };
 
-    assert!(input.session_for_agent(true).is_none());
+    assert!(input.session_for_agent().is_none());
 }
