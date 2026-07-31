@@ -164,7 +164,8 @@ impl PhiModule for DefaultFailedRecoveryModule {
         cont: StepCont,
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
-        if let PhiAgentStep::Failed { error } = runtime.base_step().clone()
+        if let PhiAgentStep::Failed(failed) = runtime.base_step().clone()
+            && let error = failed.error()
             && matches!(
                 error,
                 PhiAgentRuntimeError::ToolNotFound { .. } | PhiAgentRuntimeError::ToolError { .. }
@@ -207,17 +208,12 @@ impl PhiModule for DefaultFailedRecoveryModule {
                     .expect("tool-not-found recovery output should serialize"),
             );
             runtime.commit_tool_result(message);
-            let delta = if runtime.cur_delta().is_empty() {
-                runtime.base_delta().clone()
-            } else {
-                runtime.cur_delta().clone()
-            };
             let step =
                 runtime.request_provider_step("tool result committed; model response is pending");
-            return Ok(StepBounce::ReplaceBaseStep(runtime, step, delta));
+            return Ok(StepBounce::ReplaceBaseStep(runtime, step));
         }
 
-        if matches!(runtime.base_step(), PhiAgentStep::Failed { .. })
+        if matches!(runtime.base_step(), PhiAgentStep::Failed(_))
             && runtime.base_expr().expr().is_some()
         {
             runtime.emit_warning("rolling back failed step");

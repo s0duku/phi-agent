@@ -10,7 +10,8 @@ pub use command::{
 };
 #[allow(unused_imports)]
 pub(crate) use step::{
-    StepBounce, StepCont, StepInterveneError, StepInterveneNext, StepInterveneResult,
+    RuntimeFailureStep, StepBounce, StepCont, StepInterveneError, StepInterveneNext,
+    StepInterveneResult,
 };
 
 use std::{collections::BTreeSet, sync::Arc};
@@ -27,7 +28,7 @@ use crate::{
     message::{PhiHistory, PhiMessage},
     module::{PhiAgentCommitEvent, PhiModuleChain, PhiModuleLayout},
     render,
-    session::{PhiAgentStep, Session},
+    session::{PhiAgentStep, PhiReActStep, Session},
 };
 
 #[derive(serde::Serialize)]
@@ -113,7 +114,7 @@ mod build_context_tests {
     use crate::{
         agent::PhiAgentCommand,
         message::PhiMessage,
-        session::{PhiAgentStep, Session},
+        session::{PhiAgentStep, PhiReActStep, Session},
     };
 
     #[test]
@@ -140,7 +141,10 @@ mod build_context_tests {
             .expect("messages should bootstrap");
 
         let expr = context.session.into_expr();
-        assert!(matches!(expr.step(), PhiAgentStep::RequestProvider { .. }));
+        assert!(matches!(
+            expr.step(),
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+        ));
         assert_eq!(
             expr.delta().history(),
             &crate::message::PhiHistory::from_messages(vec![
@@ -475,7 +479,10 @@ impl PhiAgent {
             self.step().await;
             let session = self.session();
             if session.step().is_terminal()
-                || matches!(session.step(), PhiAgentStep::RequestCompact)
+                || matches!(
+                    session.step(),
+                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+                )
             {
                 return;
             }
@@ -487,9 +494,9 @@ impl PhiAgent {
         loop {
             self.step().await;
             match self.session().step() {
-                PhiAgentStep::TurnEnd { .. } => return,
-                PhiAgentStep::Failed { .. } if previous_was_failed => return,
-                PhiAgentStep::Failed { .. } => previous_was_failed = true,
+                PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. }) => return,
+                PhiAgentStep::Failed(_) if previous_was_failed => return,
+                PhiAgentStep::Failed(_) => previous_was_failed = true,
                 _ => previous_was_failed = false,
             }
         }
@@ -531,8 +538,8 @@ impl PhiAgentRuntime {
         }
     }
 
-    pub(crate) fn cur_delta(&self) -> &PhiExprDelta {
-        &self.delta
+    pub(crate) fn cur_delta_mut(&mut self) -> &mut PhiExprDelta {
+        &mut self.delta
     }
 
     pub(crate) fn base_delta(&self) -> &PhiExprDelta {
@@ -572,8 +579,8 @@ impl PhiAgentRuntime {
         )
     }
 
-    pub(crate) fn request_provider_step(&self, detail: impl Into<String>) -> PhiAgentStep {
-        PhiAgentStep::request_provider_with_call(
+    pub(crate) fn request_provider_step(&self, detail: impl Into<String>) -> PhiReActStep {
+        PhiReActStep::request_provider_with_call(
             detail,
             render::PhiProviderCall::from_parts(&self.model_defaults, self.tool_definitions()),
         )

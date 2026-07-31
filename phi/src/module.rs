@@ -62,12 +62,12 @@ pub(crate) enum PhiAgentStepEvent<'a> {
     },
     BeforeCreateNextStep {
         base_expr: &'a PhiStepExpr,
-        step: &'a mut crate::session::PhiAgentStep,
+        step: &'a mut crate::session::PhiReActStep,
         delta: &'a mut PhiExprDelta,
     },
     BeforeReplaceBaseStep {
         base_expr: &'a PhiStepExpr,
-        step: &'a mut crate::session::PhiAgentStep,
+        step: &'a mut crate::session::PhiReActStep,
         delta: &'a mut PhiExprDelta,
     },
     AfterToolCall {

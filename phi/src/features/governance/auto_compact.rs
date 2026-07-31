@@ -4,7 +4,7 @@ use crate::{
     },
     module::PhiModule,
     render::approx_history_token_count,
-    session::PhiAgentStep,
+    session::{PhiAgentStep, PhiReActStep},
 };
 
 pub struct AutoCompactPolicy {
@@ -34,7 +34,7 @@ impl PhiModule for AutoCompactPolicy {
         next: StepInterveneNext,
     ) -> StepInterveneResult {
         let expr = runtime.base_expr();
-        let PhiAgentStep::RequestProvider { .. } = expr.step() else {
+        let PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }) = expr.step() else {
             return next.call(runtime, cont);
         };
 
@@ -65,11 +65,9 @@ impl PhiModule for AutoCompactPolicy {
             return next.call(runtime, cont);
         }
 
-        let delta = runtime.cur_delta().clone();
         Ok(crate::agent::StepBounce::CreateNextStep(
             runtime,
-            PhiAgentStep::request_compact(),
-            delta,
+            PhiReActStep::request_compact(),
         ))
     }
 }
@@ -87,7 +85,7 @@ mod tests {
     use crate::{
         agent::{PhiAgent, PhiAgentCommand},
         message::PhiMessage,
-        session::{PhiAgentStep, Session},
+        session::{PhiAgentStep, PhiReActStep, Session},
         tests::support::stub_client,
         utils::approx_token_count,
     };
@@ -122,7 +120,7 @@ mod tests {
             .run_single_step()
             .await;
 
-        let PhiAgentStep::RequestCompact = outcome.session.step() else {
+        let PhiAgentStep::ReAct(PhiReActStep::RequestCompact) = outcome.session.step() else {
             panic!("clean request should enter request compact");
         };
         let expr = outcome.session.clone().into_expr();
@@ -174,7 +172,7 @@ mod tests {
 
         assert!(!matches!(
             outcome.session.step(),
-            PhiAgentStep::RequestCompact
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
         ));
     }
 
@@ -204,7 +202,7 @@ mod tests {
 
         assert!(!matches!(
             outcome.session.step(),
-            PhiAgentStep::RequestCompact
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
         ));
     }
 }

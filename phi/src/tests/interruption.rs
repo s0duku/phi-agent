@@ -1,4 +1,8 @@
-use std::{future, sync::Arc};
+use std::{
+    future,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use tokio::sync::Notify;
@@ -10,6 +14,8 @@ use crate::{
     session::{PhiAgentStep, Session},
     tests::support::{step_agent_builder, test_model_defaults},
 };
+
+use super::support::unique_test_home;
 
 struct PendingProvider {
     started: Arc<Notify>,
@@ -46,15 +52,87 @@ async fn interrupted_step_leaves_the_pre_call_session_checkpoint_serializable() 
         Ok(())
     };
 
-    assert!(
+    assert!(matches!(
         crate::step_or_interrupt(&mut agent, interrupt)
             .await
-            .unwrap()
-    );
+            .unwrap(),
+        crate::CliAgentExit::Interrupted
+    ));
 
     let mut serialized = Vec::new();
     checkpoint.write_json(&mut serialized).unwrap();
     let restored = Session::load_bytes(&serialized).unwrap();
+    assert_eq!(restored.history(), checkpoint.history());
+    assert_eq!(restored.step(), checkpoint.step());
+}
+
+struct PanickingProvider;
+
+#[async_trait]
+impl TestClient for PanickingProvider {
+    async fn complete(
+        &self,
+        _request: &PhiProviderCall,
+        _messages: &PhiHistory,
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
+        panic!("provider panic")
+    }
+}
+
+#[tokio::test]
+async fn panicked_step_returns_the_pre_call_session_checkpoint_and_payload() {
+    let session = Session::from_root(
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
+        vec![PhiMessage::user("keep me")],
+    );
+    let mut agent = step_agent_builder(session)
+        .with_client(Arc::new(PanickingProvider))
+        .build()
+        .unwrap();
+    let checkpoint = agent.session();
+
+    let exit = crate::step_or_interrupt(&mut agent, future::pending())
+        .await
+        .unwrap();
+    let crate::CliAgentExit::Panicked(payload) = exit else {
+        panic!("step should report its panic")
+    };
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"provider panic"));
+
+    let mut serialized = Vec::new();
+    checkpoint.write_json(&mut serialized).unwrap();
+    let restored = Session::load_bytes(&serialized).unwrap();
+    assert_eq!(restored.history(), checkpoint.history());
+    assert_eq!(restored.step(), checkpoint.step());
+}
+
+#[test]
+fn panicked_cli_agent_persists_checkpoint_before_resuming_unwind() {
+    let checkpoint = Session::from_root(
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
+        vec![PhiMessage::user("persist me")],
+    );
+    let session_path = unique_test_home().join("session.json");
+    checkpoint.save(&session_path).unwrap();
+    let session_input = crate::SessionInput::FileBacked {
+        path: session_path.clone(),
+        session: checkpoint.clone(),
+        stdin_user_message: None,
+    };
+
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        crate::persist_cli_agent_session(
+            checkpoint.clone(),
+            crate::CliAgentExit::Panicked(Box::new("original panic")),
+            &session_input,
+            true,
+        )
+        .unwrap();
+    }))
+    .expect_err("panic should resume after checkpoint persistence");
+
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"original panic"));
+    let restored = Session::load(&session_path).unwrap();
     assert_eq!(restored.history(), checkpoint.history());
     assert_eq!(restored.step(), checkpoint.step());
 }

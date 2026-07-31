@@ -315,8 +315,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_failed_frame_with_non_empty_delta() {
-        let error = load_bytes(
+    fn failed_frame_with_non_empty_delta_round_trips() {
+        let session = load_bytes(
             br#"{
                 "frames": [
                     {
@@ -337,14 +337,19 @@ mod tests {
                 ]
             }"#,
         )
-        .unwrap_err();
+        .unwrap();
 
         assert!(
-            error
-                .to_string()
-                .contains("bad frame must keep an empty delta"),
-            "unexpected error: {error}"
+            matches!(session.step(), PhiAgentStep::Failed(failed) if failed.error().detail() == "bad")
         );
+        assert_eq!(
+            session.history(),
+            &[PhiMessage::user("hello"), PhiMessage::assistant("oops")]
+        );
+        let serialized = serde_json::to_vec(&session).unwrap();
+        let restored = load_bytes(&serialized).unwrap();
+        assert_eq!(restored.step(), session.step());
+        assert_eq!(restored.history(), session.history());
     }
 
     #[test]

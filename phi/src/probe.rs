@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::{
     module::PhiModuleProbeJson,
-    session::{PhiAgentStep, Session},
+    session::{PhiAgentStep, PhiReActStep, Session},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -33,12 +33,12 @@ pub fn probe_session(session: &Session, modules: Vec<PhiModuleProbeJson>) -> Phi
 
 fn step_kind(step: &PhiAgentStep) -> &'static str {
     match step {
-        PhiAgentStep::RequestCompact => "request_compact",
-        PhiAgentStep::RequestProvider { .. } => "request_provider",
-        PhiAgentStep::RequestExecutor { .. } => "request_executor",
-        PhiAgentStep::Compacted => "compacted",
-        PhiAgentStep::TurnEnd { .. } => "turn_end",
-        PhiAgentStep::Failed { .. } => "failed",
+        PhiAgentStep::ReAct(PhiReActStep::RequestCompact) => "request_compact",
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }) => "request_provider",
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { .. }) => "request_executor",
+        PhiAgentStep::ReAct(PhiReActStep::Compacted) => "compacted",
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. }) => "turn_end",
+        PhiAgentStep::Failed(_) => "failed",
     }
 }
 

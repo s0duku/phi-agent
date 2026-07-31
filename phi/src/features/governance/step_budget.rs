@@ -1,4 +1,4 @@
-use crate::session::PhiAgentStep;
+use crate::session::{PhiAgentStep, PhiReActStep};
 use crate::{
     agent::{PhiAgentRuntime, StepCont, StepInterveneNext},
     module::PhiModule,
@@ -23,16 +23,17 @@ impl PhiModule for StepBudgetPolicy {
         cont: StepCont,
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
-        if !matches!(runtime.base_step(), PhiAgentStep::RequestProvider { .. }) {
+        if !matches!(
+            runtime.base_step(),
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+        ) {
             return next.call(runtime, cont);
         }
 
         if runtime.history().len() >= self.max_steps {
-            let delta = runtime.cur_delta().clone();
             return Ok(crate::agent::StepBounce::CreateNextStep(
                 runtime,
-                PhiAgentStep::turn_end(format!("max steps reached: {}", self.max_steps)),
-                delta,
+                PhiReActStep::turn_end(format!("max steps reached: {}", self.max_steps)),
             ));
         }
 
@@ -43,7 +44,7 @@ impl PhiModule for StepBudgetPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{PhiAgentStep, Session};
+    use crate::session::{PhiAgentStep, PhiReActStep, Session};
     use crate::tests::support::test_model_defaults;
 
     #[test]
@@ -68,7 +69,7 @@ mod tests {
 
         assert!(matches!(
             outcome.session.step(),
-            PhiAgentStep::TurnEnd { detail }
+            PhiAgentStep::ReAct(PhiReActStep::TurnEnd { detail })
             if detail == "max steps reached: 2"
         ));
     }

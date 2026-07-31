@@ -13,7 +13,7 @@ use crate::{
     message::{PhiHistory, PhiMessage, PhiToolMessage},
     module::{PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
-    session::{PhiAgentStep, Session},
+    session::{PhiAgentStep, PhiReActStep, Session},
 };
 
 use super::support::{
@@ -126,7 +126,7 @@ async fn invariant_model_step_with_tool_call_keeps_history_clean() {
     assert_eq!(outcome.session.history(), &[PhiMessage::user("list files")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestExecutor { pending_messages, tool_calls, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
         if pending_messages.as_slice() == [PhiMessage::assistant("running bash now")].as_slice()
             && tool_calls.len() == 1
             && tool_calls[0].name == shell_tool_name()
@@ -171,7 +171,7 @@ async fn invariant_tool_step_commits_pending_messages_atomically() {
     assert_eq!(result["handle"], serde_json::Value::Null);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -197,9 +197,9 @@ async fn invariant_failed_tool_step_drops_pending_messages_and_rolls_back() {
     assert_eq!(failed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         failed.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::Module { .. })
-            && error.detail() == "module rejected tool result"
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::Module { .. })
+            && failed.error().detail() == "module rejected tool result"
     ));
 
     let resumed = default_step_agent_builder(failed)
@@ -217,7 +217,7 @@ async fn invariant_failed_tool_step_drops_pending_messages_and_rolls_back() {
     assert_eq!(resumed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed.step(),
-        PhiAgentStep::RequestExecutor { .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { .. })
     ));
 }
 
@@ -240,7 +240,7 @@ async fn invariant_completed_resumes_and_root_failed_stays_failed() {
     );
     assert!(matches!(
         resumed_completed.step(),
-        PhiAgentStep::RequestProvider { .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
     ));
 
     let failed = Session::from_root(
@@ -255,7 +255,7 @@ async fn invariant_completed_resumes_and_root_failed_stays_failed() {
         .await
         .session;
     assert_eq!(resumed_failed.history(), &[PhiMessage::user("hello")]);
-    assert!(matches!(resumed_failed.step(), PhiAgentStep::Failed { .. }));
+    assert!(matches!(resumed_failed.step(), PhiAgentStep::Failed(_)));
 }
 
 #[tokio::test]
@@ -286,9 +286,9 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
 
     assert!(matches!(
         run_outcome.session.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::Module { .. })
-            && error.detail() == "module rejected first model response"
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::Module { .. })
+            && failed.error().detail() == "module rejected first model response"
     ));
 
     let yolo_home = Arc::new(LocalPhiHome::new(super::support::unique_test_home()));
@@ -315,7 +315,7 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
     );
     assert!(matches!(
         yolo_outcome.session.step(),
-        PhiAgentStep::TurnEnd { .. }
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
     ));
 }
 
@@ -359,6 +359,6 @@ async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() 
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::TurnEnd { .. }
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
     ));
 }

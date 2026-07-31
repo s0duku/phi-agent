@@ -24,9 +24,26 @@ pub(crate) fn serde_default_request_provider_step() -> PhiAgentStep {
     )
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum PhiAgentStep {
+    ReAct(PhiReActStep),
+    Failed(PhiFailedStep),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhiFailedStep {
+    error: PhiAgentRuntimeError,
+}
+
+impl PhiFailedStep {
+    pub fn error(&self) -> &PhiAgentRuntimeError {
+        &self.error
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PhiAgentStep {
+pub enum PhiReActStep {
     RequestCompact,
     RequestProvider {
         detail: String,
@@ -43,14 +60,86 @@ pub enum PhiAgentStep {
     TurnEnd {
         detail: String,
     },
-    Failed {
-        /// Persisted agent-evaluation failure. Lower-level subsystem errors are
-        /// converted before entering this state.
-        error: PhiAgentRuntimeError,
-    },
 }
 
 impl PhiAgentStep {
+    pub fn request_provider(detail: impl Into<String>, defaults: &ModelRequestDefaults) -> Self {
+        Self::ReAct(PhiReActStep::request_provider(detail, defaults))
+    }
+
+    pub fn request_provider_with_call(detail: impl Into<String>, call: PhiProviderCall) -> Self {
+        Self::ReAct(PhiReActStep::request_provider_with_call(detail, call))
+    }
+
+    pub fn request_compact() -> Self {
+        Self::ReAct(PhiReActStep::RequestCompact)
+    }
+
+    pub fn request_executor(
+        detail: impl Into<String>,
+        pending_messages: Vec<PhiMessage>,
+        tool_calls: Vec<ToolCallRequest>,
+    ) -> Self {
+        Self::ReAct(PhiReActStep::request_executor(
+            detail,
+            pending_messages,
+            tool_calls,
+        ))
+    }
+
+    pub fn turn_end(detail: impl Into<String>) -> Self {
+        Self::ReAct(PhiReActStep::turn_end(detail))
+    }
+
+    pub(crate) fn runtime_failed(failure: crate::agent::RuntimeFailureStep) -> Self {
+        Self::Failed(PhiFailedStep {
+            error: failure.into_error(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failed(error: PhiAgentRuntimeError) -> Self {
+        Self::Failed(PhiFailedStep { error })
+    }
+
+    pub fn react(&self) -> Option<&PhiReActStep> {
+        let Self::ReAct(step) = self else {
+            return None;
+        };
+        Some(step)
+    }
+
+    pub fn is_react(&self, predicate: impl FnOnce(&PhiReActStep) -> bool) -> bool {
+        self.react().is_some_and(predicate)
+    }
+
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::ReAct(step) => step.detail(),
+            Self::Failed(failed) => failed.error.detail(),
+        }
+    }
+
+    pub fn error(&self) -> Option<&PhiAgentRuntimeError> {
+        let Self::Failed(failed) = self else {
+            return None;
+        };
+        Some(&failed.error)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::ReAct(PhiReActStep::TurnEnd { .. }) | Self::Failed(_)
+        )
+    }
+
+    pub fn request_provider_call(&self) -> Option<&PhiProviderCall> {
+        self.react().and_then(PhiReActStep::request_provider_call)
+    }
+}
+
+impl PhiReActStep {
     pub fn request_provider(detail: impl Into<String>, defaults: &ModelRequestDefaults) -> Self {
         Self::RequestProvider {
             detail: detail.into(),
@@ -87,10 +176,6 @@ impl PhiAgentStep {
         }
     }
 
-    pub fn failed(error: PhiAgentRuntimeError) -> Self {
-        Self::Failed { error }
-    }
-
     pub fn detail(&self) -> &str {
         match self {
             Self::RequestCompact => "request compact",
@@ -98,19 +183,7 @@ impl PhiAgentStep {
             Self::RequestProvider { detail, .. }
             | Self::RequestExecutor { detail, .. }
             | Self::TurnEnd { detail } => detail,
-            Self::Failed { error } => &error.detail(),
         }
-    }
-
-    pub fn error(&self) -> Option<&PhiAgentRuntimeError> {
-        let Self::Failed { error } = self else {
-            return None;
-        };
-        Some(error)
-    }
-
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::TurnEnd { .. } | Self::Failed { .. })
     }
 
     pub fn request_provider_call(&self) -> Option<&PhiProviderCall> {
@@ -118,6 +191,101 @@ impl PhiAgentStep {
             return None;
         };
         Some(call)
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PhiAgentStepWire {
+    RequestCompact,
+    RequestProvider {
+        detail: String,
+        #[serde(flatten)]
+        call: PhiProviderCall,
+    },
+    RequestExecutor {
+        detail: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_messages: Vec<PhiMessage>,
+        tool_calls: Vec<ToolCallRequest>,
+    },
+    Compacted,
+    TurnEnd {
+        detail: String,
+    },
+    Failed {
+        error: PhiAgentRuntimeError,
+    },
+}
+
+impl From<PhiAgentStepWire> for PhiAgentStep {
+    fn from(step: PhiAgentStepWire) -> Self {
+        match step {
+            PhiAgentStepWire::RequestCompact => Self::ReAct(PhiReActStep::RequestCompact),
+            PhiAgentStepWire::RequestProvider { detail, call } => {
+                Self::ReAct(PhiReActStep::RequestProvider { detail, call })
+            }
+            PhiAgentStepWire::RequestExecutor {
+                detail,
+                pending_messages,
+                tool_calls,
+            } => Self::ReAct(PhiReActStep::RequestExecutor {
+                detail,
+                pending_messages,
+                tool_calls,
+            }),
+            PhiAgentStepWire::Compacted => Self::ReAct(PhiReActStep::Compacted),
+            PhiAgentStepWire::TurnEnd { detail } => Self::ReAct(PhiReActStep::TurnEnd { detail }),
+            PhiAgentStepWire::Failed { error } => Self::Failed(PhiFailedStep { error }),
+        }
+    }
+}
+
+impl From<&PhiAgentStep> for PhiAgentStepWire {
+    fn from(step: &PhiAgentStep) -> Self {
+        match step {
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact) => Self::RequestCompact,
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, call }) => {
+                Self::RequestProvider {
+                    detail: detail.clone(),
+                    call: call.clone(),
+                }
+            }
+            PhiAgentStep::ReAct(PhiReActStep::RequestExecutor {
+                detail,
+                pending_messages,
+                tool_calls,
+            }) => Self::RequestExecutor {
+                detail: detail.clone(),
+                pending_messages: pending_messages.clone(),
+                tool_calls: tool_calls.clone(),
+            },
+            PhiAgentStep::ReAct(PhiReActStep::Compacted) => Self::Compacted,
+            PhiAgentStep::ReAct(PhiReActStep::TurnEnd { detail }) => Self::TurnEnd {
+                detail: detail.clone(),
+            },
+            PhiAgentStep::Failed(failed) => Self::Failed {
+                error: failed.error.clone(),
+            },
+        }
+    }
+}
+
+impl Serialize for PhiAgentStep {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        PhiAgentStepWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PhiAgentStep {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        PhiAgentStepWire::deserialize(deserializer).map(Into::into)
     }
 }
 
@@ -181,7 +349,7 @@ impl Session {
     pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {
         fn validate_expr(expr: &PhiStepExpr) -> Result<(), PhiAgentRuntimeError> {
             match expr.step() {
-                PhiAgentStep::RequestCompact | PhiAgentStep::Failed { .. }
+                PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
                     if expr.expr().is_some() && !expr.delta().is_empty() =>
                 {
                     return Err(PhiAgentRuntimeError::session(format!(
@@ -189,7 +357,7 @@ impl Session {
                         expr.step().detail()
                     )));
                 }
-                PhiAgentStep::Compacted if expr.expr().is_none() => {
+                PhiAgentStep::ReAct(PhiReActStep::Compacted) if expr.expr().is_none() => {
                     return Err(PhiAgentRuntimeError::session(
                         "compacted frame must preserve a parent expr",
                     ));

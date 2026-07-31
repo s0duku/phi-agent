@@ -7,7 +7,7 @@ use crate::{
     expr::{DeltaLookup, PhiExprDelta, PhiStepExpr},
     message::{PhiHistory, PhiMessage},
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
-    session::PhiAgentStep,
+    session::{PhiAgentStep, PhiReActStep},
 };
 use serde::Serialize;
 
@@ -108,13 +108,19 @@ impl LoopGuardPolicy {
 }
 
 fn request_provider_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
-    expr.find_ancestor(|step| matches!(step, PhiAgentStep::RequestProvider { .. }))
+    expr.find_ancestor(|step| {
+        matches!(
+            step,
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+        )
+    })
 }
 
 fn is_loop_guard_failed_step(step: &PhiAgentStep) -> bool {
-    let PhiAgentStep::Failed { error } = step else {
+    let PhiAgentStep::Failed(failed) = step else {
         return false;
     };
+    let error = failed.error();
 
     matches!(error, PhiAgentRuntimeError::ModelCandidateRejected { .. })
 }
@@ -164,34 +170,28 @@ impl PhiModule for LoopGuardPolicy {
             return next.call(runtime, cont);
         }
 
-        let mut delta = if runtime.cur_delta().is_empty() {
-            runtime.base_delta().clone()
-        } else {
-            runtime.cur_delta().clone()
-        };
-
         if probe.exhausted {
             runtime.emit_warning(&format!(
                 "loop guard budget exhausted after {} rejections; resuming with a clean completion request",
                 self.max_retries
             ));
-            delta.unbind_loop_guard_rejected_attempts();
+            runtime
+                .cur_delta_mut()
+                .unbind_loop_guard_rejected_attempts();
             let step = runtime.request_provider_step("resuming after exhausted loop guard budget");
-            return Ok(crate::agent::StepBounce::ReplaceBaseStep(
-                runtime, step, delta,
-            ));
+            return Ok(crate::agent::StepBounce::ReplaceBaseStep(runtime, step));
         }
 
         let next_rejected_attempts = probe
             .next_rejected_attempts
             .expect("loop guard intervention should compute next rejected attempts");
-        delta.bind_loop_guard_rejected_attempts(next_rejected_attempts);
+        runtime
+            .cur_delta_mut()
+            .bind_loop_guard_rejected_attempts(next_rejected_attempts);
         let step = runtime.request_provider_step("retrying completion after loop-guard rejection");
         let _ = next;
         let _ = cont;
-        Ok(crate::agent::StepBounce::ReplaceBaseStep(
-            runtime, step, delta,
-        ))
+        Ok(crate::agent::StepBounce::ReplaceBaseStep(runtime, step))
     }
 
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
@@ -225,7 +225,7 @@ impl PhiModule for LoopGuardPolicy {
                 step,
                 delta,
             } => {
-                if !matches!(step, PhiAgentStep::RequestProvider { .. }) {
+                if !matches!(step, PhiReActStep::RequestProvider { .. }) {
                     return Ok(());
                 }
 
@@ -427,7 +427,7 @@ mod tests {
             .await;
 
         match outcome.session.step() {
-            PhiAgentStep::RequestProvider { detail, .. } => {
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. }) => {
                 assert_eq!(detail, "resuming after exhausted loop guard budget");
             }
             step => panic!("expected clean request-complete step, got {step:?}"),

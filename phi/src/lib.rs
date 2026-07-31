@@ -30,10 +30,14 @@ pub mod utils;
 mod tests;
 
 use std::{
+    any::Any,
     collections::BTreeMap,
+    future::{Future, poll_fn},
     io::{self, IsTerminal, Read},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::Path,
     path::PathBuf,
+    task::Poll,
 };
 
 use clap::{
@@ -45,7 +49,7 @@ use agent::{PhiAgent, PhiAgentCommand, build_agent};
 use features::{pretty_info, pretty_warning};
 use home::{command::HomeArgs, load_home};
 use message::PhiMessage;
-use session::{PhiAgentStep, Session};
+use session::{PhiAgentStep, PhiReActStep, Session};
 
 enum SessionInput {
     NoInput,
@@ -59,6 +63,12 @@ enum SessionInput {
         path: PathBuf,
         stdin_user_message: Option<String>,
     },
+}
+
+enum CliAgentExit {
+    Completed,
+    Interrupted,
+    Panicked(Box<dyn Any + Send>),
 }
 
 #[derive(Debug)]
@@ -163,7 +173,7 @@ async fn run_step_with_input(
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
 
-    let (session, interrupted) = run_cli_agent(
+    let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::StepCommandInput {
             args: agent::StepCommandArgs::from(&args),
@@ -172,7 +182,7 @@ async fn run_step_with_input(
         home,
     )
     .await?;
-    persist_cli_agent_session(session, interrupted, &session_input, args.base.quiet)
+    persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
 }
 
 async fn run_agent_with_step_limit(
@@ -225,7 +235,7 @@ async fn run_with_input(
     emit_existing_session_notice(&session_input, args.base.quiet);
     let max_steps = forced_max_steps.or(args.max_steps);
 
-    let (session, interrupted) = run_cli_agent(
+    let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::RunCommandInput {
             args: agent::RunCommandArgs::from(&args),
@@ -235,7 +245,7 @@ async fn run_with_input(
         home,
     )
     .await?;
-    persist_cli_agent_session(session, interrupted, &session_input, args.base.quiet)
+    persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
 }
 
 async fn yolo_agent_with_step_limit(
@@ -288,7 +298,7 @@ async fn yolo_with_input(
     emit_existing_session_notice(&session_input, args.base.quiet);
     let max_steps = forced_max_steps.or(args.max_steps);
 
-    let (session, interrupted) = run_cli_agent(
+    let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::YoloCommandInput {
             args: agent::RunCommandArgs::from(&args),
@@ -298,31 +308,32 @@ async fn yolo_with_input(
         home,
     )
     .await?;
-    persist_cli_agent_session(session, interrupted, &session_input, args.base.quiet)
+    persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
 }
 
 async fn run_cli_agent(
     session: Session,
     command: PhiAgentCommand,
     home: std::sync::Arc<dyn home::PhiHome>,
-) -> Result<(Session, bool), Box<dyn std::error::Error>> {
+) -> Result<(Session, CliAgentExit), Box<dyn std::error::Error>> {
     let step_once = matches!(&command, PhiAgentCommand::Step(_));
     let yolo = matches!(&command, PhiAgentCommand::Yolo(_));
     let mut agent = build_agent(session, command, home)?;
     let mut previous_was_failed = false;
     loop {
         let checkpoint = agent.session();
-        if step_or_ctrl_c(&mut agent).await? {
-            return Ok((checkpoint, true));
+        match step_or_ctrl_c(&mut agent).await? {
+            CliAgentExit::Completed => {}
+            exit => return Ok((checkpoint, exit)),
         }
         let session = agent.session();
         let completed = if step_once {
             true
         } else if yolo {
             match session.step() {
-                PhiAgentStep::TurnEnd { .. } => true,
-                PhiAgentStep::Failed { .. } if previous_was_failed => true,
-                PhiAgentStep::Failed { .. } => {
+                PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. }) => true,
+                PhiAgentStep::Failed(_) if previous_was_failed => true,
+                PhiAgentStep::Failed(_) => {
                     previous_was_failed = true;
                     false
                 }
@@ -332,40 +343,95 @@ async fn run_cli_agent(
                 }
             }
         } else {
-            session.step().is_terminal() || matches!(session.step(), PhiAgentStep::RequestCompact)
+            session.step().is_terminal()
+                || matches!(
+                    session.step(),
+                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+                )
         };
         if completed {
-            return Ok((agent.into_session(), false));
+            return Ok((agent.into_session(), CliAgentExit::Completed));
         }
     }
 }
 
-async fn step_or_ctrl_c(agent: &mut PhiAgent) -> Result<bool, std::io::Error> {
+async fn step_or_ctrl_c(agent: &mut PhiAgent) -> Result<CliAgentExit, std::io::Error> {
     step_or_interrupt(agent, tokio::signal::ctrl_c()).await
 }
 
-async fn step_or_interrupt<I>(agent: &mut PhiAgent, interrupt: I) -> Result<bool, std::io::Error>
+async fn step_or_interrupt<I>(
+    agent: &mut PhiAgent,
+    interrupt: I,
+) -> Result<CliAgentExit, std::io::Error>
 where
     I: std::future::Future<Output = Result<(), std::io::Error>>,
 {
-    tokio::select! {
-        biased;
-        signal = interrupt => {
-            signal?;
-            Ok(true)
+    catch_future_unwind(async {
+        tokio::select! {
+            biased;
+            signal = interrupt => {
+                signal?;
+                Ok(CliAgentExit::Interrupted)
+            }
+            () = agent.step() => Ok(CliAgentExit::Completed),
         }
-        () = agent.step() => Ok(false),
+    })
+    .await
+    .unwrap_or_else(|payload| Ok(CliAgentExit::Panicked(payload)))
+}
+
+async fn catch_future_unwind<F>(future: F) -> Result<F::Output, Box<dyn Any + Send>>
+where
+    F: Future,
+{
+    let mut future = Box::pin(future);
+    poll_fn(
+        move |context| match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(context))) {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(output)) => Poll::Ready(Ok(output)),
+            Err(payload) => Poll::Ready(Err(payload)),
+        },
+    )
+    .await
+}
+
+fn resume_panic_after_persist_failure(
+    payload: Box<dyn Any + Send>,
+    error: Box<dyn std::error::Error>,
+) -> ! {
+    eprintln!("failed to persist the last committed session after panic: {error}");
+    resume_unwind(payload)
+}
+
+fn persist_panicked_session(
+    session: &Session,
+    session_input: &SessionInput,
+    quiet: bool,
+    payload: Box<dyn Any + Send>,
+) -> ! {
+    if let Err(error) = persist_outcome_session(session, session_input) {
+        resume_panic_after_persist_failure(payload, error);
     }
+    if !quiet {
+        eprintln!(
+            "{}",
+            pretty_warning("panic; persisted the last committed session state")
+        );
+    }
+    resume_unwind(payload)
 }
 
 fn persist_cli_agent_session(
     session: Session,
-    interrupted: bool,
+    exit: CliAgentExit,
     session_input: &SessionInput,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let CliAgentExit::Panicked(payload) = exit {
+        persist_panicked_session(&session, session_input, quiet, payload);
+    }
     persist_outcome_session(&session, session_input)?;
-    if interrupted {
+    if matches!(exit, CliAgentExit::Interrupted) {
         if !quiet {
             eprintln!(
                 "{}",

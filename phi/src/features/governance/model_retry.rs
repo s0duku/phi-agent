@@ -3,7 +3,7 @@ use crate::{
     error::PhiAgentRuntimeError,
     expr::{DeltaLookup, PhiExprDelta, PhiStepExpr},
     module::{PhiAgentStepEvent, PhiModule},
-    session::{PhiAgentStep, PhiModelRetryState},
+    session::{PhiAgentStep, PhiModelRetryState, PhiReActStep},
 };
 use serde::Serialize;
 
@@ -31,13 +31,19 @@ impl ModelRetryPolicy {
 }
 
 fn request_provider_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
-    expr.find_ancestor(|step| matches!(step, PhiAgentStep::RequestProvider { .. }))
+    expr.find_ancestor(|step| {
+        matches!(
+            step,
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+        )
+    })
 }
 
 fn is_model_retry_failed_step(step: &PhiAgentStep) -> bool {
-    let PhiAgentStep::Failed { error } = step else {
+    let PhiAgentStep::Failed(failed) = step else {
         return false;
     };
+    let error = failed.error();
 
     matches!(
         error,
@@ -88,38 +94,31 @@ impl PhiModule for ModelRetryPolicy {
             return next.call(runtime, cont);
         }
 
-        let mut delta = if runtime.cur_delta().is_empty() {
-            runtime.base_delta().clone()
-        } else {
-            runtime.cur_delta().clone()
-        };
         if probe.exhausted {
             runtime.emit_warning(&format!(
                 "model retry budget exhausted after {} attempts; resuming with a clean completion request",
                 self.max_retries
             ));
-            delta.unbind_model_retry_state();
+            runtime.cur_delta_mut().unbind_model_retry_state();
             let step = runtime.request_provider_step("resuming after exhausted model retry budget");
-            return Ok(crate::agent::StepBounce::ReplaceBaseStep(
-                runtime, step, delta,
-            ));
+            return Ok(crate::agent::StepBounce::ReplaceBaseStep(runtime, step));
         }
 
         let next_attempt = probe
             .next_attempt
             .expect("model retry intervention should compute a next attempt");
-        delta.bind_model_retry_state(PhiModelRetryState {
-            attempt: next_attempt,
-        });
+        runtime
+            .cur_delta_mut()
+            .bind_model_retry_state(PhiModelRetryState {
+                attempt: next_attempt,
+            });
         let step = runtime.request_provider_step(format!(
             "retrying model request ({next_attempt}/{})",
             self.max_retries
         ));
         let _ = next;
         let _ = cont;
-        Ok(crate::agent::StepBounce::ReplaceBaseStep(
-            runtime, step, delta,
-        ))
+        Ok(crate::agent::StepBounce::ReplaceBaseStep(runtime, step))
     }
 
     fn handle(
@@ -140,7 +139,7 @@ impl PhiModule for ModelRetryPolicy {
             _ => return Ok(()),
         };
 
-        if !matches!(step, PhiAgentStep::RequestProvider { .. }) {
+        if !matches!(step, PhiReActStep::RequestProvider { .. }) {
             return Ok(());
         }
 
@@ -252,7 +251,7 @@ mod tests {
 
         assert!(matches!(
             outcome.session.step(),
-            PhiAgentStep::RequestProvider { detail, .. }
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
                 if detail == "retrying model request (1/3)"
         ));
         let expr = outcome.session.clone().into_expr();
@@ -277,20 +276,20 @@ mod tests {
             .build()
             .expect("agent should build");
         agent.step().await;
-        assert!(matches!(
-            agent.session().step(),
-            PhiAgentStep::Failed { .. }
-        ));
+        assert!(matches!(agent.session().step(), PhiAgentStep::Failed(_)));
         agent.step().await;
         assert!(matches!(
             agent.session().step(),
-            PhiAgentStep::RequestProvider { detail, .. }
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
                 if detail == "retrying model request (1/3)"
         ));
         agent.step().await;
         let outcome = agent.into_session();
 
-        assert!(matches!(outcome.step(), PhiAgentStep::TurnEnd { .. }));
+        assert!(matches!(
+            outcome.step(),
+            PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+        ));
         assert_eq!(*attempts.lock().expect("attempt lock should succeed"), 2);
         assert_eq!(
             outcome.history().to_messages(),
@@ -318,7 +317,7 @@ mod tests {
             .await;
 
         match outcome.session.step() {
-            PhiAgentStep::RequestProvider { detail, .. } => {
+            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. }) => {
                 assert_eq!(detail, "resuming after exhausted model retry budget");
             }
             step => panic!("expected clean request-complete step, got {step:?}"),

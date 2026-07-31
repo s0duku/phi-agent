@@ -11,7 +11,7 @@ use crate::{
     },
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
-    session::{PhiAgentStep, Session},
+    session::{PhiAgentStep, PhiReActStep, Session},
 };
 
 use super::support::{
@@ -381,7 +381,7 @@ async fn request_provider_commits_assistant_response_before_completion() {
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::TurnEnd { detail }
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { detail })
         if detail == "model response committed; no tool execution is pending"
     ));
 }
@@ -413,7 +413,7 @@ async fn provider_continue_response_commits_assistant_and_requests_another_compl
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
         if detail == "provider response requires another model request"
     ));
 }
@@ -447,7 +447,10 @@ async fn request_compact_leaves_unchanged_history_alone() {
             .await;
 
         assert_eq!(outcome.session.history(), history);
-        assert!(matches!(outcome.session.step(), PhiAgentStep::Compacted));
+        assert!(matches!(
+            outcome.session.step(),
+            PhiAgentStep::ReAct(PhiReActStep::Compacted)
+        ));
     }
 }
 
@@ -495,7 +498,10 @@ async fn request_compact_retains_recent_user_tail_and_compacts_everything_else()
 
     let expr = outcome.session.clone().into_expr();
     let compacted = &expr;
-    assert!(matches!(compacted.step(), PhiAgentStep::Compacted));
+    assert!(matches!(
+        compacted.step(),
+        PhiAgentStep::ReAct(PhiReActStep::Compacted)
+    ));
     assert_eq!(history, compacted.delta().history().to_messages());
     assert_eq!(
         compacted
@@ -545,9 +551,9 @@ async fn request_compact_failure_enters_failed_step_and_preserves_history() {
     assert_eq!(outcome.session.history(), input_history);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::RequestCompact { .. })
-            && error.detail() == "compact exploded"
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::RequestCompact { .. })
+            && failed.error().detail() == "compact exploded"
     ));
 }
 
@@ -615,9 +621,9 @@ async fn after_model_rejection_does_not_commit_partial_model_history() {
     assert_eq!(outcome.session.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::Module { .. })
-            && error.detail() == "module rejected model response"
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::Module { .. })
+            && failed.error().detail() == "module rejected model response"
     ));
 }
 
@@ -672,7 +678,7 @@ async fn failed_step_without_default_module_stays_failed() {
     assert_eq!(outcome.session.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Failed { error } if error.detail() == "failed"
+        PhiAgentStep::Failed(failed) if failed.error().detail() == "failed"
     ));
 
     let resumed = default_step_agent_builder(outcome.session)
@@ -682,10 +688,7 @@ async fn failed_step_without_default_module_stays_failed() {
         .run_single_step()
         .await;
 
-    assert!(matches!(
-        resumed.session.step(),
-        PhiAgentStep::Failed { .. }
-    ));
+    assert!(matches!(resumed.session.step(), PhiAgentStep::Failed(_)));
 }
 
 #[tokio::test]
@@ -748,7 +751,7 @@ async fn tool_call_only_response_transitions_to_request_executor() {
     assert_eq!(outcome.session.history(), &[PhiMessage::user("list files")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestExecutor { pending_messages, tool_calls, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
         if pending_messages.is_empty()
             && tool_calls.len() == 1
             && tool_calls[0].name == shell_tool_name()
@@ -819,7 +822,7 @@ async fn assistant_and_tool_call_response_stays_pending_until_tool_step_commits(
     assert_eq!(outcome.session.history(), &[PhiMessage::user("list files")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestExecutor { pending_messages, tool_calls, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
         if pending_messages.as_slice() == [PhiMessage::assistant("running bash now")].as_slice()
             && tool_calls.len() == 1
             && tool_calls[0].name == shell_tool_name()
@@ -915,7 +918,7 @@ async fn multiple_tool_calls_response_transitions_to_request_executor_queue() {
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestExecutor { pending_messages, tool_calls, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
         if pending_messages.as_slice() == [PhiMessage::assistant("running two tools")].as_slice()
             && tool_calls.len() == 2
             && tool_calls[0].call_id.as_deref() == Some("call_1")
@@ -966,7 +969,7 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
     ));
     assert!(matches!(
         first.step(),
-        PhiAgentStep::RequestExecutor { pending_messages, tool_calls, detail }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, detail })
         if detail == "additional tool execution is pending"
             && pending_messages.is_empty()
             && tool_calls.len() == 1
@@ -987,7 +990,7 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
     ));
     assert!(matches!(
         second.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1023,9 +1026,9 @@ async fn after_tool_call_rejection_does_not_commit_half_finished_tool_history() 
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::Module { .. })
-            && error.detail() == "module rejected tool result"
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::Module { .. })
+            && failed.error().detail() == "module rejected tool result"
     ));
 }
 
@@ -1103,10 +1106,10 @@ async fn unknown_tool_fails_without_recovery_module() {
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::ToolNotFound { .. })
-            && error.tool_request().is_some_and(|request| request.name == "no_exist")
-            && error.pending_messages().is_some_and(|messages| messages == [PhiMessage::assistant("trying custom tool")].as_slice())
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::ToolNotFound { .. })
+            && failed.error().tool_request().is_some_and(|request| request.name == "no_exist")
+            && failed.error().pending_messages().is_some_and(|messages| messages == [PhiMessage::assistant("trying custom tool")].as_slice())
     ));
 }
 
@@ -1138,9 +1141,9 @@ async fn structured_tool_error_bubbles_to_failed_and_default_recovery_commits_it
 
     assert!(matches!(
         failed.step(),
-        PhiAgentStep::Failed { error }
-            if matches!(error, PhiAgentRuntimeError::ToolError { .. })
-                && error.tool_error_detail() == Some(&serde_json::json!({
+        PhiAgentStep::Failed(failed)
+            if matches!(failed.error(), PhiAgentRuntimeError::ToolError { .. })
+                && failed.error().tool_error_detail() == Some(&serde_json::json!({
                     "code": 73,
                     "reason": "terminal unavailable"
                 }))
@@ -1229,7 +1232,7 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
     assert!(warnings[0].contains("\"tool_name\":\"no_exist\""));
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1289,7 +1292,7 @@ async fn unknown_tool_recovery_drops_remaining_tool_queue_by_default() {
     assert_eq!(recovered.history().len(), 4);
     assert!(matches!(
         recovered.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1334,7 +1337,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
 
     assert!(matches!(
         after_first.step(),
-        PhiAgentStep::RequestExecutor { tool_calls, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { tool_calls, .. })
         if tool_calls.len() == 2
             && tool_calls[0].call_id.as_deref() == Some("call_missing")
             && tool_calls[1].call_id.as_deref() == Some("call_3")
@@ -1350,9 +1353,9 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
 
     assert!(matches!(
         failed.step(),
-        PhiAgentStep::Failed { error }
-        if matches!(error, PhiAgentRuntimeError::ToolNotFound { .. })
-            && error.remaining_tool_requests().is_some_and(|requests| requests.len() == 1)
+        PhiAgentStep::Failed(failed)
+        if matches!(failed.error(), PhiAgentRuntimeError::ToolNotFound { .. })
+            && failed.error().remaining_tool_requests().is_some_and(|requests| requests.len() == 1)
     ));
 
     let recovered = default_step_agent_builder(failed)
@@ -1388,7 +1391,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     assert_eq!(history.len(), 6);
     assert!(matches!(
         recovered.step(),
-        PhiAgentStep::RequestProvider { detail, .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
         if detail == "tool result committed; model response is pending"
     ));
 }
@@ -1420,7 +1423,7 @@ async fn failed_tool_step_rolls_back_to_original_request() {
         .session;
 
     assert_eq!(failed.history(), &[PhiMessage::user("hello")]);
-    assert!(matches!(failed.step(), PhiAgentStep::Failed { .. }));
+    assert!(matches!(failed.step(), PhiAgentStep::Failed(_)));
 
     let resumed = default_step_agent_builder(failed)
         .with_client(Arc::new(EmptyProvider))
@@ -1437,6 +1440,6 @@ async fn failed_tool_step_rolls_back_to_original_request() {
     assert_eq!(resumed.history(), &[PhiMessage::user("hello")]);
     assert!(matches!(
         resumed.step(),
-        PhiAgentStep::RequestExecutor { .. }
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { .. })
     ));
 }

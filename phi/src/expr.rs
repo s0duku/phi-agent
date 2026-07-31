@@ -59,6 +59,13 @@ impl PhiExprDelta {
         self.history.push(message);
     }
 
+    pub(crate) fn extend(&mut self, other: Self) {
+        for message in other.history.into_messages() {
+            self.history.push(message);
+        }
+        self.store.bindings.extend(other.store.bindings);
+    }
+
     pub(crate) fn bind<T>(&mut self, name: &str, value: T)
     where
         T: Serialize,
@@ -203,7 +210,10 @@ impl PhiStepExpr {
     }
 
     pub(crate) fn is_history_barrier(&self) -> bool {
-        matches!(self.step, PhiAgentStep::Compacted)
+        matches!(
+            self.step,
+            PhiAgentStep::ReAct(crate::session::PhiReActStep::Compacted)
+        )
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -270,7 +280,10 @@ impl PhiStepExpr {
 
     pub(crate) fn into_history(self) -> PhiHistory {
         let Self { step, delta, expr } = self;
-        let mut messages = if matches!(step, PhiAgentStep::Compacted) {
+        let mut messages = if matches!(
+            step,
+            PhiAgentStep::ReAct(crate::session::PhiReActStep::Compacted)
+        ) {
             Vec::new()
         } else if let Some(expr) = expr {
             match Arc::try_unwrap(expr) {
@@ -443,5 +456,30 @@ mod step_expr_tests {
 
         let expr = expr.without_key::<RetryStateKey>();
         assert_eq!(expr.lookup_key::<RetryStateKey>(), None);
+    }
+
+    #[test]
+    fn delta_extend_appends_history_and_overrides_store_bindings() {
+        let mut base = PhiExprDelta::from(vec![PhiMessage::user("base")]);
+        base.bind("kept", 1);
+        base.bind("overridden", "base");
+
+        let mut current = PhiExprDelta::from(vec![PhiMessage::assistant("current")]);
+        current.bind("overridden", "current");
+        current.unbind("kept");
+        base.extend(current);
+
+        assert_eq!(
+            base.history(),
+            &PhiHistory::from_messages(vec![
+                PhiMessage::user("base"),
+                PhiMessage::assistant("current"),
+            ])
+        );
+        assert!(matches!(base.lookup::<i32>("kept"), DeltaLookup::Unset));
+        assert!(matches!(
+            base.lookup::<String>("overridden"),
+            DeltaLookup::Value(value) if value == "current"
+        ));
     }
 }

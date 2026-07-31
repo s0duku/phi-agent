@@ -118,7 +118,7 @@ fn session_new_commits_system_prompt_from_selected_home() {
     );
     assert!(matches!(
         session.step(),
-        phi::session::PhiAgentStep::RequestProvider { call, .. }
+        phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestProvider { call, .. })
             if call.model == "session-home-model"
     ));
 
