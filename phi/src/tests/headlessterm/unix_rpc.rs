@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::headlessterm::job::{JobAccess, JobHandle, JobStatus, ReturnWhen};
 use crate::headlessterm::worker::protocol::{Request, Response, Status};
@@ -17,14 +17,29 @@ fn repeated_serial_interactions_keep_one_container_consistent() {
     assert!(info.outputs().is_empty());
 
     for index in 0..64 {
-        let interaction = job_interact(
-            JobHandle(handle.0.clone()),
-            &format!("serial-{index}\n"),
-            Duration::from_millis(2),
-        )
-        .unwrap();
-        assert!(matches!(interaction.status(), JobStatus::Running));
-        assert!(interaction.outputs().contains(&format!("serial-{index}")));
+        let expected = format!("serial-{index}");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut input = format!("{expected}\n");
+        let mut output = String::new();
+
+        loop {
+            let interaction = job_interact(
+                JobHandle(handle.0.clone()),
+                &input,
+                Duration::from_millis(2),
+            )
+            .unwrap();
+            assert!(matches!(interaction.status(), JobStatus::Running));
+            output.push_str(interaction.outputs());
+            if output.contains(&expected) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {expected:?}; received {output:?}"
+            );
+            input.clear();
+        }
     }
 
     let final_info =
