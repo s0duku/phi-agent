@@ -53,11 +53,8 @@ fn plugin_descriptor_captures_build_time_command_view() {
         template: None,
         container: None,
     };
-    let command = PhiAgentCommand::try_from(StepCommandInput {
-        args: &args,
-        input_messages: vec![PhiMessage::user("hello")],
-    })
-    .expect("command should build");
+    let command =
+        PhiAgentCommand::try_from(StepCommandInput { args: &args }).expect("command should build");
 
     let builder = crate::agent::PhiAgent::builder(
         crate::session::Session::from_root(

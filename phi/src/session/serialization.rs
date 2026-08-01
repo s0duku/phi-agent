@@ -297,6 +297,65 @@ mod tests {
     }
 
     #[test]
+    fn appending_messages_only_rebuilds_the_outermost_frame() {
+        let parent = PhiStepExpr::new(
+            PhiAgentStep::turn_end("parent"),
+            vec![PhiMessage::user("old input")],
+        );
+        let session = Session::from_expr(
+            parent
+                .clone()
+                .commit(PhiAgentStep::request_compact(), Vec::<PhiMessage>::new())
+                .with_store("attempt", 2),
+        );
+
+        let appended = session.append_messages([
+            PhiMessage::user("new input"),
+            PhiMessage::assistant("prefill"),
+        ]);
+        let expr = appended.clone().into_expr();
+
+        assert!(matches!(
+            appended.step(),
+            PhiAgentStep::ReAct(crate::session::PhiReActStep::RequestCompact)
+        ));
+        assert_eq!(expr.expr().unwrap().history(), parent.history());
+        assert_eq!(expr.lookup::<i32>("attempt"), Some(2));
+        assert_eq!(
+            appended.history(),
+            &[
+                PhiMessage::user("old input"),
+                PhiMessage::user("new input"),
+                PhiMessage::assistant("prefill"),
+            ]
+        );
+
+        let restored = load_bytes(&serde_json::to_vec(&appended).unwrap()).unwrap();
+        assert_eq!(restored.step(), appended.step());
+        assert_eq!(restored.history(), appended.history());
+    }
+
+    #[test]
+    fn rollback_removes_one_frame_and_keeps_a_root_session_stable() {
+        let root = Session::from_root(
+            PhiAgentStep::turn_end("root"),
+            vec![PhiMessage::user("root message")],
+        );
+        let branched = Session::from_expr(root.clone().into_expr().commit(
+            PhiAgentStep::turn_end("outer"),
+            vec![PhiMessage::assistant("outer message")],
+        ));
+
+        let rolled_back = branched.rollback();
+        assert_eq!(rolled_back.step(), root.step());
+        assert_eq!(rolled_back.history(), root.history());
+
+        let root_after_rollback = root.clone().rollback();
+        assert_eq!(root_after_rollback.step(), root.step());
+        assert_eq!(root_after_rollback.history(), root.history());
+    }
+
+    #[test]
     fn round_trips_deep_session_without_nested_expr_json() {
         let mut expr = PhiStepExpr::new(PhiAgentStep::turn_end("root"), PhiHistory::default());
         for index in 0..512 {

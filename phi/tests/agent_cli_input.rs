@@ -126,6 +126,59 @@ fn session_new_commits_system_prompt_from_selected_home() {
     std::fs::remove_dir_all(root).expect("test home should be removable");
 }
 
+#[test]
+fn cli_messages_append_to_the_outer_session_delta_before_step_evaluation() {
+    let session_path = unique_session_path("append-message");
+    std::fs::write(
+        &session_path,
+        r#"{
+            "frames": [
+                {
+                    "step": {"kind": "turn_end", "detail": "done"},
+                    "delta": {
+                        "history": [{"role": "assistant", "content": "previous"}]
+                    }
+                }
+            ]
+        }"#,
+    )
+    .expect("test session should be written");
+
+    let output = Command::new(PHI)
+        .args([
+            "step",
+            session_path.to_string_lossy().as_ref(),
+            "--user",
+            "next",
+            "--quiet",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("phi step should execute");
+    assert!(
+        output.status.success(),
+        "phi step failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&session_path).expect("updated session should be readable"),
+    )
+    .expect("updated session should be JSON");
+    let frames = json["frames"]
+        .as_array()
+        .expect("session should have frames");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0]["step"]["kind"], "turn_end");
+    assert_eq!(frames[0]["delta"]["history"][0]["content"], "previous");
+    assert_eq!(frames[0]["delta"]["history"][1]["role"], "user");
+    assert_eq!(frames[0]["delta"]["history"][1]["content"], "next");
+    assert_eq!(frames[1]["step"]["kind"], "request_provider");
+    assert!(frames[1].get("delta").is_none());
+
+    std::fs::remove_file(session_path).expect("test session should be removable");
+}
+
 fn unique_session_path(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "phi-{label}-session-{}-{}.json",

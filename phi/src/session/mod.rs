@@ -10,6 +10,7 @@ use crate::{
     render::PhiProviderCall,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PhiModelRetryState {
@@ -290,6 +291,12 @@ impl<'de> Deserialize<'de> for PhiAgentStep {
 }
 
 #[derive(Clone, Debug)]
+/// Serialized agent state and the external ownership boundary around a step expression.
+///
+/// Session-level transformations consume a `Session` and return a new one. The evaluator
+/// consumes the contained expression when it builds a runtime; runtime code operates on
+/// `PhiStepExpr` directly and only an agent snapshot/output wraps that expression back into
+/// a `Session`.
 pub struct Session(PhiStepExpr);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -346,17 +353,42 @@ impl Session {
         self.0.into_history()
     }
 
+    /// Appends messages to the outermost frame without changing its step or parent expression.
+    #[must_use]
+    pub fn append_messages<I>(self, messages: I) -> Self
+    where
+        I: IntoIterator<Item = PhiMessage>,
+    {
+        let step = self.0.step().clone();
+        let parent = self.0.expr().cloned();
+        let mut delta = self.0.delta().clone();
+        for message in messages {
+            delta.push_message(message);
+        }
+
+        Self(match parent {
+            Some(parent) => PhiStepExpr::branch(parent, step, delta),
+            None => PhiStepExpr::new(step, delta),
+        })
+    }
+
+    /// Removes the outermost frame while preserving a root session unchanged.
+    #[must_use]
+    pub fn rollback(self) -> Self {
+        if self.0.expr().is_none() {
+            return self;
+        }
+
+        let parent = self
+            .0
+            .into_expr()
+            .expect("a non-root expression must retain its parent");
+        Self(Arc::try_unwrap(parent).unwrap_or_else(|shared| (*shared).clone()))
+    }
+
     pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {
         fn validate_expr(expr: &PhiStepExpr) -> Result<(), PhiAgentRuntimeError> {
             match expr.step() {
-                PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
-                    if expr.expr().is_some() && !expr.delta().is_empty() =>
-                {
-                    return Err(PhiAgentRuntimeError::session(format!(
-                        "{} frame must keep an empty delta",
-                        expr.step().detail()
-                    )));
-                }
                 PhiAgentStep::ReAct(PhiReActStep::Compacted) if expr.expr().is_none() => {
                     return Err(PhiAgentRuntimeError::session(
                         "compacted frame must preserve a parent expr",

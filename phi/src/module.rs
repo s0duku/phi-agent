@@ -17,9 +17,10 @@ pub struct PhiModuleProbeJson {
     pub info: serde_json::Value,
 }
 
-// A step is the agent's atomic state transition. Its responsibility is to
-// produce a coherent next Session by updating step/history in a step-scoped
-// way rather than mutating session opportunistically throughout the execution.
+// A step is the agent's atomic state transition. Runtime and modules transform the
+// runtime-owned PhiStepExpr; they do not construct or edit Session values. Session is the
+// external ownership/serialization boundary consumed by agent construction and produced by
+// agent checkpoints or output.
 //
 // A module participates in two different ways:
 // - intervene(runtime, cont, next): runs inside eval_step itself and may

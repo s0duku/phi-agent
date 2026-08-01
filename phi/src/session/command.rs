@@ -1,6 +1,6 @@
-use std::{collections::BTreeSet, io, path::PathBuf};
+use std::{collections::BTreeMap, collections::BTreeSet, io, path::PathBuf};
 
-use clap::{Args, Subcommand};
+use clap::{Arg, ArgAction, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
 use super::Session;
 use crate::{
@@ -24,6 +24,16 @@ pub enum SessionCommand {
     )]
     New(SessionNewArgs),
     #[command(
+        about = "Append user or assistant messages to the outermost session delta",
+        before_help = banner::startup_banner()
+    )]
+    Append(SessionAppendArgs),
+    #[command(
+        about = "Remove the outermost session frame",
+        before_help = banner::startup_banner()
+    )]
+    Rollback(SessionRollbackArgs),
+    #[command(
         about = "Print a session's committed history as an echo-style transcript",
         before_help = banner::startup_banner()
     )]
@@ -46,6 +56,18 @@ pub struct SessionHistoryArgs {
     pub file: PathBuf,
 }
 
+#[derive(Default)]
+pub struct SessionAppendArgs {
+    pub file: Option<PathBuf>,
+    messages: Vec<PhiMessage>,
+}
+
+#[derive(Args)]
+pub struct SessionRollbackArgs {
+    #[arg(value_name = "SESSION")]
+    pub file: Option<PathBuf>,
+}
+
 #[derive(Args)]
 pub struct SessionDeleteArgs {
     #[arg(value_name = "SESSION")]
@@ -58,8 +80,109 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         SessionCommand::New(args) => new(home_spec, args),
+        SessionCommand::Append(args) => append(args),
+        SessionCommand::Rollback(args) => rollback(args),
         SessionCommand::History(args) => history(args),
         SessionCommand::Delete(args) => delete(args).await,
+    }
+}
+
+fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
+    transform(args.file, |session| session.append_messages(args.messages))
+}
+
+fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {
+    transform(args.file, Session::rollback)
+}
+
+fn transform(
+    file: Option<PathBuf>,
+    operation: impl FnOnce(Session) -> Session,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let session = match &file {
+        Some(path) => Session::load(path)?,
+        None => {
+            use std::io::Read;
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input)?;
+            Session::load_bytes(&input)?
+        }
+    };
+    let session = operation(session);
+    match file {
+        Some(path) => session.save(path),
+        None => session.write_stdout(),
+    }
+}
+
+impl FromArgMatches for SessionAppendArgs {
+    fn from_arg_matches(matches: &ArgMatches) -> Result<Self, Error> {
+        let mut matches = matches.clone();
+        Self::from_arg_matches_mut(&mut matches)
+    }
+
+    fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, Error> {
+        let mut ordered = BTreeMap::new();
+        collect_messages(matches, "user", PhiMessage::user, &mut ordered);
+        collect_messages(matches, "assistant", PhiMessage::assistant, &mut ordered);
+        Ok(Self {
+            file: matches.remove_one("file"),
+            messages: ordered.into_values().collect(),
+        })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+
+    fn update_from_arg_matches_mut(&mut self, matches: &mut ArgMatches) -> Result<(), Error> {
+        *self = Self::from_arg_matches_mut(matches)?;
+        Ok(())
+    }
+}
+
+impl Args for SessionAppendArgs {
+    fn augment_args(command: Command) -> Command {
+        command
+            .arg(
+                Arg::new("file")
+                    .value_name("SESSION")
+                    .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(
+                Arg::new("user")
+                    .long("user")
+                    .value_name("TEXT")
+                    .action(ArgAction::Append),
+            )
+            .arg(
+                Arg::new("assistant")
+                    .long("assistant")
+                    .value_name("TEXT")
+                    .action(ArgAction::Append),
+            )
+    }
+
+    fn augment_args_for_update(command: Command) -> Command {
+        Self::augment_args(command)
+    }
+}
+
+fn collect_messages(
+    matches: &ArgMatches,
+    id: &str,
+    construct: impl Fn(String) -> PhiMessage,
+    ordered: &mut BTreeMap<usize, PhiMessage>,
+) {
+    let Some(values) = matches.get_many::<String>(id) else {
+        return;
+    };
+    let indices = matches
+        .indices_of(id)
+        .expect("message values must retain their argument positions");
+    for (text, index) in values.zip(indices) {
+        ordered.insert(index, construct(text.clone()));
     }
 }
 

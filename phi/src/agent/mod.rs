@@ -83,93 +83,6 @@ impl PhiAgentBuildContext {
     pub fn home(&self) -> Option<&Arc<dyn PhiHome>> {
         self.home.as_ref()
     }
-
-    pub(crate) fn bootstrap_messages<I>(
-        &mut self,
-        messages: I,
-        verbose: bool,
-    ) -> Result<(), PhiAgentRuntimeError>
-    where
-        I: IntoIterator<Item = PhiMessage>,
-    {
-        let defaults = ModelRequestDefaults::from_config(&self.config)
-            .map_err(|error| PhiAgentRuntimeError::session(error.to_string()))?;
-        let expr = std::mem::replace(&mut self.session, Session::empty()).into_expr();
-        let mut delta = PhiExprDelta::default();
-        for message in messages {
-            if verbose {
-                eprintln!("{}", crate::features::pretty_message(&message));
-            }
-            delta.push_message(message);
-        }
-        let step = PhiAgentStep::request_provider("ready to request the model", &defaults);
-        self.session = Session::from_expr(PhiStepExpr::branch(expr, step, delta));
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod build_context_tests {
-    use super::PhiAgentBuildContext;
-    use crate::{
-        agent::PhiAgentCommand,
-        message::PhiMessage,
-        session::{PhiAgentStep, PhiReActStep, Session},
-    };
-
-    #[test]
-    fn command_messages_branch_over_the_complete_input_expr() {
-        let session = Session::from_root(
-            PhiAgentStep::turn_end("previous turn"),
-            vec![
-                PhiMessage::user("old input"),
-                PhiMessage::assistant("old output"),
-            ],
-        );
-        let original = serde_json::to_value(&session).expect("session should serialize");
-        let mut context =
-            PhiAgentBuildContext::new(session, PhiAgentCommand::Step(PhiAgentCommand::step()));
-
-        context
-            .bootstrap_messages(
-                [
-                    PhiMessage::user("new input"),
-                    PhiMessage::assistant("prefill"),
-                ],
-                false,
-            )
-            .expect("messages should bootstrap");
-
-        let expr = context.session.into_expr();
-        assert!(matches!(
-            expr.step(),
-            PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
-        ));
-        assert_eq!(
-            expr.delta().history(),
-            &crate::message::PhiHistory::from_messages(vec![
-                PhiMessage::user("new input"),
-                PhiMessage::assistant("prefill"),
-            ])
-        );
-        assert_eq!(
-            Session::from_expr(expr.clone()).history(),
-            &[
-                PhiMessage::user("old input"),
-                PhiMessage::assistant("old output"),
-                PhiMessage::user("new input"),
-                PhiMessage::assistant("prefill"),
-            ]
-        );
-        let parent = expr
-            .expr()
-            .cloned()
-            .expect("input expr should be preserved");
-        assert_eq!(
-            serde_json::to_value(Session::from_expr(parent)).expect("session should serialize"),
-            original
-        );
-    }
 }
 
 pub struct AgentStepRunOutcome {
@@ -355,6 +268,8 @@ impl PreparedPhiAgentBuilder {
                     .map(str::to_string)
             });
 
+        // This is the single state ownership crossing into evaluation: Session is consumed
+        // here, and the runtime retains only the functional expression plus transient delta.
         Ok(PhiAgent {
             runtime: Some(PhiAgentRuntime {
                 base: self.builder.context.session.into_expr(),
@@ -381,6 +296,7 @@ impl PhiAgent {
     }
 
     pub fn into_session(self) -> Session {
+        // Session is reconstructed only at the agent boundary; runtime evaluation never uses it.
         Session::from_expr(
             self.runtime
                 .expect("PhiAgent runtime should exist when consuming session")
@@ -389,6 +305,7 @@ impl PhiAgent {
     }
 
     pub fn session(&self) -> Session {
+        // Checkpoints are immutable Session snapshots of the last committed runtime base.
         Session::from_expr(
             self.runtime
                 .as_ref()
@@ -477,12 +394,13 @@ impl PhiAgent {
     pub async fn run(&mut self) {
         loop {
             self.step().await;
-            let session = self.session();
-            if session.step().is_terminal()
-                || matches!(
-                    session.step(),
-                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
-                )
+            let step = self
+                .runtime
+                .as_ref()
+                .expect("PhiAgent runtime should exist while running")
+                .base_step();
+            if step.is_terminal()
+                || matches!(step, PhiAgentStep::ReAct(PhiReActStep::RequestCompact))
             {
                 return;
             }
@@ -493,7 +411,12 @@ impl PhiAgent {
         let mut previous_was_failed = false;
         loop {
             self.step().await;
-            match self.session().step() {
+            match self
+                .runtime
+                .as_ref()
+                .expect("PhiAgent runtime should exist while running")
+                .base_step()
+            {
                 PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. }) => return,
                 PhiAgentStep::Failed(_) if previous_was_failed => return,
                 PhiAgentStep::Failed(_) => previous_was_failed = true,

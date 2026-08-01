@@ -65,22 +65,12 @@ pub(crate) fn build_default_modules(context: &PhiAgentBuildContext) -> PhiModule
 }
 
 pub(crate) fn build_init_modules(context: &PhiAgentBuildContext) -> PhiModuleLayout {
-    let messages = bootstrap_messages(context);
-    if messages.is_empty() {
-        if context.session.history().is_empty() && command_requires_user_input(&context.command) {
-            let mut modules = PhiModuleLayout::default();
-            modules.push_init(Box::new(EmptySessionGuardModule));
-            return modules;
-        }
-        return PhiModuleLayout::default();
+    if context.session.history().is_empty() && command_requires_user_input(&context.command) {
+        let mut modules = PhiModuleLayout::default();
+        modules.push_init(Box::new(EmptySessionGuardModule));
+        return modules;
     }
-
-    let mut modules = PhiModuleLayout::default();
-    modules.push_init(Box::new(CommandInputModule {
-        messages,
-        verbose: command_verbose(&context.command),
-    }));
-    modules
+    PhiModuleLayout::default()
 }
 
 pub(crate) fn build_runtime_modules(context: &PhiAgentBuildContext) -> PhiModuleLayout {
@@ -129,21 +119,8 @@ pub(crate) fn configured_system_prompt_from_config(
         })
 }
 
-struct CommandInputModule {
-    messages: Vec<PhiMessage>,
-    verbose: bool,
-}
-
 struct EmptySessionGuardModule;
 struct DefaultFailedRecoveryModule;
-
-impl PhiModule for CommandInputModule {
-    type ProbInfo = ();
-
-    fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
-        context.bootstrap_messages(self.messages.drain(..), self.verbose)
-    }
-}
 
 impl PhiModule for EmptySessionGuardModule {
     type ProbInfo = ();
@@ -223,13 +200,6 @@ impl PhiModule for DefaultFailedRecoveryModule {
     }
 }
 
-fn bootstrap_messages(context: &PhiAgentBuildContext) -> Vec<PhiMessage> {
-    if matches!(context.command, PhiAgentCommand::Probe(_)) {
-        return Vec::new();
-    }
-    command_input_messages(&context.command)
-}
-
 fn command_requires_user_input(command: &PhiAgentCommand) -> bool {
     matches!(
         command,
@@ -292,15 +262,5 @@ fn command_max_model_request_retries(command: &PhiAgentCommand) -> Option<usize>
         PhiAgentCommand::Step(command) => command.max_model_request_retries,
         PhiAgentCommand::Probe(command) => command.max_model_request_retries,
         _ => None,
-    }
-}
-
-fn command_input_messages(command: &PhiAgentCommand) -> Vec<PhiMessage> {
-    match command {
-        PhiAgentCommand::Run(command) | PhiAgentCommand::Yolo(command) => {
-            command.input_messages.clone()
-        }
-        PhiAgentCommand::Step(command) => command.input_messages.clone(),
-        _ => Vec::new(),
     }
 }

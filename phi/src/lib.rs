@@ -172,12 +172,13 @@ async fn run_step_with_input(
     home: std::sync::Arc<dyn home::PhiHome>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
+    emit_input_messages(&input_messages, args.base.quiet);
+    let session = session.append_messages(input_messages);
 
     let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::StepCommandInput {
             args: agent::StepCommandArgs::from(&args),
-            input_messages,
         })?,
         home,
     )
@@ -233,6 +234,8 @@ async fn run_with_input(
     home: std::sync::Arc<dyn home::PhiHome>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
+    emit_input_messages(&input_messages, args.base.quiet);
+    let session = session.append_messages(input_messages);
     let max_steps = forced_max_steps.or(args.max_steps);
 
     let (session, exit) = run_cli_agent(
@@ -240,7 +243,6 @@ async fn run_with_input(
         PhiAgentCommand::try_from(agent::RunCommandInput {
             args: agent::RunCommandArgs::from(&args),
             forced_max_steps: max_steps,
-            input_messages,
         })?,
         home,
     )
@@ -296,6 +298,8 @@ async fn yolo_with_input(
     home: std::sync::Arc<dyn home::PhiHome>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
+    emit_input_messages(&input_messages, args.base.quiet);
+    let session = session.append_messages(input_messages);
     let max_steps = forced_max_steps.or(args.max_steps);
 
     let (session, exit) = run_cli_agent(
@@ -303,7 +307,6 @@ async fn yolo_with_input(
         PhiAgentCommand::try_from(agent::YoloCommandInput {
             args: agent::RunCommandArgs::from(&args),
             forced_max_steps: max_steps,
-            input_messages,
         })?,
         home,
     )
@@ -512,6 +515,15 @@ fn emit_new_session_history(session: &Session, quiet: bool) {
         return;
     }
     for message in session.history().iter() {
+        eprintln!("{}", features::pretty_message(message));
+    }
+}
+
+fn emit_input_messages(messages: &[PhiMessage], quiet: bool) {
+    if quiet {
+        return;
+    }
+    for message in messages {
         eprintln!("{}", features::pretty_message(message));
     }
 }

@@ -58,7 +58,7 @@ fn headlessterm_help_exposes_launch_local() {
 }
 
 #[test]
-fn session_help_exposes_explicit_new_command() {
+fn session_help_exposes_session_transform_commands() {
     let mut command = Cli::command();
     let help = command
         .find_subcommand_mut("session")
@@ -68,4 +68,16 @@ fn session_help_exposes_explicit_new_command() {
 
     assert!(help.contains("new"));
     assert!(help.contains("Create a new initialized session file"));
+    assert!(help.contains("append"));
+    assert!(help.contains("rollback"));
+
+    let append_help = command
+        .find_subcommand_mut("session")
+        .unwrap()
+        .find_subcommand_mut("append")
+        .unwrap()
+        .render_help()
+        .to_string();
+    assert!(append_help.contains("--user <TEXT>"));
+    assert!(append_help.contains("--assistant <TEXT>"));
 }

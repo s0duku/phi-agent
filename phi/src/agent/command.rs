@@ -1,5 +1,3 @@
-use crate::message::PhiMessage;
-
 #[derive(Clone)]
 pub enum PhiAgentCommand {
     Run(RunCommand),
@@ -18,7 +16,6 @@ pub struct RunCommand {
     pub plugin_args: Vec<String>,
     pub container: Option<String>,
     pub quiet: bool,
-    pub input_messages: Vec<PhiMessage>,
 }
 
 #[derive(Clone)]
@@ -28,7 +25,6 @@ pub struct StepCommand {
     pub plugin_args: Vec<String>,
     pub container: Option<String>,
     pub quiet: bool,
-    pub input_messages: Vec<PhiMessage>,
 }
 
 #[derive(Clone)]
@@ -66,12 +62,10 @@ pub struct ProbeCommandArgs {
 pub struct RunCommandInput<T> {
     pub args: T,
     pub forced_max_steps: Option<usize>,
-    pub input_messages: Vec<PhiMessage>,
 }
 
 pub struct StepCommandInput<T> {
     pub args: T,
-    pub input_messages: Vec<PhiMessage>,
 }
 
 impl PhiAgentCommand {
@@ -83,7 +77,6 @@ impl PhiAgentCommand {
             plugin_args: Vec::new(),
             container: None,
             quiet: false,
-            input_messages: Vec::new(),
         }
     }
 
@@ -94,7 +87,6 @@ impl PhiAgentCommand {
             plugin_args: Vec::new(),
             container: None,
             quiet: false,
-            input_messages: Vec::new(),
         }
     }
 
@@ -119,7 +111,6 @@ impl PhiAgentCommand {
     pub fn from_run_args<T>(
         args: T,
         max_steps: Option<usize>,
-        input_messages: Vec<PhiMessage>,
     ) -> Result<Self, Box<dyn std::error::Error>>
     where
         T: Into<RunCommandArgs>,
@@ -132,15 +123,13 @@ impl PhiAgentCommand {
                 .with_template(args.template)
                 .with_plugin_args(args.plugin_args)
                 .with_container(args.container)
-                .with_quiet(args.quiet)
-                .with_input_messages(input_messages),
+                .with_quiet(args.quiet),
         ))
     }
 
     pub fn from_yolo_args<T>(
         args: T,
         max_steps: Option<usize>,
-        input_messages: Vec<PhiMessage>,
     ) -> Result<Self, Box<dyn std::error::Error>>
     where
         T: Into<RunCommandArgs>,
@@ -153,15 +142,11 @@ impl PhiAgentCommand {
                 .with_template(args.template)
                 .with_plugin_args(args.plugin_args)
                 .with_container(args.container)
-                .with_quiet(args.quiet)
-                .with_input_messages(input_messages),
+                .with_quiet(args.quiet),
         ))
     }
 
-    pub fn from_step_args<T>(
-        args: T,
-        input_messages: Vec<PhiMessage>,
-    ) -> Result<Self, Box<dyn std::error::Error>>
+    pub fn from_step_args<T>(args: T) -> Result<Self, Box<dyn std::error::Error>>
     where
         T: Into<StepCommandArgs>,
     {
@@ -172,8 +157,7 @@ impl PhiAgentCommand {
                 .with_template(args.template)
                 .with_plugin_args(args.plugin_args)
                 .with_container(args.container)
-                .with_quiet(args.quiet)
-                .with_input_messages(input_messages),
+                .with_quiet(args.quiet),
         ))
     }
 
@@ -259,11 +243,6 @@ impl RunCommand {
         self.container = container.filter(|value| !value.trim().is_empty());
         self
     }
-
-    pub fn with_input_messages(mut self, input_messages: Vec<PhiMessage>) -> Self {
-        self.input_messages = input_messages;
-        self
-    }
 }
 
 impl StepCommand {
@@ -294,11 +273,6 @@ impl StepCommand {
         self.container = container.filter(|value| !value.trim().is_empty());
         self
     }
-
-    pub fn with_input_messages(mut self, input_messages: Vec<PhiMessage>) -> Self {
-        self.input_messages = input_messages;
-        self
-    }
 }
 
 impl<T> TryFrom<RunCommandInput<T>> for PhiAgentCommand
@@ -308,14 +282,13 @@ where
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(value: RunCommandInput<T>) -> Result<Self, Self::Error> {
-        Self::from_run_args(value.args, value.forced_max_steps, value.input_messages)
+        Self::from_run_args(value.args, value.forced_max_steps)
     }
 }
 
 pub struct YoloCommandInput<T> {
     pub args: T,
     pub forced_max_steps: Option<usize>,
-    pub input_messages: Vec<PhiMessage>,
 }
 
 impl<T> TryFrom<YoloCommandInput<T>> for PhiAgentCommand
@@ -325,7 +298,7 @@ where
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(value: YoloCommandInput<T>) -> Result<Self, Self::Error> {
-        Self::from_yolo_args(value.args, value.forced_max_steps, value.input_messages)
+        Self::from_yolo_args(value.args, value.forced_max_steps)
     }
 }
 
@@ -336,6 +309,6 @@ where
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(value: StepCommandInput<T>) -> Result<Self, Self::Error> {
-        Self::from_step_args(value.args, value.input_messages)
+        Self::from_step_args(value.args)
     }
 }
