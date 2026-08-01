@@ -17,7 +17,7 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
             .exec_job("printf ready; sleep 10", Duration::from_secs(1), EXPIRATION)
             .await
             .unwrap();
-        assert!(matches!(initial.status(), JobStatus::Running));
+        assert!(initial.is_running());
         assert_eq!(initial.outputs(), "ready");
         let handle = handle.unwrap();
 
@@ -34,11 +34,11 @@ fn async_trait_preserves_the_complete_job_lifecycle() {
         let JobAccessResult::Interacted(read) = read else {
             panic!("interact returned write acknowledgment");
         };
-        assert!(matches!(read.status(), JobStatus::Running));
+        assert!(read.is_running());
         assert!(read.outputs().is_empty());
 
         let closed = HeadlessTerminal::new().close_job(handle).await.unwrap();
-        assert!(matches!(closed.status(), JobStatus::Exited(_)));
+        assert!(matches!(closed.status(), JobStatus::Closed(_)));
     });
 }
 

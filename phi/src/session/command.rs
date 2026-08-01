@@ -242,7 +242,15 @@ fn running_job_handles(session: &Session) -> Vec<String> {
         let PhiMessage::Tool(PhiToolMessage::ToolResult { result, .. }) = message else {
             continue;
         };
-        if result["value"]["status"] != "running" {
+        if !matches!(
+            result["value"]["status"].as_str(),
+            Some(
+                "running"
+                    | "running_output_settled"
+                    | "running_screen_sampled"
+                    | "running_wait_elapsed"
+            )
+        ) {
             continue;
         }
         let Some(handle) = result["value"]["handle"].as_str() else {

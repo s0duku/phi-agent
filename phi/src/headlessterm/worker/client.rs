@@ -1,12 +1,12 @@
 use std::time::Duration;
 
 use crate::headlessterm::job::{
-    HeadlessTermError, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, ReturnWhen,
-    TerminalCommand,
+    HeadlessTermError, JobAccess, JobAccessResult, JobHandle, JobInfo, JobProcessStatus, JobStatus,
+    ReturnWhen, TerminalCommand,
 };
 
 use super::launcher;
-use super::protocol::{Request, Response, Status};
+use super::protocol::{ProcessStatus, Request, Response, Status};
 use super::rpc;
 
 pub(crate) fn exec_job(
@@ -28,7 +28,7 @@ pub(crate) fn exec_job(
             "job access returned a write acknowledgment for interact request",
         ));
     };
-    let live_handle = matches!(info.status(), JobStatus::Running).then_some(handle);
+    let live_handle = info.is_running().then_some(handle);
     Ok((live_handle, info))
 }
 
@@ -79,10 +79,10 @@ fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, Headles
     }
 }
 
-fn response_into_status(response: Option<Response>) -> Result<JobStatus, HeadlessTermError> {
+fn response_into_status(response: Option<Response>) -> Result<JobProcessStatus, HeadlessTermError> {
     match response {
-        None => Ok(JobStatus::NoExist),
-        Some(Response::Written { status }) => Ok(job_status(status)),
+        None => Ok(JobProcessStatus::NoExist),
+        Some(Response::Written { status }) => Ok(process_status(status)),
         Some(Response::Failed { error, .. }) => Err(error),
         Some(Response::Terminal { .. }) => Err(HeadlessTermError::protocol(
             "job protocol returned terminal snapshot for write request",
@@ -92,8 +92,18 @@ fn response_into_status(response: Option<Response>) -> Result<JobStatus, Headles
 
 fn job_status(status: Status) -> JobStatus {
     match status {
-        Status::Running => JobStatus::Running,
+        Status::RunningOutputSettled => JobStatus::RunningOutputSettled,
+        Status::RunningScreenSampled => JobStatus::RunningScreenSampled,
+        Status::RunningWaitElapsed => JobStatus::RunningWaitElapsed,
         Status::Exited(code) => JobStatus::Exited(code),
+        Status::Closed(code) => JobStatus::Closed(code),
+    }
+}
+
+fn process_status(status: ProcessStatus) -> JobProcessStatus {
+    match status {
+        ProcessStatus::Running => JobProcessStatus::Running,
+        ProcessStatus::Exited(code) => JobProcessStatus::Exited(code),
     }
 }
 

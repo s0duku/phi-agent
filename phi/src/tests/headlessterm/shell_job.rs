@@ -5,7 +5,7 @@ use crate::executor::tools::shell::job::{
     InteractArgs, InteractiveInput, ShellJobExecTool, ShellJobInteractTool, interactive_input,
 };
 use crate::headlessterm::{
-    HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus,
+    HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobProcessStatus, JobStatus,
 };
 
 async fn access_interact(handle: JobHandle, data: &str, try_wait: Duration) -> JobInfo {
@@ -157,7 +157,7 @@ async fn running_job_expires_without_interaction() {
         )
         .await
         .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
     let handle = handle.unwrap();
 
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -172,16 +172,16 @@ async fn interaction_restarts_running_job_expiration() {
         .exec_job(long_running_command(), Duration::ZERO, expiration)
         .await
         .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
     let handle = handle.unwrap();
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     let refreshed = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
-    assert!(matches!(refreshed.status(), JobStatus::Running));
+    assert!(refreshed.is_running());
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     let still_running = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
-    assert!(matches!(still_running.status(), JobStatus::Running));
+    assert!(still_running.is_running());
 
     tokio::time::sleep(Duration::from_millis(800)).await;
     let expired = access_interact(handle, "", Duration::ZERO).await;
@@ -259,7 +259,7 @@ async fn interact_submits_unterminated_input_to_a_line_buffered_command() {
     )
     .await
     .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
 
     let info = access_interact(handle.unwrap(), "hello\r", Duration::from_secs(2)).await;
     assert!(matches!(info.status(), JobStatus::Exited(0)));
@@ -278,7 +278,7 @@ async fn pty_line_discipline_does_not_echo_submitted_input() {
         )
         .await
         .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
 
     let info = access_interact(handle.unwrap(), "private-input\r", Duration::from_secs(2)).await;
     assert!(matches!(info.status(), JobStatus::Exited(0)));
@@ -296,11 +296,11 @@ async fn empty_input_submits_a_single_enter_while_omitting_input_only_reads() {
         )
         .await
         .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
     let handle = handle.unwrap();
 
     let read_only = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
-    assert!(matches!(read_only.status(), JobStatus::Running));
+    assert!(read_only.is_running());
     assert!(read_only.outputs().is_empty());
 
     let entered = access_interact(handle, "\r", Duration::from_secs(2)).await;
@@ -319,19 +319,19 @@ async fn persistent_job_can_be_read_and_closed() {
         )
         .await
         .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
     assert_eq!(initial.outputs(), "ready");
     let handle = handle.unwrap();
 
     let read = access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO).await;
-    assert!(matches!(read.status(), JobStatus::Running));
+    assert!(read.is_running());
     assert!(read.outputs().is_empty());
 
     let closed = HeadlessTerminal::new()
         .close_job(JobHandle(handle.0.clone()))
         .await
         .unwrap();
-    assert!(matches!(closed.status(), JobStatus::Exited(_)));
+    assert!(matches!(closed.status(), JobStatus::Closed(_)));
     let missing = access_interact(handle, "", Duration::ZERO).await;
     assert!(matches!(missing.status(), JobStatus::NoExist));
 }
@@ -343,7 +343,7 @@ async fn write_preserves_output_for_the_next_interaction_delta() {
         .exec_job(line_input_command(), Duration::ZERO, Duration::from_secs(5))
         .await
         .unwrap();
-    assert!(matches!(initial.status(), JobStatus::Running));
+    assert!(initial.is_running());
     let handle = handle.unwrap();
 
     let result = HeadlessTerminal::new()
@@ -358,7 +358,7 @@ async fn write_preserves_output_for_the_next_interaction_delta() {
     let JobAccessResult::Written(status) = result else {
         panic!("write returned terminal snapshot");
     };
-    assert!(matches!(status, JobStatus::Running));
+    assert!(matches!(status, JobProcessStatus::Running));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
     let read = access_interact(JobHandle(handle.0.clone()), "\r", Duration::from_secs(2)).await;

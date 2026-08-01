@@ -49,7 +49,12 @@ fn run_container(command: &str) -> ShellResult {
     assert!(handle.is_none(), "shell did not finish: {command}");
     let status = match info.status() {
         JobStatus::Exited(code) => *code,
-        JobStatus::Running => panic!("shell was still running: {command}"),
+        JobStatus::RunningOutputSettled
+        | JobStatus::RunningScreenSampled
+        | JobStatus::RunningWaitElapsed => {
+            panic!("shell was still running: {command}")
+        }
+        JobStatus::Closed(code) => panic!("shell was closed with {code}: {command}"),
         JobStatus::NoExist => panic!("headlessterm worker disappeared: {command}"),
     };
     ShellResult {

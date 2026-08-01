@@ -60,9 +60,9 @@ impl PhiTool for ShellJobExecTool {
 
     fn description(&self) -> &str {
         if cfg!(windows) {
-            "Run a PowerShell command job."
+            "Run a PowerShell command as a persistent job. The result status distinguishes exited output, settled linear output, a sampled interactive screen, and maximum-wait expiry; use the returned handle to continue a running job."
         } else {
-            "Run a bash command job."
+            "Run a bash command as a persistent job. The result status distinguishes exited output, settled linear output, a sampled interactive screen, and maximum-wait expiry; use the returned handle to continue a running job."
         }
     }
 
@@ -121,7 +121,7 @@ impl PhiTool for ShellJobInteractTool {
     }
 
     fn description(&self) -> &str {
-        "Interact with a program that is already running under a local job handle and read its newly available output. Omit input to only read output. Provide an empty string to press Enter once. Non-empty input is submitted by appending one carriage return (CR), equivalent to pressing Enter once, when it has no trailing newline."
+        "Interact with a running job and consume its newly available output. Status running_output_settled means linear output became quiet but the job may produce more later. Status running_screen_sampled is a bounded snapshot of an interactive screen that may still be updating. Status running_wait_elapsed means the maximum wait elapsed, so output may be a stage snapshot and should be read again. Omit input to only read output; provide an empty string for pressing Enter once; non-empty unterminated input is submitted with one carriage return."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -140,7 +140,7 @@ impl PhiTool for ShellJobInteractTool {
                     "type": "integer",
                     "minimum": 0,
                     "default": DEFAULT_INTERACT_WAIT_MS,
-                    "description": "Maximum time to wait, in milliseconds, for the job to exit or for terminal output activity to settle. Output activity is used as a heuristic that meaningful new output is ready, so the call returns after the activity is followed by a quiet period. With no output activity, it waits for the full duration"
+                    "description": "Maximum time to wait, in milliseconds, for exit or settled output. If this limit wins, status is running_wait_elapsed and output may be a stage snapshot of a still-changing terminal"
                 }
             },
             "required": ["handle"],
@@ -228,7 +228,7 @@ impl PhiTool for ShellJobCloseTool {
     }
 
     fn description(&self) -> &str {
-        "Read current output, stop a local job, and release its resources."
+        "Read current output, stop a local job, and release its resources. A successfully stopped process returns status closed with its final exit code."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -284,8 +284,11 @@ fn response(
 ) -> ToolCallResponse {
     let (status, output, truncated, waited) = info.into_parts();
     let (status_name, exit_code, running) = match status {
-        JobStatus::Running => ("running", None, true),
+        JobStatus::RunningOutputSettled => ("running_output_settled", None, true),
+        JobStatus::RunningScreenSampled => ("running_screen_sampled", None, true),
+        JobStatus::RunningWaitElapsed => ("running_wait_elapsed", None, true),
         JobStatus::Exited(code) => ("exited", Some(code), false),
+        JobStatus::Closed(code) => ("closed", Some(code), false),
         JobStatus::NoExist => ("not_found", None, false),
     };
     let handle = if running {
@@ -356,7 +359,7 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let info = JobInfo::new(
-            JobStatus::Running,
+            JobStatus::RunningWaitElapsed,
             String::new(),
             false,
             Duration::from_millis(123),
@@ -370,6 +373,7 @@ mod tests {
         );
 
         assert_eq!(response.output.as_value()["waited_ms"], 123);
+        assert_eq!(response.output.as_value()["status"], "running_wait_elapsed");
         assert_eq!(response.output.as_value()["truncated"], false);
         assert!(response.output.as_value().get("output_truncated").is_none());
         assert!(response.output.as_value().get("screen").is_none());
@@ -386,6 +390,7 @@ mod tests {
 
         for (status, expected_status, expected_exit_code) in [
             (JobStatus::Exited(17), "exited", serde_json::json!(17)),
+            (JobStatus::Closed(9), "closed", serde_json::json!(9)),
             (JobStatus::NoExist, "not_found", serde_json::Value::Null),
         ] {
             let response = response(
@@ -397,6 +402,31 @@ mod tests {
 
             assert_eq!(response.output.as_value()["status"], expected_status);
             assert_eq!(response.output.as_value()["exit_code"], expected_exit_code);
+        }
+    }
+
+    #[test]
+    fn running_job_status_exposes_the_interaction_boundary() {
+        let request = ToolCallRequest {
+            id: "call-1".into(),
+            call_id: None,
+            name: "job_interact".into(),
+            arguments: serde_json::json!({}),
+        };
+
+        for (status, expected) in [
+            (JobStatus::RunningOutputSettled, "running_output_settled"),
+            (JobStatus::RunningScreenSampled, "running_screen_sampled"),
+            (JobStatus::RunningWaitElapsed, "running_wait_elapsed"),
+        ] {
+            let response = response(
+                &request,
+                "job_interact",
+                JobInfo::new(status, String::new(), false, Duration::ZERO),
+                Some(JobHandle("mira-kest".into())),
+            );
+            assert_eq!(response.output.as_value()["status"], expected);
+            assert_eq!(response.output.as_value()["handle"], "mira-kest");
         }
     }
 }

@@ -14,12 +14,31 @@ const OUTPUT_SETTLE_PERIOD: Duration = POLL_INTERVAL.saturating_mul(30);
 
 #[derive(Default)]
 pub(crate) struct InteractionState {
-    settle_deadline: Option<Instant>,
+    settle_deadline: Option<SettleDeadline>,
 }
 
 pub(crate) struct TerminalInteraction {
     wait_deadline: Option<Instant>,
-    settle_deadline: Option<Instant>,
+    settle_deadline: Option<SettleDeadline>,
+}
+
+pub(crate) enum InteractionBoundary {
+    Pending(Duration),
+    OutputSettled,
+    ScreenSampled,
+    WaitElapsed,
+}
+
+#[derive(Clone, Copy)]
+struct SettleDeadline {
+    at: Instant,
+    kind: SettleKind,
+}
+
+#[derive(Clone, Copy)]
+enum SettleKind {
+    OutputSettled,
+    ScreenSampled,
 }
 
 #[derive(Clone, Copy)]
@@ -61,14 +80,32 @@ impl TerminalInteraction {
         update_settle_deadline(&mut self.settle_deadline, classify(observation), at);
     }
 
+    #[cfg(test)]
     pub(crate) fn remaining(&self) -> Option<Duration> {
         self.remaining_at(Instant::now())
     }
 
+    #[cfg(test)]
     pub(crate) fn remaining_at(&self, now: Instant) -> Option<Duration> {
-        let wait = remaining(self.wait_deadline, now)?;
-        let settle = remaining(self.settle_deadline, now)?;
-        Some(wait.min(settle))
+        match self.boundary_at(now) {
+            InteractionBoundary::Pending(remaining) => Some(remaining),
+            InteractionBoundary::OutputSettled
+            | InteractionBoundary::ScreenSampled
+            | InteractionBoundary::WaitElapsed => None,
+        }
+    }
+
+    pub(crate) fn boundary(&self) -> InteractionBoundary {
+        self.boundary_at(Instant::now())
+    }
+
+    pub(crate) fn boundary_at(&self, now: Instant) -> InteractionBoundary {
+        match (self.wait_deadline, self.settle_deadline) {
+            (Some(wait), Some(settle)) if settle.at <= wait => settle_boundary(settle, now),
+            (Some(wait), _) => deadline_boundary(wait, now, InteractionBoundary::WaitElapsed),
+            (None, Some(settle)) => settle_boundary(settle, now),
+            (None, None) => InteractionBoundary::Pending(Duration::MAX),
+        }
     }
 }
 
@@ -87,23 +124,49 @@ fn classify(observation: &TerminalObservation) -> ObservationClass {
     }
 }
 
-fn update_settle_deadline(deadline: &mut Option<Instant>, class: ObservationClass, at: Instant) {
+fn update_settle_deadline(
+    deadline: &mut Option<SettleDeadline>,
+    class: ObservationClass,
+    at: Instant,
+) {
     match class {
         ObservationClass::LinearChange => {
-            *deadline = at.checked_add(OUTPUT_SETTLE_PERIOD);
+            *deadline = at
+                .checked_add(OUTPUT_SETTLE_PERIOD)
+                .map(|at| SettleDeadline {
+                    at,
+                    kind: SettleKind::OutputSettled,
+                });
         }
         ObservationClass::InteractiveScreenChange => {
             if deadline.is_none() {
-                *deadline = at.checked_add(OUTPUT_SETTLE_PERIOD);
+                *deadline = at
+                    .checked_add(OUTPUT_SETTLE_PERIOD)
+                    .map(|at| SettleDeadline {
+                        at,
+                        kind: SettleKind::ScreenSampled,
+                    });
             }
         }
         ObservationClass::None | ObservationClass::RepeatedDisplay => {}
     }
 }
 
-fn remaining(deadline: Option<Instant>, now: Instant) -> Option<Duration> {
-    match deadline {
-        Some(deadline) => deadline.checked_duration_since(now),
-        None => Some(Duration::MAX),
+fn settle_boundary(deadline: SettleDeadline, now: Instant) -> InteractionBoundary {
+    let elapsed = match deadline.kind {
+        SettleKind::OutputSettled => InteractionBoundary::OutputSettled,
+        SettleKind::ScreenSampled => InteractionBoundary::ScreenSampled,
+    };
+    deadline_boundary(deadline.at, now, elapsed)
+}
+
+fn deadline_boundary(
+    deadline: Instant,
+    now: Instant,
+    elapsed: InteractionBoundary,
+) -> InteractionBoundary {
+    match deadline.checked_duration_since(now) {
+        Some(remaining) if !remaining.is_zero() => InteractionBoundary::Pending(remaining),
+        _ => elapsed,
     }
 }

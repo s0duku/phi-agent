@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::headlessterm::ReturnWhen;
-use crate::headlessterm::worker::interaction::InteractionState;
+use crate::headlessterm::worker::interaction::{InteractionBoundary, InteractionState};
 use crate::headlessterm::worker::lease::ActivityExpiration;
 use crate::headlessterm::worker::state::TerminalObservation;
 
@@ -57,6 +57,31 @@ fn linear_output_adds_a_shorter_settle_deadline() {
         interaction.remaining_at(now + Duration::from_millis(100)),
         Some(Duration::from_millis(2900))
     );
+}
+
+#[test]
+fn interaction_reports_which_completion_boundary_won() {
+    let now = Instant::now();
+
+    let wait_elapsed = InteractionState::default().begin_at(Duration::from_secs(1), now);
+    assert!(matches!(
+        wait_elapsed.boundary_at(now + Duration::from_secs(1)),
+        InteractionBoundary::WaitElapsed
+    ));
+
+    let mut output_settled = InteractionState::default().begin_at(Duration::from_secs(5), now);
+    output_settled.observe(&TerminalObservation::from_facts(true, true, false), now);
+    assert!(matches!(
+        output_settled.boundary_at(now + Duration::from_secs(3)),
+        InteractionBoundary::OutputSettled
+    ));
+
+    let mut screen_sampled = InteractionState::default().begin_at(Duration::from_secs(5), now);
+    screen_sampled.observe(&TerminalObservation::from_facts(true, true, true), now);
+    assert!(matches!(
+        screen_sampled.boundary_at(now + Duration::from_secs(3)),
+        InteractionBoundary::ScreenSampled
+    ));
 }
 
 #[test]

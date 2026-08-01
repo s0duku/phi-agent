@@ -11,7 +11,7 @@ pub(crate) enum Request {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Response {
     Written {
-        status: Status,
+        status: ProcessStatus,
     },
     Terminal {
         status: Status,
@@ -20,13 +20,22 @@ pub(crate) enum Response {
         waited_ms: u64,
     },
     Failed {
-        status: Status,
+        status: ProcessStatus,
         error: HeadlessTermError,
     },
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum Status {
+    RunningOutputSettled,
+    RunningScreenSampled,
+    RunningWaitElapsed,
+    Exited(i8),
+    Closed(i8),
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(crate) enum ProcessStatus {
     Running,
     Exited(i8),
 }

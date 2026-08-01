@@ -7,7 +7,7 @@ use crate::headlessterm::job::{HeadlessTermError, JobAccess, TerminalCommand, Wo
 
 use super::lease::ActivityExpiration;
 use super::process::RunningJob;
-use super::protocol::{Request, Response, Status};
+use super::protocol::{ProcessStatus, Request, Response, Status};
 use super::startup::WorkerLaunchReport;
 use super::state::PendingTerminalResponse;
 use super::{interaction, rpc};
@@ -115,7 +115,7 @@ struct ServeOutcome {
 }
 
 enum OperationResult {
-    Written(Status),
+    Written(ProcessStatus),
     Terminal {
         status: Status,
         waited: Duration,
@@ -166,7 +166,7 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
         Err(error) => {
             let status = job
                 .refresh_status()?
-                .map_or(Status::Running, Status::Exited);
+                .map_or(ProcessStatus::Running, ProcessStatus::Exited);
             let response = Response::Failed {
                 status,
                 error: HeadlessTermError::operation(error),
@@ -174,8 +174,8 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
             return write_response(stream, response, None, close_requested, false, job);
         }
     };
-    let (response, delivery, status, terminal_response) = match result {
-        OperationResult::Written(status) => (Response::Written { status }, None, status, false),
+    let (response, delivery, terminal_finished) = match result {
+        OperationResult::Written(status) => (Response::Written { status }, None, false),
         OperationResult::Terminal {
             status,
             waited,
@@ -190,8 +190,7 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
                     waited_ms: duration_millis(waited),
                 },
                 Some(delivery),
-                status,
-                true,
+                matches!(status, Status::Exited(_) | Status::Closed(_)) && job.reached_eof(),
             )
         }
     };
@@ -200,7 +199,7 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
         response,
         delivery,
         close_requested,
-        terminal_response && matches!(status, Status::Exited(_)) && job.reached_eof(),
+        terminal_finished,
         job,
     )
 }

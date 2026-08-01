@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use super::interaction::{self, InteractionState};
-use super::protocol::Status;
+use super::interaction::{self, InteractionBoundary, InteractionState};
+use super::protocol::{ProcessStatus, Status};
 use super::pty::PtySession;
 use crate::headlessterm::job::{ReturnWhen, TerminalCommand};
 
@@ -80,37 +80,50 @@ impl RunningJob {
                 self.observe_after_exit()?;
                 return self.complete_interaction(Status::Exited(code), started_at.elapsed());
             }
-            let Some(remaining) = interaction.remaining() else {
-                return self.complete_interaction(Status::Running, started_at.elapsed());
-            };
-            std::thread::sleep(remaining.min(POLL_INTERVAL));
+            match interaction.boundary() {
+                InteractionBoundary::Pending(remaining) => {
+                    std::thread::sleep(remaining.min(POLL_INTERVAL));
+                }
+                InteractionBoundary::OutputSettled => {
+                    return self
+                        .complete_interaction(Status::RunningOutputSettled, started_at.elapsed());
+                }
+                InteractionBoundary::ScreenSampled => {
+                    return self
+                        .complete_interaction(Status::RunningScreenSampled, started_at.elapsed());
+                }
+                InteractionBoundary::WaitElapsed => {
+                    return self
+                        .complete_interaction(Status::RunningWaitElapsed, started_at.elapsed());
+                }
+            }
         }
     }
 
-    pub(super) fn write(&mut self, input: &[u8]) -> Result<Status, String> {
+    pub(super) fn write(&mut self, input: &[u8]) -> Result<ProcessStatus, String> {
         if !input.is_empty() {
             self.pty.write_all(input)?;
         }
         self.refresh_status()?
-            .map(Status::Exited)
-            .map_or(Ok(Status::Running), Ok)
+            .map(ProcessStatus::Exited)
+            .map_or(Ok(ProcessStatus::Running), Ok)
     }
 
     pub(super) fn close(&mut self) -> Result<Status, String> {
         self.observe_terminal()?;
         if let Some(code) = self.refresh_status()? {
             self.observe_after_exit()?;
-            return Ok(Status::Exited(code));
+            return Ok(Status::Closed(code));
         }
 
         self.pty.terminate(false)?;
         if let Some(code) = self.wait_for_exit(CLOSE_GRACE)? {
-            return Ok(Status::Exited(code));
+            return Ok(Status::Closed(code));
         }
 
         self.pty.terminate(true)?;
         self.wait_for_exit(FORCE_CLOSE_GRACE)?
-            .map(Status::Exited)
+            .map(Status::Closed)
             .ok_or_else(|| "job did not stop".to_owned())
     }
 

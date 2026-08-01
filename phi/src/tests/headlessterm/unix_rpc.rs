@@ -12,7 +12,7 @@ const EXPIRATION: Duration = Duration::from_secs(5);
 #[test]
 fn repeated_serial_interactions_keep_one_container_consistent() {
     let (handle, info) = exec_job("cat", Duration::ZERO, EXPIRATION).unwrap();
-    assert!(matches!(info.status(), JobStatus::Running));
+    assert!(matches!(info.status(), JobStatus::RunningWaitElapsed));
     let handle = handle.unwrap();
     assert!(info.outputs().is_empty());
 
@@ -29,7 +29,7 @@ fn repeated_serial_interactions_keep_one_container_consistent() {
                 Duration::from_millis(2),
             )
             .unwrap();
-            assert!(matches!(interaction.status(), JobStatus::Running));
+            assert!(interaction.is_running());
             output.push_str(interaction.outputs());
             if output.contains(&expected) {
                 break;
@@ -74,7 +74,7 @@ fn initial_response_preserves_output_beyond_the_visible_terminal_page() {
 #[test]
 fn maximum_wait_value_still_returns_when_the_shell_exits() {
     let (handle, info) = exec_job("sleep 2; exit 17", Duration::ZERO, EXPIRATION).unwrap();
-    assert!(matches!(info.status(), JobStatus::Running));
+    assert!(matches!(info.status(), JobStatus::RunningWaitElapsed));
     let handle = handle.unwrap();
 
     let request = Request::Access(JobAccess::Interact {
@@ -94,4 +94,20 @@ fn maximum_wait_value_still_returns_when_the_shell_exits() {
         panic!("interact did not return the expected exit status");
     };
     assert!(waited_ms >= 1_500);
+}
+
+#[test]
+fn continuously_changing_output_reports_wait_elapsed() {
+    let (handle, initial) = exec_job(
+        "i=0; while :; do printf 'tick-%s\\n' \"$i\"; i=$((i + 1)); sleep 0.02; done",
+        Duration::from_millis(250),
+        EXPIRATION,
+    )
+    .unwrap();
+
+    assert!(matches!(initial.status(), JobStatus::RunningWaitElapsed));
+    assert!(!initial.outputs().is_empty());
+
+    let closed = crate::headlessterm::worker::client::close_job(handle.unwrap()).unwrap();
+    assert!(matches!(closed.status(), JobStatus::Closed(_)));
 }

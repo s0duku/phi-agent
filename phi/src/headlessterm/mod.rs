@@ -7,8 +7,8 @@ use std::time::Duration;
 use clap::{Args, Subcommand};
 
 pub use job::{
-    DEFAULT_TRY_WAIT, HeadlessTermError, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus,
-    ReturnWhen, TerminalCommand, WorkerLaunchStage,
+    DEFAULT_TRY_WAIT, HeadlessTermError, JobAccess, JobAccessResult, JobHandle, JobInfo,
+    JobProcessStatus, JobStatus, ReturnWhen, TerminalCommand, WorkerLaunchStage,
 };
 
 /// Client for Phi's persistent headlessterm worker.
@@ -188,8 +188,11 @@ fn render(info: JobInfo, handle: Option<&JobHandle>) -> Result<(), String> {
         .write_all(info.outputs().as_bytes())
         .map_err(|error| error.to_string())?;
     let status = match info.status() {
-        JobStatus::Running => "running".to_owned(),
+        JobStatus::RunningOutputSettled => "running-output-settled".to_owned(),
+        JobStatus::RunningScreenSampled => "running-screen-sampled".to_owned(),
+        JobStatus::RunningWaitElapsed => "running-wait-elapsed".to_owned(),
         JobStatus::Exited(code) => format!("exited:{code}"),
+        JobStatus::Closed(code) => format!("closed:{code}"),
         JobStatus::NoExist => "not-found".to_owned(),
     };
     match handle {

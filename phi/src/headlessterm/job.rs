@@ -118,7 +118,18 @@ pub enum ReturnWhen {
     OutputSettled { try_wait: Duration },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JobStatus {
+    RunningOutputSettled,
+    RunningScreenSampled,
+    RunningWaitElapsed,
+    Exited(i8),
+    Closed(i8),
+    NoExist,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobProcessStatus {
     Running,
     Exited(i8),
     NoExist,
@@ -147,7 +158,7 @@ pub enum JobAccess {
 }
 
 pub enum JobAccessResult {
-    Written(JobStatus),
+    Written(JobProcessStatus),
     Interacted(JobInfo),
 }
 
@@ -253,6 +264,15 @@ impl JobInfo {
 
     pub fn status(&self) -> &JobStatus {
         &self.status
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(
+            self.status,
+            JobStatus::RunningOutputSettled
+                | JobStatus::RunningScreenSampled
+                | JobStatus::RunningWaitElapsed
+        )
     }
 
     pub fn outputs(&self) -> &str {
