@@ -667,8 +667,10 @@ fn persist_outcome_session(
 #[derive(Parser)]
 #[command(
     name = "phi",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Literally A CLI Agent",
-    before_help = banner::startup_banner()
+    before_help = banner::startup_banner(),
+    after_help = concat!("Version: ", env!("CARGO_PKG_VERSION"))
 )]
 struct Cli {
     // Home loading is a CLI concern rather than an agent-builder side effect.

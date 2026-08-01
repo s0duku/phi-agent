@@ -1,4 +1,4 @@
-use clap::CommandFactory;
+use clap::{CommandFactory, Parser};
 
 use crate::{Cli, banner};
 
@@ -7,6 +7,21 @@ fn root_help_starts_with_banner() {
     let help = Cli::command().render_help().to_string();
 
     assert!(help.starts_with(banner::startup_banner()));
+    assert!(help.contains(concat!("Version: ", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn cli_version_comes_from_the_phi_package_manifest() {
+    let error = match Cli::try_parse_from(["phi", "--version"]) {
+        Ok(_) => panic!("--version should exit after rendering the package version"),
+        Err(error) => error,
+    };
+    assert_eq!(error.exit_code(), 0);
+    assert!(
+        error
+            .to_string()
+            .contains(concat!("phi ", env!("CARGO_PKG_VERSION")))
+    );
 }
 
 #[test]
