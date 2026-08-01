@@ -34,6 +34,39 @@ fn direct_subcommand_help_starts_with_banner() {
         .to_string();
 
     assert!(help.starts_with(banner::startup_banner()));
+    assert!(help.contains("--no-exec"));
+}
+
+#[test]
+fn agent_commands_accept_no_exec() {
+    for command in ["run", "yolo", "step"] {
+        Cli::try_parse_from(["phi", command, "--no-exec", "--user", "hello"])
+            .unwrap_or_else(|error| panic!("{command} should accept --no-exec: {error}"));
+    }
+}
+
+#[test]
+fn no_exec_dominates_container_in_agent_command_options() {
+    let cli = Cli::try_parse_from([
+        "phi",
+        "step",
+        "--no-exec",
+        "--container",
+        "unused-container",
+        "--user",
+        "hello",
+    ])
+    .expect("step should accept executor options");
+    let crate::Command::Step(args) = cli.command else {
+        panic!("expected step command");
+    };
+    let command = crate::agent::PhiAgentCommand::from_step_args(
+        crate::agent::AgentCommandArgs::from(&args.base),
+    )
+    .expect("step command should build");
+
+    assert!(command.no_exec());
+    assert_eq!(command.container(), None);
 }
 
 #[test]

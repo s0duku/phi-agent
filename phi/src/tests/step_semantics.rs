@@ -26,6 +26,8 @@ struct SequenceProvider {
     responses: Mutex<VecDeque<PhiModelResponse>>,
 }
 
+struct HistoryDrivenProvider;
+
 #[async_trait]
 impl TestClient for EmptyProvider {
     async fn complete(
@@ -49,6 +51,31 @@ impl TestClient for SequenceProvider {
             .expect("response queue should be healthy")
             .pop_front()
             .ok_or_else(|| PhiAgentRuntimeError::provider_response("response queue exhausted"))
+    }
+}
+
+#[async_trait]
+impl TestClient for HistoryDrivenProvider {
+    async fn complete(
+        &self,
+        _request: &PhiProviderCall,
+        messages: &PhiHistory,
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
+        let assistant_count = messages
+            .iter()
+            .filter(|message| matches!(message, PhiMessage::Assistant(_)))
+            .count();
+        if assistant_count == 0 {
+            Ok(PhiModelResponse::new(
+                vec![PhiMessage::assistant("first")],
+                PhiModelTurnState::Continue,
+            ))
+        } else {
+            Ok(PhiModelResponse::new(
+                vec![PhiMessage::assistant("second")],
+                PhiModelTurnState::Complete,
+            ))
+        }
     }
 }
 
@@ -80,6 +107,30 @@ impl PhiModule for RejectFirstModelResponseModule {
         }
         Ok(())
     }
+}
+
+fn compact_equivalence_agent(session: Session, command: PhiAgentCommand) -> crate::agent::PhiAgent {
+    let render = crate::render::PhiRender::from_test_client(Arc::new(HistoryDrivenProvider))
+        .with_compact_override(Arc::new(|_history| {
+            Ok(PhiHistory::from_messages(vec![PhiMessage::user(
+                "compacted context",
+            )]))
+        }));
+    crate::agent::PhiAgent::builder(session, command)
+        .with_home(Arc::new(LocalPhiHome::new(
+            super::support::unique_test_home(),
+        )))
+        .with_model_defaults(test_model_defaults())
+        .with_render(render)
+        .with_module(
+            crate::features::governance::auto_compact::AutoCompactPolicy::with_threshold(100),
+        )
+        .build()
+        .expect("compact equivalence agent should build")
+}
+
+fn serialized_session(session: &Session) -> serde_json::Value {
+    serde_json::to_value(session).expect("session should serialize")
 }
 
 fn pending_tool_session(
@@ -361,4 +412,160 @@ async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() 
         outcome.session.step(),
         PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
     ));
+}
+
+#[tokio::test]
+async fn yolo_step_updates_match_rebuilt_step_agents_at_every_frame() {
+    let initial = Session::from_root(
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
+        vec![PhiMessage::user("inspect files")],
+    );
+    let mut yolo = crate::agent::PhiAgent::builder(
+        initial.clone(),
+        PhiAgentCommand::Yolo(PhiAgentCommand::yolo()),
+    )
+    .with_home(Arc::new(LocalPhiHome::new(
+        super::support::unique_test_home(),
+    )))
+    .with_model_defaults(test_model_defaults())
+    .with_client(Arc::new(HistoryDrivenProvider))
+    .build()
+    .expect("yolo agent should build");
+
+    let mut rebuilt = initial;
+    for _ in 0..4 {
+        yolo.step().await;
+
+        let rebuilt_agent = crate::agent::PhiAgent::builder(
+            rebuilt,
+            PhiAgentCommand::Step(PhiAgentCommand::step()),
+        )
+        .with_home(Arc::new(LocalPhiHome::new(
+            super::support::unique_test_home(),
+        )))
+        .with_model_defaults(test_model_defaults())
+        .with_client(Arc::new(HistoryDrivenProvider))
+        .build()
+        .expect("rebuilt step agent should build");
+        let rebuilt_outcome = rebuilt_agent.run_single_step().await;
+        rebuilt = rebuilt_outcome.session;
+
+        assert_eq!(
+            serde_json::to_value(yolo.session()).expect("yolo session should serialize"),
+            serde_json::to_value(&rebuilt).expect("rebuilt session should serialize"),
+            "yolo and rebuilt step sessions diverged"
+        );
+
+        if matches!(
+            rebuilt.step(),
+            PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+        ) {
+            break;
+        }
+    }
+
+    assert!(matches!(
+        yolo.session().step(),
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+    ));
+    assert!(matches!(
+        rebuilt.step(),
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+    ));
+}
+
+#[tokio::test]
+async fn compact_trajectory_matches_yolo_run_and_rebuilt_step_agents() {
+    let initial = Session::from_root(
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
+        vec![PhiMessage::user("x".repeat(1_000))],
+    );
+
+    let mut rebuilt_step_session = initial.clone();
+    let mut step_trajectory = Vec::new();
+    for _ in 0..8 {
+        rebuilt_step_session = compact_equivalence_agent(
+            rebuilt_step_session,
+            PhiAgentCommand::Step(PhiAgentCommand::step()),
+        )
+        .run_single_step()
+        .await
+        .session;
+        step_trajectory.push(rebuilt_step_session.clone());
+        if matches!(
+            rebuilt_step_session.step(),
+            PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+        ) {
+            break;
+        }
+    }
+
+    assert_eq!(step_trajectory.len(), 5);
+    assert!(matches!(
+        step_trajectory[0].step(),
+        PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+    ));
+    assert!(matches!(
+        step_trajectory[1].step(),
+        PhiAgentStep::ReAct(PhiReActStep::Compacted)
+    ));
+    assert!(matches!(
+        step_trajectory[2].step(),
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+    ));
+    assert!(matches!(
+        step_trajectory[3].step(),
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+    ));
+    assert!(matches!(
+        step_trajectory[4].step(),
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+    ));
+
+    let mut persistent_yolo = compact_equivalence_agent(
+        initial.clone(),
+        PhiAgentCommand::Yolo(PhiAgentCommand::yolo()),
+    );
+    for expected in &step_trajectory {
+        persistent_yolo.step().await;
+        assert_eq!(
+            serialized_session(&persistent_yolo.session()),
+            serialized_session(expected),
+            "persistent yolo step diverged from rebuilt step trajectory"
+        );
+    }
+
+    let yolo_final = compact_equivalence_agent(
+        initial.clone(),
+        PhiAgentCommand::Yolo(PhiAgentCommand::yolo()),
+    )
+    .run_to_completed()
+    .await
+    .session;
+    assert_eq!(
+        serialized_session(&yolo_final),
+        serialized_session(step_trajectory.last().expect("trajectory should finish"))
+    );
+
+    let first_run =
+        compact_equivalence_agent(initial, PhiAgentCommand::Run(PhiAgentCommand::run()))
+            .run_to_completion()
+            .await
+            .session;
+    assert_eq!(
+        serialized_session(&first_run),
+        serialized_session(&step_trajectory[0]),
+        "run should expose the request-compact boundary"
+    );
+
+    let final_run =
+        compact_equivalence_agent(first_run, PhiAgentCommand::Run(PhiAgentCommand::run()))
+            .run_to_completion()
+            .await
+            .session;
+    assert_eq!(
+        serialized_session(&final_run),
+        serialized_session(step_trajectory.last().expect("trajectory should finish")),
+        "repeated run should reach the same TurnEnd session"
+    );
 }

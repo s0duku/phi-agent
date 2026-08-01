@@ -304,7 +304,7 @@ impl TestClient for ModelResponseProvider {
 }
 
 #[tokio::test]
-async fn request_provider_merges_custom_tools_from_config() {
+async fn no_exec_request_provider_keeps_only_custom_tools_from_config() {
     let _lock = env_lock();
     let root = unique_temp_dir("phi-request-complete-tools");
     std::fs::create_dir_all(&root).expect("temp home root should be creatable");
@@ -322,7 +322,9 @@ async fn request_provider_merges_custom_tools_from_config() {
     );
     let outcome = crate::agent::PhiAgent::builder(
         session,
-        crate::agent::PhiAgentCommand::Step(crate::agent::PhiAgentCommand::step()),
+        crate::agent::PhiAgentCommand::Step(
+            crate::agent::PhiAgentCommand::step().with_no_exec(true),
+        ),
     )
     .with_home(Arc::new(LocalPhiHome::new(root.clone())))
     .with_model_defaults(test_model_defaults())
@@ -340,13 +342,8 @@ async fn request_provider_merges_custom_tools_from_config() {
         .expect("request capture mutex should be healthy")
         .clone()
         .expect("provider should receive a request");
-    assert!(
-        request
-            .tools
-            .iter()
-            .any(|tool| tool.name == "external_lookup"),
-        "custom tool definition should be merged into the request"
-    );
+    assert_eq!(request.tools.len(), 1);
+    assert_eq!(request.tools[0].name, "external_lookup");
     assert_eq!(
         outcome.session.history(),
         &[PhiMessage::user("hello"), PhiMessage::assistant("ok")]

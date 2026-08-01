@@ -12,6 +12,7 @@
 
 pub mod agent;
 mod banner;
+mod cli;
 pub mod config;
 pub mod error;
 pub mod executor;
@@ -31,7 +32,6 @@ mod tests;
 
 use std::{
     any::Any,
-    collections::BTreeMap,
     future::{Future, poll_fn},
     io::{self, IsTerminal, Read},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
@@ -178,7 +178,7 @@ async fn run_step_with_input(
     let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::StepCommandInput {
-            args: agent::StepCommandArgs::from(&args),
+            args: agent::StepCommandArgs::from(&args.base),
         })?,
         home,
     )
@@ -640,12 +640,7 @@ fn collect_effective_input_messages(
         messages.push(PhiMessage::user(text.clone()));
     }
 
-    messages.extend(
-        args.input_messages
-            .iter()
-            .cloned()
-            .map(InputMessage::into_message),
-    );
+    messages.extend(args.messages.as_slice().iter().cloned());
     messages
 }
 
@@ -734,72 +729,46 @@ struct ProbeArgs {
 #[derive(Args, Default)]
 struct DoctorArgs {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InputRole {
-    User,
-    Assistant,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct InputMessage {
-    role: InputRole,
-    text: String,
-}
-
-impl InputMessage {
-    fn into_message(self) -> PhiMessage {
-        match self.role {
-            InputRole::User => PhiMessage::user(self.text),
-            InputRole::Assistant => PhiMessage::assistant(self.text),
-        }
-    }
-}
-
 #[derive(Default)]
 struct AgentCliArgs {
     session_path: Option<PathBuf>,
     quiet: bool,
+    no_exec: bool,
+    max_model_request_retries: Option<usize>,
+    template: Option<String>,
+    container: Option<String>,
     plugin_args: Vec<String>,
-    input_messages: Vec<InputMessage>,
+    messages: cli::MessageArgs,
 }
 
 #[derive(Default)]
 struct RunArgs {
     base: AgentCliArgs,
     max_steps: Option<usize>,
-    max_model_request_retries: Option<usize>,
-    template: Option<String>,
-    container: Option<String>,
 }
 
 #[derive(Default)]
 struct StepArgs {
     base: AgentCliArgs,
-    max_model_request_retries: Option<usize>,
-    template: Option<String>,
-    container: Option<String>,
 }
 
 impl From<&RunArgs> for agent::RunCommandArgs {
     fn from(value: &RunArgs) -> Self {
         Self {
-            quiet: value.base.quiet,
+            options: agent::AgentCommandArgs::from(&value.base),
             max_steps: value.max_steps,
-            max_model_request_retries: value.max_model_request_retries,
-            template: value.template.clone(),
-            plugin_args: value.base.plugin_args.clone(),
-            container: value.container.clone(),
         }
     }
 }
 
-impl From<&StepArgs> for agent::StepCommandArgs {
-    fn from(value: &StepArgs) -> Self {
+impl From<&AgentCliArgs> for agent::AgentCommandArgs {
+    fn from(value: &AgentCliArgs) -> Self {
         Self {
-            quiet: value.base.quiet,
+            quiet: value.quiet,
+            no_exec: value.no_exec,
             max_model_request_retries: value.max_model_request_retries,
             template: value.template.clone(),
-            plugin_args: value.base.plugin_args.clone(),
+            plugin_args: value.plugin_args.clone(),
             container: value.container.clone(),
         }
     }
@@ -825,9 +794,6 @@ impl FromArgMatches for RunArgs {
         Ok(Self {
             base: parse_agent_cli_args(matches),
             max_steps: matches.remove_one::<usize>("max_steps"),
-            max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
-            template: matches.remove_one::<String>("template"),
-            container: matches.remove_one::<String>("container"),
         })
     }
 
@@ -841,41 +807,20 @@ impl FromArgMatches for RunArgs {
         if let Some(max_steps) = matches.remove_one::<usize>("max_steps") {
             self.max_steps = Some(max_steps);
         }
-        if let Some(max_model_request_retries) =
-            matches.remove_one::<usize>("max_model_request_retries")
-        {
-            self.max_model_request_retries = Some(max_model_request_retries);
-        }
-        if let Some(template) = matches.remove_one::<String>("template") {
-            self.template = Some(template);
-        }
         Ok(())
     }
 }
 
 impl Args for RunArgs {
     fn augment_args(cmd: ClapCommand) -> ClapCommand {
-        add_agent_cli_args(cmd)
-            .arg(
+        add_agent_cli_args(
+            cmd.arg(
                 Arg::new("max_steps")
                     .long("max-steps")
                     .value_name("N")
                     .value_parser(clap::value_parser!(usize)),
-            )
-            .arg(
-                Arg::new("max_model_request_retries")
-                    .long("max-model-request-retries")
-                    .value_name("N")
-                    .value_parser(clap::value_parser!(usize)),
-            )
-            .arg(Arg::new("template").long("template").value_name("NAME"))
-            .arg(Arg::new("container").long("container").value_name("NAME"))
-            .arg(
-                Arg::new("plugin_args")
-                    .raw(true)
-                    .num_args(0..)
-                    .value_name("PLUGIN_ARGS"),
-            )
+            ),
+        )
     }
 
     fn augment_args_for_update(cmd: ClapCommand) -> ClapCommand {
@@ -892,9 +837,6 @@ impl FromArgMatches for StepArgs {
     fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, ClapError> {
         Ok(Self {
             base: parse_agent_cli_args(matches),
-            max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
-            template: matches.remove_one::<String>("template"),
-            container: matches.remove_one::<String>("container"),
         })
     }
 
@@ -905,14 +847,6 @@ impl FromArgMatches for StepArgs {
 
     fn update_from_arg_matches_mut(&mut self, matches: &mut ArgMatches) -> Result<(), ClapError> {
         update_agent_cli_args(&mut self.base, matches);
-        if let Some(max_model_request_retries) =
-            matches.remove_one::<usize>("max_model_request_retries")
-        {
-            self.max_model_request_retries = Some(max_model_request_retries);
-        }
-        if let Some(template) = matches.remove_one::<String>("template") {
-            self.template = Some(template);
-        }
         Ok(())
     }
 }
@@ -920,20 +854,6 @@ impl FromArgMatches for StepArgs {
 impl Args for StepArgs {
     fn augment_args(cmd: ClapCommand) -> ClapCommand {
         add_agent_cli_args(cmd)
-            .arg(
-                Arg::new("max_model_request_retries")
-                    .long("max-model-request-retries")
-                    .value_name("N")
-                    .value_parser(clap::value_parser!(usize)),
-            )
-            .arg(Arg::new("template").long("template").value_name("NAME"))
-            .arg(Arg::new("container").long("container").value_name("NAME"))
-            .arg(
-                Arg::new("plugin_args")
-                    .raw(true)
-                    .num_args(0..)
-                    .value_name("PLUGIN_ARGS"),
-            )
     }
 
     fn augment_args_for_update(cmd: ClapCommand) -> ClapCommand {
@@ -941,22 +861,19 @@ impl Args for StepArgs {
     }
 }
 
-fn parse_input_messages(matches: &ArgMatches) -> Vec<InputMessage> {
-    let mut ordered = BTreeMap::new();
-    collect_messages(matches, "user", InputRole::User, &mut ordered);
-    collect_messages(matches, "assistant", InputRole::Assistant, &mut ordered);
-    ordered.into_values().collect()
-}
-
 fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
     AgentCliArgs {
         session_path: matches.remove_one::<PathBuf>("session_path"),
         quiet: matches.get_flag("quiet"),
+        no_exec: matches.get_flag("no_exec"),
+        max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
+        template: matches.remove_one::<String>("template"),
+        container: matches.remove_one::<String>("container"),
         plugin_args: matches
             .remove_many::<String>("plugin_args")
             .map(|values| values.collect())
             .unwrap_or_default(),
-        input_messages: parse_input_messages(matches),
+        messages: cli::MessageArgs::parse(matches),
     }
 }
 
@@ -965,61 +882,59 @@ fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
         target.session_path = Some(session_path);
     }
     target.quiet |= matches.get_flag("quiet");
+    target.no_exec |= matches.get_flag("no_exec");
+    if let Some(max_model_request_retries) =
+        matches.remove_one::<usize>("max_model_request_retries")
+    {
+        target.max_model_request_retries = Some(max_model_request_retries);
+    }
+    if let Some(template) = matches.remove_one::<String>("template") {
+        target.template = Some(template);
+    }
+    if let Some(container) = matches.remove_one::<String>("container") {
+        target.container = Some(container);
+    }
     target.plugin_args.extend(
         matches
             .remove_many::<String>("plugin_args")
             .map(|values| values.collect::<Vec<_>>())
             .unwrap_or_default(),
     );
-    target.input_messages.extend(parse_input_messages(matches));
+    target.messages.extend_from_matches(matches);
 }
 
 fn add_agent_cli_args(cmd: ClapCommand) -> ClapCommand {
-    cmd.arg(
-        Arg::new("session_path")
-            .value_name("SESSION")
-            .value_parser(clap::value_parser!(PathBuf)),
+    cli::MessageArgs::augment(
+        cmd.arg(
+            Arg::new("session_path")
+                .value_name("SESSION")
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("quiet")
+                .long("quiet")
+                .action(ArgAction::SetTrue)
+                .help("Disable human-readable stderr logs"),
+        )
+        .arg(
+            Arg::new("no_exec")
+                .long("no-exec")
+                .action(ArgAction::SetTrue)
+                .help("Disable all built-in and module-provided executable tools"),
+        )
+        .arg(
+            Arg::new("max_model_request_retries")
+                .long("max-model-request-retries")
+                .value_name("N")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(Arg::new("template").long("template").value_name("NAME"))
+        .arg(Arg::new("container").long("container").value_name("NAME"))
+        .arg(
+            Arg::new("plugin_args")
+                .raw(true)
+                .num_args(0..)
+                .value_name("PLUGIN_ARGS"),
+        ),
     )
-    .arg(
-        Arg::new("quiet")
-            .long("quiet")
-            .action(ArgAction::SetTrue)
-            .help("Disable human-readable stderr logs"),
-    )
-    .arg(
-        Arg::new("user")
-            .long("user")
-            .value_name("TEXT")
-            .action(ArgAction::Append),
-    )
-    .arg(
-        Arg::new("assistant")
-            .long("assistant")
-            .value_name("TEXT")
-            .action(ArgAction::Append),
-    )
-}
-
-fn collect_messages(
-    matches: &ArgMatches,
-    id: &str,
-    role: InputRole,
-    ordered: &mut BTreeMap<usize, InputMessage>,
-) {
-    let Some(values) = matches.get_many::<String>(id) else {
-        return;
-    };
-    let indices = matches
-        .indices_of(id)
-        .expect("values are present, so indices should exist");
-
-    for (text, index) in values.zip(indices) {
-        ordered.insert(
-            index,
-            InputMessage {
-                role,
-                text: text.clone(),
-            },
-        );
-    }
 }

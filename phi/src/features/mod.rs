@@ -234,18 +234,11 @@ fn loop_guard_config() -> LoopGuardConfig {
 }
 
 fn command_max_steps(command: &PhiAgentCommand) -> Option<usize> {
-    match command {
-        PhiAgentCommand::Run(command) | PhiAgentCommand::Yolo(command) => command.max_steps,
-        _ => None,
-    }
+    command.max_steps()
 }
 
 fn command_verbose(command: &PhiAgentCommand) -> bool {
-    match command {
-        PhiAgentCommand::Run(command) | PhiAgentCommand::Yolo(command) => !command.quiet,
-        PhiAgentCommand::Step(command) => !command.quiet,
-        _ => false,
-    }
+    command.verbose()
 }
 
 fn command_message_sender(
@@ -255,12 +248,5 @@ fn command_message_sender(
 }
 
 fn command_max_model_request_retries(command: &PhiAgentCommand) -> Option<usize> {
-    match command {
-        PhiAgentCommand::Run(command) | PhiAgentCommand::Yolo(command) => {
-            command.max_model_request_retries
-        }
-        PhiAgentCommand::Step(command) => command.max_model_request_retries,
-        PhiAgentCommand::Probe(command) => command.max_model_request_retries,
-        _ => None,
-    }
+    command.max_model_request_retries()
 }

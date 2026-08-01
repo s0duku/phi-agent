@@ -1,10 +1,11 @@
-use std::{collections::BTreeMap, collections::BTreeSet, io, path::PathBuf};
+use std::{collections::BTreeSet, io, path::PathBuf};
 
-use clap::{Arg, ArgAction, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
+use clap::{Arg, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
 use super::Session;
 use crate::{
     banner,
+    cli::MessageArgs,
     features::pretty_history,
     headlessterm::{HeadlessTerminal, JobHandle},
     message::{PhiMessage, PhiToolMessage},
@@ -59,7 +60,7 @@ pub struct SessionHistoryArgs {
 #[derive(Default)]
 pub struct SessionAppendArgs {
     pub file: Option<PathBuf>,
-    messages: Vec<PhiMessage>,
+    messages: MessageArgs,
 }
 
 #[derive(Args)]
@@ -88,7 +89,9 @@ pub async fn run(
 }
 
 fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
-    transform(args.file, |session| session.append_messages(args.messages))
+    transform(args.file, |session| {
+        session.append_messages(args.messages.into_messages())
+    })
 }
 
 fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -122,12 +125,9 @@ impl FromArgMatches for SessionAppendArgs {
     }
 
     fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, Error> {
-        let mut ordered = BTreeMap::new();
-        collect_messages(matches, "user", PhiMessage::user, &mut ordered);
-        collect_messages(matches, "assistant", PhiMessage::assistant, &mut ordered);
         Ok(Self {
             file: matches.remove_one("file"),
-            messages: ordered.into_values().collect(),
+            messages: MessageArgs::parse(matches),
         })
     }
 
@@ -144,45 +144,17 @@ impl FromArgMatches for SessionAppendArgs {
 
 impl Args for SessionAppendArgs {
     fn augment_args(command: Command) -> Command {
-        command
-            .arg(
+        MessageArgs::augment(
+            command.arg(
                 Arg::new("file")
                     .value_name("SESSION")
                     .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(
-                Arg::new("user")
-                    .long("user")
-                    .value_name("TEXT")
-                    .action(ArgAction::Append),
-            )
-            .arg(
-                Arg::new("assistant")
-                    .long("assistant")
-                    .value_name("TEXT")
-                    .action(ArgAction::Append),
-            )
+            ),
+        )
     }
 
     fn augment_args_for_update(command: Command) -> Command {
         Self::augment_args(command)
-    }
-}
-
-fn collect_messages(
-    matches: &ArgMatches,
-    id: &str,
-    construct: impl Fn(String) -> PhiMessage,
-    ordered: &mut BTreeMap<usize, PhiMessage>,
-) {
-    let Some(values) = matches.get_many::<String>(id) else {
-        return;
-    };
-    let indices = matches
-        .indices_of(id)
-        .expect("message values must retain their argument positions");
-    for (text, index) in values.zip(indices) {
-        ordered.insert(index, construct(text.clone()));
     }
 }
 

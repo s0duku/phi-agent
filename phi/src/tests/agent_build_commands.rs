@@ -75,6 +75,24 @@ fn commands_use_full_agent_build() {
 }
 
 #[test]
+fn no_exec_builds_an_empty_executor_without_loading_module_tools() {
+    let flags = Arc::new(Mutex::new(BuildFlags::default()));
+    let command = PhiAgentCommand::Step(PhiAgentCommand::step().with_no_exec(true));
+    let agent = PhiAgent::builder(Session::empty(), command)
+        .with_home(Arc::new(LocalPhiHome::new(unique_test_home())))
+        .with_module(BuildProbeModule {
+            flags: flags.clone(),
+        })
+        .build()
+        .expect("no-exec agent should build");
+
+    let observed = flags.lock().expect("flags mutex should lock");
+    assert!(observed.init_context_called);
+    assert!(!observed.module_tools_called);
+    assert!(agent.runtime().tool_definitions().is_empty());
+}
+
+#[test]
 fn doctor_report_includes_home_debug_information() {
     let root = unique_test_home();
     let agent = PhiAgent::builder(

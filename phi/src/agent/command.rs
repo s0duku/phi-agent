@@ -11,20 +11,27 @@ pub enum PhiAgentCommand {
 #[derive(Clone)]
 pub struct RunCommand {
     pub max_steps: Option<usize>,
-    pub max_model_request_retries: Option<usize>,
-    pub template: Option<String>,
-    pub plugin_args: Vec<String>,
-    pub container: Option<String>,
-    pub quiet: bool,
+    options: AgentCommandOptions,
 }
 
 #[derive(Clone)]
 pub struct StepCommand {
+    options: AgentCommandOptions,
+}
+
+#[derive(Clone)]
+struct AgentCommandOptions {
     pub max_model_request_retries: Option<usize>,
     pub template: Option<String>,
     pub plugin_args: Vec<String>,
-    pub container: Option<String>,
     pub quiet: bool,
+    executor: ExecutorOptions,
+}
+
+#[derive(Clone)]
+enum ExecutorOptions {
+    Enabled { container: Option<String> },
+    Disabled,
 }
 
 #[derive(Clone)]
@@ -39,21 +46,20 @@ pub struct DoctorCommand;
 pub struct HistoryCommand;
 
 pub struct RunCommandArgs {
-    pub quiet: bool,
+    pub options: AgentCommandArgs,
     pub max_steps: Option<usize>,
+}
+
+pub struct AgentCommandArgs {
+    pub quiet: bool,
+    pub no_exec: bool,
     pub max_model_request_retries: Option<usize>,
     pub template: Option<String>,
     pub plugin_args: Vec<String>,
     pub container: Option<String>,
 }
 
-pub struct StepCommandArgs {
-    pub quiet: bool,
-    pub max_model_request_retries: Option<usize>,
-    pub template: Option<String>,
-    pub plugin_args: Vec<String>,
-    pub container: Option<String>,
-}
+pub type StepCommandArgs = AgentCommandArgs;
 
 pub struct ProbeCommandArgs {
     pub max_model_request_retries: Option<usize>,
@@ -72,21 +78,13 @@ impl PhiAgentCommand {
     pub fn run() -> RunCommand {
         RunCommand {
             max_steps: None,
-            max_model_request_retries: Some(3),
-            template: None,
-            plugin_args: Vec::new(),
-            container: None,
-            quiet: false,
+            options: AgentCommandOptions::default(),
         }
     }
 
     pub fn step() -> StepCommand {
         StepCommand {
-            max_model_request_retries: Some(3),
-            template: None,
-            plugin_args: Vec::new(),
-            container: None,
-            quiet: false,
+            options: AgentCommandOptions::default(),
         }
     }
 
@@ -116,15 +114,10 @@ impl PhiAgentCommand {
         T: Into<RunCommandArgs>,
     {
         let args = args.into();
-        Ok(Self::Run(
-            Self::run()
-                .with_max_steps(max_steps.or(args.max_steps))
-                .with_max_model_request_retries(args.max_model_request_retries)
-                .with_template(args.template)
-                .with_plugin_args(args.plugin_args)
-                .with_container(args.container)
-                .with_quiet(args.quiet),
-        ))
+        Ok(Self::Run(RunCommand {
+            max_steps: max_steps.or(args.max_steps),
+            options: AgentCommandOptions::from(args.options),
+        }))
     }
 
     pub fn from_yolo_args<T>(
@@ -135,15 +128,10 @@ impl PhiAgentCommand {
         T: Into<RunCommandArgs>,
     {
         let args = args.into();
-        Ok(Self::Yolo(
-            Self::yolo()
-                .with_max_steps(max_steps.or(args.max_steps))
-                .with_max_model_request_retries(args.max_model_request_retries)
-                .with_template(args.template)
-                .with_plugin_args(args.plugin_args)
-                .with_container(args.container)
-                .with_quiet(args.quiet),
-        ))
+        Ok(Self::Yolo(RunCommand {
+            max_steps: max_steps.or(args.max_steps),
+            options: AgentCommandOptions::from(args.options),
+        }))
     }
 
     pub fn from_step_args<T>(args: T) -> Result<Self, Box<dyn std::error::Error>>
@@ -151,14 +139,9 @@ impl PhiAgentCommand {
         T: Into<StepCommandArgs>,
     {
         let args = args.into();
-        Ok(Self::Step(
-            Self::step()
-                .with_max_model_request_retries(args.max_model_request_retries)
-                .with_template(args.template)
-                .with_plugin_args(args.plugin_args)
-                .with_container(args.container)
-                .with_quiet(args.quiet),
-        ))
+        Ok(Self::Step(StepCommand {
+            options: AgentCommandOptions::from(args),
+        }))
     }
 
     pub fn from_probe_args<T>(args: T) -> Result<Self, Box<dyn std::error::Error>>
@@ -172,30 +155,88 @@ impl PhiAgentCommand {
     }
 
     pub fn plugin_args(&self) -> &[String] {
-        match self {
-            PhiAgentCommand::Run(command) => &command.plugin_args,
-            PhiAgentCommand::Yolo(command) => &command.plugin_args,
-            PhiAgentCommand::Step(command) => &command.plugin_args,
-            _ => &[],
-        }
+        self.options()
+            .map(|options| options.plugin_args.as_slice())
+            .unwrap_or_default()
     }
 
     pub fn container(&self) -> Option<&str> {
+        self.options().and_then(AgentCommandOptions::container)
+    }
+
+    pub fn template(&self) -> Option<&str> {
+        self.options()
+            .and_then(|options| options.template.as_deref())
+    }
+
+    pub(crate) fn no_exec(&self) -> bool {
+        self.options()
+            .is_some_and(|options| matches!(options.executor, ExecutorOptions::Disabled))
+    }
+
+    pub(crate) fn max_steps(&self) -> Option<usize> {
         match self {
-            PhiAgentCommand::Run(command) | PhiAgentCommand::Yolo(command) => {
-                command.container.as_deref()
-            }
-            PhiAgentCommand::Step(command) => command.container.as_deref(),
+            Self::Run(command) | Self::Yolo(command) => command.max_steps,
             _ => None,
         }
     }
 
-    pub fn template(&self) -> Option<&str> {
+    pub(crate) fn max_model_request_retries(&self) -> Option<usize> {
         match self {
-            PhiAgentCommand::Run(command) => command.template.as_deref(),
-            PhiAgentCommand::Yolo(command) => command.template.as_deref(),
-            PhiAgentCommand::Step(command) => command.template.as_deref(),
+            Self::Probe(command) => command.max_model_request_retries,
+            _ => self
+                .options()
+                .and_then(|options| options.max_model_request_retries),
+        }
+    }
+
+    pub(crate) fn verbose(&self) -> bool {
+        self.options().is_some_and(|options| !options.quiet)
+    }
+
+    fn options(&self) -> Option<&AgentCommandOptions> {
+        match self {
+            Self::Run(command) | Self::Yolo(command) => Some(&command.options),
+            Self::Step(command) => Some(&command.options),
             _ => None,
+        }
+    }
+}
+
+impl Default for AgentCommandOptions {
+    fn default() -> Self {
+        Self {
+            max_model_request_retries: Some(3),
+            template: None,
+            plugin_args: Vec::new(),
+            quiet: false,
+            executor: ExecutorOptions::Enabled { container: None },
+        }
+    }
+}
+
+impl From<AgentCommandArgs> for AgentCommandOptions {
+    fn from(args: AgentCommandArgs) -> Self {
+        let container = args.container.filter(|value| !value.trim().is_empty());
+        Self {
+            max_model_request_retries: args.max_model_request_retries,
+            template: args.template.filter(|value| !value.trim().is_empty()),
+            plugin_args: args.plugin_args,
+            quiet: args.quiet,
+            executor: if args.no_exec {
+                ExecutorOptions::Disabled
+            } else {
+                ExecutorOptions::Enabled { container }
+            },
+        }
+    }
+}
+
+impl AgentCommandOptions {
+    fn container(&self) -> Option<&str> {
+        match &self.executor {
+            ExecutorOptions::Enabled { container } => container.as_deref(),
+            ExecutorOptions::Disabled => None,
         }
     }
 }
@@ -220,27 +261,38 @@ impl RunCommand {
         mut self,
         max_model_request_retries: Option<usize>,
     ) -> Self {
-        self.max_model_request_retries = max_model_request_retries;
+        self.options.max_model_request_retries = max_model_request_retries;
         self
     }
 
     pub fn with_template(mut self, template: Option<String>) -> Self {
-        self.template = template.filter(|value| !value.trim().is_empty());
+        self.options.template = template.filter(|value| !value.trim().is_empty());
         self
     }
 
     pub fn with_quiet(mut self, quiet: bool) -> Self {
-        self.quiet = quiet;
+        self.options.quiet = quiet;
+        self
+    }
+
+    pub fn with_no_exec(mut self, no_exec: bool) -> Self {
+        if no_exec {
+            self.options.executor = ExecutorOptions::Disabled;
+        } else if matches!(self.options.executor, ExecutorOptions::Disabled) {
+            self.options.executor = ExecutorOptions::Enabled { container: None };
+        }
         self
     }
 
     pub fn with_plugin_args(mut self, plugin_args: Vec<String>) -> Self {
-        self.plugin_args = plugin_args;
+        self.options.plugin_args = plugin_args;
         self
     }
 
     pub fn with_container(mut self, container: Option<String>) -> Self {
-        self.container = container.filter(|value| !value.trim().is_empty());
+        self.options.executor = ExecutorOptions::Enabled {
+            container: container.filter(|value| !value.trim().is_empty()),
+        };
         self
     }
 }
@@ -250,27 +302,38 @@ impl StepCommand {
         mut self,
         max_model_request_retries: Option<usize>,
     ) -> Self {
-        self.max_model_request_retries = max_model_request_retries;
+        self.options.max_model_request_retries = max_model_request_retries;
         self
     }
 
     pub fn with_template(mut self, template: Option<String>) -> Self {
-        self.template = template.filter(|value| !value.trim().is_empty());
+        self.options.template = template.filter(|value| !value.trim().is_empty());
         self
     }
 
     pub fn with_quiet(mut self, quiet: bool) -> Self {
-        self.quiet = quiet;
+        self.options.quiet = quiet;
+        self
+    }
+
+    pub fn with_no_exec(mut self, no_exec: bool) -> Self {
+        if no_exec {
+            self.options.executor = ExecutorOptions::Disabled;
+        } else if matches!(self.options.executor, ExecutorOptions::Disabled) {
+            self.options.executor = ExecutorOptions::Enabled { container: None };
+        }
         self
     }
 
     pub fn with_plugin_args(mut self, plugin_args: Vec<String>) -> Self {
-        self.plugin_args = plugin_args;
+        self.options.plugin_args = plugin_args;
         self
     }
 
     pub fn with_container(mut self, container: Option<String>) -> Self {
-        self.container = container.filter(|value| !value.trim().is_empty());
+        self.options.executor = ExecutorOptions::Enabled {
+            container: container.filter(|value| !value.trim().is_empty()),
+        };
         self
     }
 }
@@ -310,5 +373,26 @@ where
 
     fn try_from(value: StepCommandInput<T>) -> Result<Self, Self::Error> {
         Self::from_step_args(value.args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentCommandArgs, PhiAgentCommand};
+
+    #[test]
+    fn no_exec_discards_container_when_command_options_are_built() {
+        let command = PhiAgentCommand::from_step_args(AgentCommandArgs {
+            quiet: false,
+            no_exec: true,
+            max_model_request_retries: Some(3),
+            template: None,
+            plugin_args: Vec::new(),
+            container: Some("unused-container".to_string()),
+        })
+        .expect("step command should build");
+
+        assert!(command.no_exec());
+        assert_eq!(command.container(), None);
     }
 }

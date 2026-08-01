@@ -4,9 +4,9 @@ mod command;
 mod step;
 
 pub use command::{
-    DoctorCommand, HistoryCommand, PhiAgentCommand, ProbeCommand, ProbeCommandArgs, RunCommand,
-    RunCommandArgs, RunCommandInput, StepCommand, StepCommandArgs, StepCommandInput,
-    YoloCommandInput,
+    AgentCommandArgs, DoctorCommand, HistoryCommand, PhiAgentCommand, ProbeCommand,
+    ProbeCommandArgs, RunCommand, RunCommandArgs, RunCommandInput, StepCommand, StepCommandArgs,
+    StepCommandInput, YoloCommandInput,
 };
 #[allow(unused_imports)]
 pub(crate) use step::{
@@ -227,8 +227,11 @@ impl PreparedPhiAgentBuilder {
         let mut modules = self.builder.modules.into_modules();
         crate::module::init_context_modules(&mut modules, &mut self.builder.context)?;
 
-        let mut tools = crate::executor::builtins::default_tools();
-        crate::module::module_tools(&mut modules, &self.builder.context, &mut tools);
+        let mut tools = Vec::new();
+        if !self.builder.context.command.no_exec() {
+            tools = crate::executor::builtins::default_tools();
+            crate::module::module_tools(&mut modules, &self.builder.context, &mut tools);
+        }
         let output_limits =
             crate::config::tool_output_limits_from_config(&self.builder.context.config);
         let executor = PhiExecutor::from_tools(tools, output_limits)?;

@@ -46,15 +46,18 @@ fn plugin_descriptor_captures_build_time_command_view() {
         base: crate::AgentCliArgs {
             session_path: None,
             quiet: false,
+            no_exec: false,
+            max_model_request_retries: Some(3),
+            template: None,
+            container: None,
             plugin_args: vec!["--plugin-flag".to_string(), "123".to_string()],
-            input_messages: vec![],
+            messages: crate::cli::MessageArgs::default(),
         },
-        max_model_request_retries: Some(3),
-        template: None,
-        container: None,
     };
-    let command =
-        PhiAgentCommand::try_from(StepCommandInput { args: &args }).expect("command should build");
+    let command = PhiAgentCommand::try_from(StepCommandInput {
+        args: crate::agent::StepCommandArgs::from(&args.base),
+    })
+    .expect("command should build");
 
     let builder = crate::agent::PhiAgent::builder(
         crate::session::Session::from_root(
