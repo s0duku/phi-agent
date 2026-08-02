@@ -182,7 +182,7 @@ impl PhiAgentRuntime {
                     }
                     let delta = std::mem::take(&mut runtime.delta);
                     let base = std::mem::replace(&mut runtime.base, PhiStepExpr::empty_root());
-                    runtime.base = PhiStepExpr::branch(base, PhiAgentStep::ReAct(step), delta);
+                    runtime.base = base.create_next_step(PhiAgentStep::ReAct(step), delta);
                     if let Some(error) = runtime.base.step().error() {
                         let event = crate::module::PhiAgentCommitEvent::StepFailed { error };
                         runtime.modules.observe(&event);
@@ -191,7 +191,8 @@ impl PhiAgentRuntime {
                 }
                 StepBounce::ReplaceBaseStep(mut runtime, mut step) => {
                     let current_delta = runtime.delta.clone();
-                    let mut delta = runtime.base_delta().clone();
+                    let base = std::mem::replace(&mut runtime.base, PhiStepExpr::empty_root());
+                    let mut delta = base.delta().clone();
                     delta.extend(current_delta);
                     if let Err(error) =
                         runtime.handle_bounce_transition(&mut step, &mut delta, true)
@@ -200,12 +201,8 @@ impl PhiAgentRuntime {
                         continue;
                     }
                     runtime.delta = PhiExprDelta::default();
-                    runtime.base = match runtime.base.expr().cloned() {
-                        Some(parent) => {
-                            PhiStepExpr::branch(parent, PhiAgentStep::ReAct(step), delta)
-                        }
-                        None => PhiStepExpr::new(PhiAgentStep::ReAct(step), delta),
-                    };
+                    runtime.base =
+                        base.replace_base_step_with_delta(PhiAgentStep::ReAct(step), delta);
                     if let Some(error) = runtime.base.step().error() {
                         let event = crate::module::PhiAgentCommitEvent::StepFailed { error };
                         runtime.modules.observe(&event);

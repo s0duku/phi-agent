@@ -2,11 +2,12 @@ use std::{collections::BTreeSet, io, io::IsTerminal, path::PathBuf};
 
 use clap::{Arg, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
-use super::Session;
+use super::{PhiReActStep, Session};
 use crate::{
     agent::PhiAgentCommand,
     banner,
     cli::MessageArgs,
+    config::ModelRequestDefaults,
     features::pretty_history,
     headlessterm::{HeadlessTerminal, JobHandle},
     message::{PhiMessage, PhiToolMessage},
@@ -30,6 +31,16 @@ pub enum SessionCommand {
         before_help = banner::startup_banner()
     )]
     Append(SessionAppendArgs),
+    #[command(
+        about = "Add a new outer session frame",
+        before_help = banner::startup_banner()
+    )]
+    Next(SessionStepTransformArgs),
+    #[command(
+        about = "Replace the outermost session step while preserving its delta",
+        before_help = banner::startup_banner()
+    )]
+    Replace(SessionStepTransformArgs),
     #[command(
         about = "Inspect a session's current eval-state and governance status as JSON",
         before_help = banner::startup_banner()
@@ -76,6 +87,14 @@ pub struct SessionRollbackArgs {
 }
 
 #[derive(Args)]
+pub struct SessionStepTransformArgs {
+    #[arg(value_name = "SESSION")]
+    pub file: Option<PathBuf>,
+    #[arg(long, required = true)]
+    pub provider: bool,
+}
+
+#[derive(Args)]
 pub struct SessionPeekArgs {
     #[arg(value_name = "SESSION")]
     pub file: Option<PathBuf>,
@@ -96,6 +115,8 @@ pub async fn run(
     match args.command {
         SessionCommand::New(args) => new(home_spec, args),
         SessionCommand::Append(args) => append(args),
+        SessionCommand::Next(args) => next(home_spec, args),
+        SessionCommand::Replace(args) => replace(home_spec, args),
         SessionCommand::Peek(args) => peek(home_spec, args),
         SessionCommand::Rollback(args) => rollback(args),
         SessionCommand::History(args) => history(args),
@@ -140,6 +161,34 @@ fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
         let messages = args.messages.resolve(session.history().to_messages())?;
         Ok(session.append_messages(messages))
     })
+}
+
+fn next(
+    home_spec: Option<&str>,
+    args: SessionStepTransformArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let step = provider_step(home_spec, args.provider)?;
+    transform(args.file, |session| Ok(session.next(step)))
+}
+
+fn replace(
+    home_spec: Option<&str>,
+    args: SessionStepTransformArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let step = provider_step(home_spec, args.provider)?;
+    transform(args.file, |session| Ok(session.replace(step)))
+}
+
+fn provider_step(
+    home_spec: Option<&str>,
+    provider: bool,
+) -> Result<PhiReActStep, Box<dyn std::error::Error>> {
+    if !provider {
+        return Err("a session step kind is required".into());
+    }
+    let home = crate::home::load_home(home_spec)?;
+    let defaults = ModelRequestDefaults::from_config(&home.config()?)?;
+    Ok(PhiReActStep::request_provider("ready", &defaults))
 }
 
 fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {

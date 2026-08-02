@@ -118,6 +118,8 @@ fn session_help_exposes_session_transform_commands() {
     assert!(help.contains("new"));
     assert!(help.contains("Create a new initialized session file"));
     assert!(help.contains("append"));
+    assert!(help.contains("next"));
+    assert!(help.contains("replace"));
     assert!(help.contains("rollback"));
     assert!(help.contains("peek"));
     assert!(help.contains("Inspect a session's current eval-state and governance status as JSON"));

@@ -163,6 +163,34 @@ impl PhiStepExpr {
         }
     }
 
+    /// Applies the frame transformation used by the CreateNextStep bounce.
+    pub(crate) fn create_next_step(self, step: PhiAgentStep, delta: PhiExprDelta) -> Self {
+        Self::branch(self, step, delta)
+    }
+
+    /// Applies the frame transformation used by the ReplaceBaseStep bounce.
+    pub(crate) fn replace_base_step(self, step: PhiAgentStep, current_delta: PhiExprDelta) -> Self {
+        let mut delta = self.delta.clone();
+        delta.extend(current_delta);
+        self.replace_base_step_with_delta(step, delta)
+    }
+
+    pub(crate) fn replace_base_step_with_delta(
+        self,
+        step: PhiAgentStep,
+        delta: PhiExprDelta,
+    ) -> Self {
+        let parent = self.expr.clone();
+        match parent {
+            Some(parent) => Self {
+                step,
+                delta,
+                expr: Some(parent),
+            },
+            None => Self::new(step, delta),
+        }
+    }
+
     pub(crate) fn step(&self) -> &PhiAgentStep {
         &self.step
     }

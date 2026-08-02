@@ -372,6 +372,24 @@ impl Session {
         })
     }
 
+    /// Adds a new outer frame with an empty delta.
+    #[must_use]
+    pub fn next(self, step: PhiReActStep) -> Self {
+        Self(
+            self.0
+                .create_next_step(PhiAgentStep::ReAct(step), PhiExprDelta::default()),
+        )
+    }
+
+    /// Replaces the outermost step while preserving its parent and delta.
+    #[must_use]
+    pub fn replace(self, step: PhiReActStep) -> Self {
+        Self(
+            self.0
+                .replace_base_step(PhiAgentStep::ReAct(step), PhiExprDelta::default()),
+        )
+    }
+
     /// Removes the outermost frame while preserving a root session unchanged.
     #[must_use]
     pub fn rollback(self) -> Self {

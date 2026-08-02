@@ -91,6 +91,8 @@ Main commands:
 - `phi run [SESSION]`
 - `phi yolo [SESSION]`
 - `phi session peek [SESSION]`
+- `phi session next [SESSION] --provider`
+- `phi session replace [SESSION] --provider`
 - `phi doctor`
 - `phi session new [SESSION]`
 - `phi session history [SESSION]`
@@ -103,6 +105,8 @@ phi step --user "Inspect the repository"
 phi run --quiet --user "Summarize the bug"
 phi yolo work.session --user "Keep going until done"
 phi session peek work.session
+phi session next work.session --provider
+phi session replace work.session --provider
 phi doctor
 phi session new work.session
 phi session history work.session

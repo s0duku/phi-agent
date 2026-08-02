@@ -468,10 +468,6 @@ impl PhiAgentRuntime {
         &mut self.delta
     }
 
-    pub(crate) fn base_delta(&self) -> &PhiExprDelta {
-        self.base.delta()
-    }
-
     #[allow(dead_code)]
     pub(crate) fn store<T>(&mut self, name: &str, value: T)
     where

@@ -179,6 +179,66 @@ fn peek_reports_the_current_session_state_as_json() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn next_provider_adds_an_empty_outer_frame() {
+    let path = unique_session_path("next-provider");
+    std::fs::write(&path, root_session_json()).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "next",
+            path.to_string_lossy().as_ref(),
+            "--provider",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let frames = json["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0]["step"]["kind"], "turn_end");
+    assert_eq!(frames[0]["delta"]["history"].as_array().unwrap().len(), 1);
+    assert_eq!(frames[1]["step"]["kind"], "request_provider");
+    assert!(frames[1].get("delta").is_none());
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn replace_provider_preserves_the_outer_delta() {
+    let path = unique_session_path("replace-provider");
+    std::fs::write(&path, root_session_json()).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "replace",
+            path.to_string_lossy().as_ref(),
+            "--provider",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let frames = json["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["step"]["kind"], "request_provider");
+    assert_eq!(frames[0]["delta"]["history"].as_array().unwrap().len(), 1);
+
+    std::fs::remove_file(path).unwrap();
+}
+
 fn root_session_json() -> &'static str {
     r#"{
         "frames": [{
