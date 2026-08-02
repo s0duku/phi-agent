@@ -31,7 +31,7 @@ struct ExecArgs {
 #[serde(deny_unknown_fields)]
 pub(crate) struct InteractArgs {
     handle: String,
-    #[serde(default, alias = "data")]
+    #[serde(default)]
     pub(crate) input: Option<String>,
     #[serde(default = "default_interact_wait_ms")]
     pub(crate) wait_ms: u64,

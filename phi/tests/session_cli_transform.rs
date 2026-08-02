@@ -100,6 +100,85 @@ fn append_and_rollback_compose_through_stdio() {
     ));
 }
 
+#[test]
+fn append_tool_result_infers_the_latest_tool_call_metadata() {
+    let path = unique_session_path("tool-result");
+    std::fs::write(&path, tool_call_session_json()).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "append",
+            path.to_string_lossy().as_ref(),
+            "--tool-result",
+            r#"{"value":42}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.history().iter().last(),
+        Some(phi::message::PhiMessage::Tool(
+            phi::message::PhiToolMessage::ToolResult { id, name, result }
+        )) if id.as_deref() == Some("call-1")
+            && name.as_deref() == Some("lookup")
+            && result == &serde_json::json!({"value": 42})
+    ));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn append_tool_result_rejects_missing_call_without_modifying_file() {
+    let path = unique_session_path("tool-result-missing");
+    let original = root_session_json().as_bytes().to_vec();
+    std::fs::write(&path, &original).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "append",
+            path.to_string_lossy().as_ref(),
+            "--tool-result",
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn peek_reports_the_current_session_state_as_json() {
+    let path = unique_session_path("peek");
+    std::fs::write(&path, root_session_json()).unwrap();
+
+    let output = Command::new(PHI)
+        .args(["session", "peek", path.to_string_lossy().as_ref()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["step"]["kind"], "turn_end");
+    assert_eq!(report["step"]["detail"], "root");
+    assert_eq!(report["step"]["is_terminal"], true);
+    assert_eq!(report["history_messages"], 1);
+    assert!(report["modules"].is_array());
+
+    std::fs::remove_file(path).unwrap();
+}
+
 fn root_session_json() -> &'static str {
     r#"{
         "frames": [{
@@ -121,6 +200,26 @@ fn branched_session_json() -> &'static str {
                 "delta": {"history": [{"role": "assistant", "content": "outer"}]}
             }
         ]
+    }"#
+}
+
+fn tool_call_session_json() -> &'static str {
+    r#"{
+        "frames": [{
+            "step": {"kind": "turn_end", "detail": "root"},
+            "delta": {
+                "history": [{
+                    "role": "tool",
+                    "content": {
+                        "ToolCall": {
+                            "id": "call-1",
+                            "name": "lookup",
+                            "arguments": {"query": "phi"}
+                        }
+                    }
+                }]
+            }
+        }]
     }"#
 }
 

@@ -123,7 +123,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Step(args) => step_agent(cli.home.as_deref(), args).await,
         Command::Doctor(args) => doctor_runtime(cli.home.as_deref(), args),
         Command::Session(args) => session::command::run(cli.home.as_deref(), args).await,
-        Command::Probe(args) => probe_session_command(cli.home.as_deref(), args),
         Command::Home(args) => home::command::run(args),
     }
 }
@@ -147,7 +146,7 @@ async fn step_agent(
     args: StepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input);
+    let input_messages = collect_effective_input_messages(&args.base, &session_input)?;
     if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("step");
     }
@@ -192,7 +191,7 @@ async fn run_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input);
+    let input_messages = collect_effective_input_messages(&args.base, &session_input)?;
     if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("run");
     }
@@ -256,7 +255,7 @@ async fn yolo_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input);
+    let input_messages = collect_effective_input_messages(&args.base, &session_input)?;
     if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("yolo");
     }
@@ -446,22 +445,6 @@ fn persist_cli_agent_session(
     finalize_agent_outcome(session.step().error().cloned(), quiet)
 }
 
-fn probe_session_command(
-    home_spec: Option<&str>,
-    args: ProbeArgs,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let home = load_home(home_spec)?;
-    let session = read_probe_session(args.session_path.as_deref())?;
-    let agent = build_agent(session, PhiAgentCommand::from_probe_args(&args)?, home)?;
-    let probe = agent.probe_report();
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    serde_json::to_writer_pretty(&mut handle, &probe)?;
-    use std::io::Write;
-    handle.write_all(b"\n")?;
-    Ok(())
-}
-
 fn doctor_runtime(
     home_spec: Option<&str>,
     _args: DoctorArgs,
@@ -575,22 +558,6 @@ fn read_session_input(path: Option<&Path>) -> Result<SessionInput, Box<dyn std::
     }
 }
 
-fn read_probe_session(path: Option<&Path>) -> Result<Session, Box<dyn std::error::Error>> {
-    match path {
-        Some(path) => Session::load(path),
-        None if io::stdin().is_terminal() => Ok(Session::empty()),
-        None => {
-            let mut input = Vec::new();
-            io::stdin().read_to_end(&mut input)?;
-            if input.iter().all(|byte| byte.is_ascii_whitespace()) {
-                Ok(Session::empty())
-            } else {
-                Session::load_bytes(&input)
-            }
-        }
-    }
-}
-
 fn existing_session_notice(session_input: &SessionInput) -> Option<String> {
     session_input
         .existing_session_path()
@@ -625,7 +592,7 @@ fn read_stdin_user_message() -> Result<Option<String>, Box<dyn std::error::Error
 fn collect_effective_input_messages(
     args: &AgentCliArgs,
     session_input: &SessionInput,
-) -> Vec<PhiMessage> {
+) -> Result<Vec<PhiMessage>, Box<dyn std::error::Error>> {
     let mut messages = Vec::new();
 
     if let SessionInput::FileBacked {
@@ -640,8 +607,14 @@ fn collect_effective_input_messages(
         messages.push(PhiMessage::user(text.clone()));
     }
 
-    messages.extend(args.messages.as_slice().iter().cloned());
-    messages
+    let session_history = session_input
+        .session_for_agent()
+        .map(|session| session.history().to_messages())
+        .unwrap_or_default();
+    let mut resolution_history = session_history;
+    resolution_history.extend(messages.iter().cloned());
+    messages.extend(args.messages.resolve(resolution_history)?);
+    Ok(messages)
 }
 
 fn persist_outcome_session(
@@ -698,7 +671,6 @@ enum Command {
         about = "Inspect a session's current eval-state and governance status as JSON",
         before_help = banner::startup_banner()
     )]
-    Probe(ProbeArgs),
     #[command(
         about = "Manage session-backed history and transcript views",
         before_help = banner::startup_banner()
@@ -716,14 +688,6 @@ enum Command {
     Doctor(DoctorArgs),
     #[command(name = "headlessterm")]
     HeadlessTerminal(headlessterm::HeadlessTerminalArgs),
-}
-
-#[derive(Args, Default)]
-struct ProbeArgs {
-    #[arg(value_name = "SESSION")]
-    session_path: Option<PathBuf>,
-    #[arg(long = "max-model-request-retries", value_name = "N")]
-    max_model_request_retries: Option<usize>,
 }
 
 #[derive(Args, Default)]
@@ -770,16 +734,6 @@ impl From<&AgentCliArgs> for agent::AgentCommandArgs {
             template: value.template.clone(),
             plugin_args: value.plugin_args.clone(),
             container: value.container.clone(),
-        }
-    }
-}
-
-impl From<&ProbeArgs> for agent::ProbeCommandArgs {
-    fn from(value: &ProbeArgs) -> Self {
-        Self {
-            max_model_request_retries: value
-                .max_model_request_retries
-                .or(PhiAgentCommand::probe().max_model_request_retries),
         }
     }
 }

@@ -52,7 +52,7 @@ impl PhiPythonRuntime for SubprocessPythonRuntime {
             .map_err(|_| "python worker mutex was poisoned".to_string())?;
         let response = worker.load_plugin(source.display(), code)?;
         Ok(LoadedPyPlugin {
-            name: response.name.unwrap_or_else(|| plugin_name(source)),
+            name: response,
             backend: self.info.backend.clone(),
             source: Some(source.display()),
         })
@@ -79,8 +79,7 @@ impl PhiPythonRuntime for SubprocessPythonRuntime {
             .worker
             .lock()
             .map_err(|_| "python worker mutex was poisoned".to_string())?;
-        let response = worker.run_code(code)?;
-        Ok(response.output.unwrap_or_default())
+        worker.run_code(code)
     }
 }
 
@@ -135,65 +134,45 @@ impl SubprocessWorker {
     }
 
     fn ping(&mut self) -> Result<(), String> {
-        let response = self.request(&PythonRuntimeRequest::Ping)?;
-        if response.ok {
-            Ok(())
-        } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| "python worker ping failed".to_string()))
+        match self.request(&PythonRuntimeRequest::Ping)? {
+            PythonRuntimeResponse::Pong {} => Ok(()),
+            response => Err(unexpected_response("ping", response)),
         }
     }
 
-    fn load_plugin(&mut self, source: String, code: &str) -> Result<PythonRuntimeResponse, String> {
-        let response = self.request(&PythonRuntimeRequest::LoadPlugin {
+    fn load_plugin(&mut self, source: String, code: &str) -> Result<String, String> {
+        match self.request(&PythonRuntimeRequest::LoadPlugin {
             source,
             code: code.to_string(),
-        })?;
-        if response.ok {
-            Ok(response)
-        } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| "python worker rejected plugin load".to_string()))
+        })? {
+            PythonRuntimeResponse::PluginLoaded { name } => Ok(name),
+            response => Err(unexpected_response("load_plugin", response)),
         }
     }
 
     fn list_tools(&mut self) -> Result<Vec<PhiToolDefinition>, String> {
-        let response = self.request(&PythonRuntimeRequest::ListTools)?;
-        if response.ok {
-            Ok(response.tools.unwrap_or_default())
-        } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| "python worker failed to list tools".to_string()))
+        match self.request(&PythonRuntimeRequest::ListTools)? {
+            PythonRuntimeResponse::ToolsListed { tools } => Ok(tools),
+            response => Err(unexpected_response("list_tools", response)),
         }
     }
 
     fn call_tool(&mut self, name: &str, arguments: &serde_json::Value) -> Result<String, String> {
-        let response = self.request(&PythonRuntimeRequest::CallTool {
+        match self.request(&PythonRuntimeRequest::CallTool {
             name: name.to_string(),
             arguments: arguments.clone(),
-        })?;
-        if response.ok {
-            Ok(response.output.unwrap_or_default())
-        } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| format!("python worker tool call failed for {name}")))
+        })? {
+            PythonRuntimeResponse::ToolCalled { output } => Ok(output),
+            response => Err(unexpected_response("call_tool", response)),
         }
     }
 
-    fn run_code(&mut self, code: &str) -> Result<PythonRuntimeResponse, String> {
-        let response = self.request(&PythonRuntimeRequest::RunCode {
+    fn run_code(&mut self, code: &str) -> Result<String, String> {
+        match self.request(&PythonRuntimeRequest::RunCode {
             code: code.to_string(),
-        })?;
-        if response.ok {
-            Ok(response)
-        } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| "python worker code execution failed".to_string()))
+        })? {
+            PythonRuntimeResponse::CodeRan { output } => Ok(output),
+            response => Err(unexpected_response("run_code", response)),
         }
     }
 
@@ -225,6 +204,13 @@ impl SubprocessWorker {
 
         serde_json::from_str::<PythonRuntimeResponse>(line.trim_end())
             .map_err(|error| format!("failed to decode python worker response: {error}"))
+    }
+}
+
+fn unexpected_response(operation: &str, response: PythonRuntimeResponse) -> String {
+    match response {
+        PythonRuntimeResponse::Failed { error } => error,
+        response => format!("python worker returned {response:?} for {operation}"),
     }
 }
 
@@ -337,26 +323,9 @@ struct RuntimeProbe {
     executable: String,
 }
 
-fn plugin_name(source: &PhiHomeUrl) -> String {
-    Path::new(&source.display())
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("plugin")
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{plugin_name, worker_script};
-    use crate::home::PhiHomeUrl;
-
-    #[test]
-    fn plugin_name_falls_back_to_path_stem() {
-        assert_eq!(
-            plugin_name(&PhiHomeUrl::file_for_test("/tmp/example.py")),
-            "example"
-        );
-    }
+    use super::worker_script;
 
     #[test]
     fn worker_script_bootstraps_phi_sdk_module() {

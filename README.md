@@ -27,6 +27,11 @@ Phi treats agent execution as step-by-step session evaluation.
 - `run` keeps stepping until the session reaches its next boundary.
 - `yolo` keeps stepping more aggressively through Phi's default recovery path.
 
+## Documentation
+
+The full architecture, runtime semantics, CLI workflows, private protocols, and
+development invariants are maintained in the [Phi Book](book/src/introduction.md).
+
 ## Why Phi
 
 * **Headless Terminal**, `phi` can run command with headless terminal, so it can use GDB and other REPL command.
@@ -85,7 +90,7 @@ Main commands:
 - `phi step [SESSION]`
 - `phi run [SESSION]`
 - `phi yolo [SESSION]`
-- `phi probe [SESSION]`
+- `phi session peek [SESSION]`
 - `phi doctor`
 - `phi session new [SESSION]`
 - `phi session history [SESSION]`
@@ -97,7 +102,7 @@ Examples:
 phi step --user "Inspect the repository"
 phi run --quiet --user "Summarize the bug"
 phi yolo work.session --user "Keep going until done"
-phi probe work.session
+phi session peek work.session
 phi doctor
 phi session new work.session
 phi session history work.session
@@ -158,7 +163,7 @@ phi doctor
 
 - `run` stops at the next boundary.
 - `yolo` continues through Phi's default failed-session recovery path.
-- `probe` reports the current session eval state and governance status as JSON.
+- `session peek` reports the current session eval state and governance status as JSON.
 - `doctor` reports initialized runtime status, system prompt, home, and exposed tools.
 
 ## Local Build

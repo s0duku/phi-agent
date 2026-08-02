@@ -1,9 +1,10 @@
-use std::{collections::BTreeSet, io, path::PathBuf};
+use std::{collections::BTreeSet, io, io::IsTerminal, path::PathBuf};
 
 use clap::{Arg, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
 use super::Session;
 use crate::{
+    agent::PhiAgentCommand,
     banner,
     cli::MessageArgs,
     features::pretty_history,
@@ -29,6 +30,11 @@ pub enum SessionCommand {
         before_help = banner::startup_banner()
     )]
     Append(SessionAppendArgs),
+    #[command(
+        about = "Inspect a session's current eval-state and governance status as JSON",
+        before_help = banner::startup_banner()
+    )]
+    Peek(SessionPeekArgs),
     #[command(
         about = "Remove the outermost session frame",
         before_help = banner::startup_banner()
@@ -70,6 +76,14 @@ pub struct SessionRollbackArgs {
 }
 
 #[derive(Args)]
+pub struct SessionPeekArgs {
+    #[arg(value_name = "SESSION")]
+    pub file: Option<PathBuf>,
+    #[arg(long = "max-model-request-retries", value_name = "N")]
+    pub max_model_request_retries: Option<usize>,
+}
+
+#[derive(Args)]
 pub struct SessionDeleteArgs {
     #[arg(value_name = "SESSION")]
     pub file: PathBuf,
@@ -82,25 +96,59 @@ pub async fn run(
     match args.command {
         SessionCommand::New(args) => new(home_spec, args),
         SessionCommand::Append(args) => append(args),
+        SessionCommand::Peek(args) => peek(home_spec, args),
         SessionCommand::Rollback(args) => rollback(args),
         SessionCommand::History(args) => history(args),
         SessionCommand::Delete(args) => delete(args).await,
     }
 }
 
+fn peek(home_spec: Option<&str>, args: SessionPeekArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let session = match args.file.as_deref() {
+        Some(path) => Session::load(path)?,
+        None if io::stdin().is_terminal() => Session::empty(),
+        None => {
+            use std::io::Read;
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input)?;
+            if input.iter().all(|byte| byte.is_ascii_whitespace()) {
+                Session::empty()
+            } else {
+                Session::load_bytes(&input)?
+            }
+        }
+    };
+    let home = crate::home::load_home(home_spec)?;
+    let retries = args
+        .max_model_request_retries
+        .or(PhiAgentCommand::probe().max_model_request_retries);
+    let agent = crate::agent::build_agent(
+        session,
+        PhiAgentCommand::Probe(PhiAgentCommand::probe().with_max_model_request_retries(retries)),
+        home,
+    )?;
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    serde_json::to_writer_pretty(&mut handle, &agent.probe_report())?;
+    use std::io::Write;
+    handle.write_all(b"\n")?;
+    Ok(())
+}
+
 fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
     transform(args.file, |session| {
-        session.append_messages(args.messages.into_messages())
+        let messages = args.messages.resolve(session.history().to_messages())?;
+        Ok(session.append_messages(messages))
     })
 }
 
 fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {
-    transform(args.file, Session::rollback)
+    transform(args.file, |session| Ok(Session::rollback(session)))
 }
 
 fn transform(
     file: Option<PathBuf>,
-    operation: impl FnOnce(Session) -> Session,
+    operation: impl FnOnce(Session) -> Result<Session, Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session = match &file {
         Some(path) => Session::load(path)?,
@@ -111,7 +159,7 @@ fn transform(
             Session::load_bytes(&input)?
         }
     };
-    let session = operation(session);
+    let session = operation(session)?;
     match file {
         Some(path) => session.save(path),
         None => session.write_stdout(),

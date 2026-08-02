@@ -1,0 +1,9 @@
+[book]
+title = "Phi Documentation"
+authors = ["Phi contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/s0duku/phi-agent"
+edit-url-template = "https://github.com/s0duku/phi-agent/edit/main/book/{path}"

@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
-#[serde(tag = "status", rename_all = "snake_case")]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum WorkerLaunchReport {
     Ready { handle: String },
     Failed { error: HeadlessTermError },

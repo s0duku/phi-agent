@@ -121,7 +121,7 @@ while True:
         kind = request.get("kind")
 
         if kind == "ping":
-            send({"ok": True})
+            send({"kind": "pong"})
             continue
 
         if kind == "load_plugin":
@@ -134,7 +134,7 @@ while True:
             with protect_plugin_io():
                 exec(compile(code, source, "exec"), phi_globals, phi_locals)
             plugins.append({"source": source})
-            send({"ok": True, "name": plugin_name(source)})
+            send({"kind": "plugin_loaded", "name": plugin_name(source)})
             continue
 
         if kind == "run_code":
@@ -142,13 +142,13 @@ while True:
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 exec(compile(code, "<phi-py>", "exec"), phi_globals, phi_locals)
-            send({"ok": True, "output": buffer.getvalue()})
+            send({"kind": "code_ran", "output": buffer.getvalue()})
             continue
 
         if kind == "list_tools":
             import phi
 
-            send({"ok": True, "tools": phi._list_tools()})
+            send({"kind": "tools_listed", "tools": phi._list_tools()})
             continue
 
         if kind == "call_tool":
@@ -159,16 +159,16 @@ while True:
                 output = normalize_tool_output(output)
             except Exception as exc:
                 report_tool_exception(request["name"], exc)
-                send({"ok": True, "output": normalize_tool_exception(exc)})
+                send({"kind": "tool_called", "output": normalize_tool_exception(exc)})
                 continue
-            send({"ok": True, "output": output})
+            send({"kind": "tool_called", "output": output})
             continue
 
-        send({"ok": False, "error": f"unknown request kind: {kind}"})
+        send({"kind": "failed", "error": f"unknown request kind: {kind}"})
     except Exception as exc:
         send(
             {
-                "ok": False,
+                "kind": "failed",
                 "error": "".join(traceback.format_exception_only(type(exc), exc)).strip(),
             }
         )

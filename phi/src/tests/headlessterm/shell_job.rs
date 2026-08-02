@@ -6,6 +6,7 @@ use crate::executor::tools::shell::job::{
 };
 use crate::headlessterm::{
     HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobProcessStatus, JobStatus,
+    TerminalCommand,
 };
 
 async fn access_interact(handle: JobHandle, data: &str, try_wait: Duration) -> JobInfo {
@@ -91,12 +92,22 @@ fn interact_completes_only_unterminated_nonempty_input() {
         })
     );
 
-    let legacy: InteractArgs = serde_json::from_value(serde_json::json!({
+    let legacy = serde_json::from_value::<InteractArgs>(serde_json::json!({
         "handle": "mira-kest",
         "data": ""
-    }))
-    .unwrap();
-    assert_eq!(legacy.input.as_deref(), Some(""));
+    }));
+    assert!(legacy.is_err(), "legacy interact field should be rejected");
+
+    let missing_shell = serde_json::from_value::<TerminalCommand>(serde_json::json!({
+        "DockerExec": {
+            "container": "phi",
+            "command": "echo hi"
+        }
+    }));
+    assert!(
+        missing_shell.is_err(),
+        "headlessterm commands must use the complete current wire shape"
+    );
 
     let tool = ShellJobInteractTool;
     assert!(tool.description().contains("pressing Enter once"));

@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 use crate::headlessterm::job::{HeadlessTermError, JobAccess};
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum Request {
     Access(JobAccess),
     Close,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum Response {
     Written {
         status: ProcessStatus,

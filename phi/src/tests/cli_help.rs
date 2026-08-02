@@ -35,6 +35,7 @@ fn direct_subcommand_help_starts_with_banner() {
 
     assert!(help.starts_with(banner::startup_banner()));
     assert!(help.contains("--no-exec"));
+    assert!(help.contains("--tool-result <CONTENT>"));
 }
 
 #[test]
@@ -118,6 +119,8 @@ fn session_help_exposes_session_transform_commands() {
     assert!(help.contains("Create a new initialized session file"));
     assert!(help.contains("append"));
     assert!(help.contains("rollback"));
+    assert!(help.contains("peek"));
+    assert!(help.contains("Inspect a session's current eval-state and governance status as JSON"));
 
     let append_help = command
         .find_subcommand_mut("session")
@@ -128,4 +131,5 @@ fn session_help_exposes_session_transform_commands() {
         .to_string();
     assert!(append_help.contains("--user <TEXT>"));
     assert!(append_help.contains("--assistant <TEXT>"));
+    assert!(append_help.contains("--tool-result <CONTENT>"));
 }

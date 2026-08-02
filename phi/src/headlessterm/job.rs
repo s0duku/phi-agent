@@ -3,7 +3,7 @@ use std::time::Duration;
 pub const DEFAULT_TRY_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HeadlessTermError {
     Launch {
         stage: WorkerLaunchStage,
@@ -96,6 +96,7 @@ impl std::fmt::Display for WorkerLaunchStage {
 
 /// A command interpreted by the headlessterm worker.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum TerminalCommand {
     Shell {
         command: String,
@@ -103,7 +104,6 @@ pub enum TerminalCommand {
     DockerExec {
         container: String,
         command: String,
-        #[serde(default = "default_container_shell")]
         shell: String,
     },
 }
@@ -114,6 +114,7 @@ fn default_container_shell() -> String {
 
 /// The boundary that completes one terminal interaction.
 #[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum ReturnWhen {
     OutputSettled { try_wait: Duration },
 }
@@ -146,6 +147,7 @@ pub struct JobHandle(pub String);
 
 /// An access request for a running job.
 #[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum JobAccess {
     /// Write input without waiting for or acquiring an output delta.
     Write { data: String },

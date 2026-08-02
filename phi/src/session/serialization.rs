@@ -17,7 +17,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Session, Box<dyn std::error::Error
 }
 
 pub fn load_bytes(input: &[u8]) -> Result<Session, Box<dyn std::error::Error>> {
-    let decoded = decode_text(input)?;
+    let decoded = std::str::from_utf8(input)?;
     if decoded.trim().is_empty() {
         return Ok(Session::empty());
     }
@@ -55,63 +55,6 @@ where
     let mut serializer = Serializer::with_formatter(&mut *writer, EnsureAsciiFormatter);
     value.serialize(&mut serializer)?;
     Ok(())
-}
-
-fn decode_text(input: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(stripped) = input.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return Ok(String::from_utf8(stripped.to_vec())?);
-    }
-
-    if let Some(stripped) = input.strip_prefix(&[0xFF, 0xFE]) {
-        return decode_utf16_bytes(stripped, true);
-    }
-
-    if let Some(stripped) = input.strip_prefix(&[0xFE, 0xFF]) {
-        return decode_utf16_bytes(stripped, false);
-    }
-
-    match String::from_utf8(input.to_vec()) {
-        Ok(text) => Ok(text),
-        Err(_) if looks_like_utf16le(input) => decode_utf16_bytes(input, true),
-        Err(_) if looks_like_utf16be(input) => decode_utf16_bytes(input, false),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn decode_utf16_bytes(
-    input: &[u8],
-    little_endian: bool,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if input.len() % 2 != 0 {
-        return Err("utf-16 input has an odd number of bytes".into());
-    }
-
-    let words = input
-        .chunks_exact(2)
-        .map(|chunk| {
-            if little_endian {
-                u16::from_le_bytes([chunk[0], chunk[1]])
-            } else {
-                u16::from_be_bytes([chunk[0], chunk[1]])
-            }
-        })
-        .collect::<Vec<_>>();
-
-    Ok(String::from_utf16(&words)?)
-}
-
-fn looks_like_utf16le(input: &[u8]) -> bool {
-    input.len() >= 2
-        && input
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .take(32)
-            .any(|byte| *byte == 0)
-}
-
-fn looks_like_utf16be(input: &[u8]) -> bool {
-    input.len() >= 2 && input.iter().step_by(2).take(32).any(|byte| *byte == 0)
 }
 
 #[derive(Default)]
@@ -201,6 +144,12 @@ mod tests {
 
         assert_eq!(loaded.step(), Session::empty().step());
         assert_eq!(loaded.history(), Session::empty().history());
+    }
+
+    #[test]
+    fn load_bytes_requires_utf8_json_without_encoding_markers() {
+        assert!(load_bytes(&[0xFF, 0xFE, b'{', 0]).is_err());
+        assert!(load_bytes(b"\xEF\xBB\xBF{}").is_err());
     }
 
     #[test]

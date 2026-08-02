@@ -7,7 +7,7 @@ use crate::executor::PhiToolDefinition;
 // transport in the future.
 
 #[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PythonRuntimeRequest {
     Ping,
     LoadPlugin {
@@ -25,14 +25,40 @@ pub(crate) enum PythonRuntimeRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct PythonRuntimeResponse {
-    pub ok: bool,
-    #[serde(default)]
-    pub tools: Option<Vec<PhiToolDefinition>>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub output: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum PythonRuntimeResponse {
+    Pong {},
+    PluginLoaded { name: String },
+    ToolsListed { tools: Vec<PhiToolDefinition> },
+    ToolCalled { output: String },
+    CodeRan { output: String },
+    Failed { error: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PythonRuntimeResponse;
+
+    #[test]
+    fn responses_require_the_exact_current_wire_shape() {
+        assert!(
+            serde_json::from_value::<PythonRuntimeResponse>(serde_json::json!({
+                "kind": "plugin_loaded"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PythonRuntimeResponse>(serde_json::json!({
+                "kind": "pong",
+                "ok": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PythonRuntimeResponse>(serde_json::json!({
+                "ok": true
+            }))
+            .is_err()
+        );
+    }
 }
