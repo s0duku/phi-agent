@@ -6,5 +6,7 @@ Session operations are ownership-consuming transformations:
 - `phi session append` adds messages to the outer delta.
 - `phi session next --provider` adds a request-provider frame.
 - `phi session replace --provider` replaces the outer step and preserves its delta.
+- `phi session tool-result --json/--text` resolves the first call in the current
+  RequestExecutor step without invoking an executor.
 - `phi session peek` reports the current evaluation state as JSON.
 - `phi session rollback` removes one frame.

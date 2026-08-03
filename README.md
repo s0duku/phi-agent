@@ -93,6 +93,7 @@ Main commands:
 - `phi session peek [SESSION]`
 - `phi session next [SESSION] --provider`
 - `phi session replace [SESSION] --provider`
+- `phi session tool-result [SESSION] (--json JSON|--text TEXT)`
 - `phi doctor`
 - `phi session new [SESSION]`
 - `phi session history [SESSION]`
@@ -107,6 +108,7 @@ phi yolo work.session --user "Keep going until done"
 phi session peek work.session
 phi session next work.session --provider
 phi session replace work.session --provider
+phi session tool-result work.session --json '{"output":"done"}'
 phi doctor
 phi session new work.session
 phi session history work.session

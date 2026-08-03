@@ -146,7 +146,7 @@ async fn step_agent(
     args: StepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input)?;
+    let input_messages = collect_effective_input_messages(&args.base, &session_input);
     if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("step");
     }
@@ -191,7 +191,7 @@ async fn run_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input)?;
+    let input_messages = collect_effective_input_messages(&args.base, &session_input);
     if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("run");
     }
@@ -255,7 +255,7 @@ async fn yolo_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input)?;
+    let input_messages = collect_effective_input_messages(&args.base, &session_input);
     if matches!(session_input, SessionInput::MissingFile { .. }) {
         return print_subcommand_help("yolo");
     }
@@ -592,7 +592,7 @@ fn read_stdin_user_message() -> Result<Option<String>, Box<dyn std::error::Error
 fn collect_effective_input_messages(
     args: &AgentCliArgs,
     session_input: &SessionInput,
-) -> Result<Vec<PhiMessage>, Box<dyn std::error::Error>> {
+) -> Vec<PhiMessage> {
     let mut messages = Vec::new();
 
     if let SessionInput::FileBacked {
@@ -607,14 +607,8 @@ fn collect_effective_input_messages(
         messages.push(PhiMessage::user(text.clone()));
     }
 
-    let session_history = session_input
-        .session_for_agent()
-        .map(|session| session.history().to_messages())
-        .unwrap_or_default();
-    let mut resolution_history = session_history;
-    resolution_history.extend(messages.iter().cloned());
-    messages.extend(args.messages.resolve(resolution_history)?);
-    Ok(messages)
+    messages.extend(args.messages.messages());
+    messages
 }
 
 fn persist_outcome_session(

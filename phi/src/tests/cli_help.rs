@@ -35,7 +35,7 @@ fn direct_subcommand_help_starts_with_banner() {
 
     assert!(help.starts_with(banner::startup_banner()));
     assert!(help.contains("--no-exec"));
-    assert!(help.contains("--tool-result <CONTENT>"));
+    assert!(!help.contains("--tool-result"));
 }
 
 #[test]
@@ -120,6 +120,7 @@ fn session_help_exposes_session_transform_commands() {
     assert!(help.contains("append"));
     assert!(help.contains("next"));
     assert!(help.contains("replace"));
+    assert!(help.contains("tool-result"));
     assert!(help.contains("rollback"));
     assert!(help.contains("peek"));
     assert!(help.contains("Inspect a session's current eval-state and governance status as JSON"));
@@ -133,5 +134,15 @@ fn session_help_exposes_session_transform_commands() {
         .to_string();
     assert!(append_help.contains("--user <TEXT>"));
     assert!(append_help.contains("--assistant <TEXT>"));
-    assert!(append_help.contains("--tool-result <CONTENT>"));
+    assert!(!append_help.contains("--tool-result"));
+
+    let tool_result_help = command
+        .find_subcommand_mut("session")
+        .unwrap()
+        .find_subcommand_mut("tool-result")
+        .unwrap()
+        .render_help()
+        .to_string();
+    assert!(tool_result_help.contains("--json <JSON>"));
+    assert!(tool_result_help.contains("--text <TEXT>"));
 }

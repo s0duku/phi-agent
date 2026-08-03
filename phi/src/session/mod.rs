@@ -390,6 +390,46 @@ impl Session {
         )
     }
 
+    /// Resolves the first call in the outer RequestExecutor step without invoking an executor.
+    #[must_use]
+    pub fn insert_tool_result(
+        self,
+        result: serde_json::Value,
+        resume_call: PhiProviderCall,
+    ) -> Result<Self, PhiAgentRuntimeError> {
+        let PhiAgentStep::ReAct(PhiReActStep::RequestExecutor {
+            pending_messages,
+            tool_calls,
+            ..
+        }) = self.step().clone()
+        else {
+            return Err(PhiAgentRuntimeError::session(
+                "tool-result requires the current step to be request_executor",
+            ));
+        };
+        let mut tool_calls = tool_calls.into_iter();
+        let Some(request) = tool_calls.next() else {
+            return Err(PhiAgentRuntimeError::session(
+                "request_executor step has no pending tool call",
+            ));
+        };
+        let result_id = request.call_id.clone().or(Some(request.id.clone()));
+        let result_name = request.name.clone();
+        let (messages, next_step) = resolve_tool_result(
+            pending_messages,
+            request,
+            tool_calls.collect(),
+            result_id,
+            result_name,
+            result,
+            resume_call,
+        );
+        Ok(Self(self.0.create_next_step(
+            PhiAgentStep::ReAct(next_step),
+            messages.into(),
+        )))
+    }
+
     /// Removes the outermost frame while preserving a root session unchanged.
     #[must_use]
     pub fn rollback(self) -> Self {
@@ -522,6 +562,40 @@ impl Session {
             .into()
         })
     }
+}
+
+pub(crate) fn resolve_tool_result(
+    mut pending_messages: Vec<PhiMessage>,
+    request: ToolCallRequest,
+    remaining_tool_calls: Vec<ToolCallRequest>,
+    result_id: Option<String>,
+    result_name: String,
+    result: serde_json::Value,
+    resume_call: PhiProviderCall,
+) -> (Vec<PhiMessage>, PhiReActStep) {
+    pending_messages.push(PhiMessage::tool_call(
+        request.call_id.or(Some(request.id)),
+        request.name,
+        request.arguments,
+    ));
+    pending_messages.push(PhiMessage::tool_result(
+        result_id,
+        Some(result_name),
+        result,
+    ));
+    let next_step = if remaining_tool_calls.is_empty() {
+        PhiReActStep::request_provider_with_call(
+            "tool result committed; model response is pending",
+            resume_call,
+        )
+    } else {
+        PhiReActStep::request_executor(
+            "additional tool execution is pending",
+            Vec::new(),
+            remaining_tool_calls,
+        )
+    };
+    (pending_messages, next_step)
 }
 
 impl Serialize for Session {

@@ -101,60 +101,6 @@ fn append_and_rollback_compose_through_stdio() {
 }
 
 #[test]
-fn append_tool_result_infers_the_latest_tool_call_metadata() {
-    let path = unique_session_path("tool-result");
-    std::fs::write(&path, tool_call_session_json()).unwrap();
-
-    let output = Command::new(PHI)
-        .args([
-            "session",
-            "append",
-            path.to_string_lossy().as_ref(),
-            "--tool-result",
-            r#"{"value":42}"#,
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let session = phi::session::Session::load(&path).unwrap();
-    assert!(matches!(
-        session.history().iter().last(),
-        Some(phi::message::PhiMessage::Tool(
-            phi::message::PhiToolMessage::ToolResult { id, name, result }
-        )) if id.as_deref() == Some("call-1")
-            && name.as_deref() == Some("lookup")
-            && result == &serde_json::json!({"value": 42})
-    ));
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
-fn append_tool_result_rejects_missing_call_without_modifying_file() {
-    let path = unique_session_path("tool-result-missing");
-    let original = root_session_json().as_bytes().to_vec();
-    std::fs::write(&path, &original).unwrap();
-
-    let output = Command::new(PHI)
-        .args([
-            "session",
-            "append",
-            path.to_string_lossy().as_ref(),
-            "--tool-result",
-            "done",
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert_eq!(std::fs::read(&path).unwrap(), original);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
 fn peek_reports_the_current_session_state_as_json() {
     let path = unique_session_path("peek");
     std::fs::write(&path, root_session_json()).unwrap();
@@ -239,6 +185,128 @@ fn replace_provider_preserves_the_outer_delta() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn tool_result_json_resolves_the_current_executor_step() {
+    let path = unique_session_path("tool-result-json");
+    std::fs::write(&path, request_executor_session_json(false)).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--json",
+            r#"{"value":42}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.step(),
+        phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestProvider { .. })
+    ));
+    assert_eq!(
+        session.history()[1],
+        phi::message::PhiMessage::assistant("pending")
+    );
+    assert!(matches!(
+        &session.history()[2],
+        phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolCall { id, name, .. })
+            if id.as_deref() == Some("call-1") && name == "lookup"
+    ));
+    assert!(matches!(
+        &session.history()[3],
+        phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { id, name, result })
+            if id.as_deref() == Some("call-1")
+                && name.as_deref() == Some("lookup")
+                && result == &serde_json::json!({"value": 42})
+    ));
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn tool_result_text_consumes_only_the_first_of_multiple_calls() {
+    let path = unique_session_path("tool-result-text");
+    std::fs::write(&path, request_executor_session_json(true)).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--text",
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.step(),
+        phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestExecutor {
+            pending_messages,
+            tool_calls,
+            ..
+        }) if pending_messages.is_empty()
+            && tool_calls.len() == 1
+            && tool_calls[0].id == "call-2"
+    ));
+    assert!(matches!(
+        session.history().iter().last(),
+        Some(phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { result, .. }))
+            if result == &serde_json::Value::String("done".to_string())
+    ));
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn tool_result_rejects_invalid_state_and_json_without_modifying_the_file() {
+    let path = unique_session_path("tool-result-invalid");
+    let original = root_session_json().as_bytes().to_vec();
+    std::fs::write(&path, &original).unwrap();
+
+    let wrong_step = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--text",
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(!wrong_step.status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let invalid_json = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--json",
+            "not-json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid_json.status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    std::fs::remove_file(path).unwrap();
+}
+
 fn root_session_json() -> &'static str {
     r#"{
         "frames": [{
@@ -263,24 +331,35 @@ fn branched_session_json() -> &'static str {
     }"#
 }
 
-fn tool_call_session_json() -> &'static str {
-    r#"{
-        "frames": [{
-            "step": {"kind": "turn_end", "detail": "root"},
-            "delta": {
-                "history": [{
-                    "role": "tool",
-                    "content": {
-                        "ToolCall": {
-                            "id": "call-1",
-                            "name": "lookup",
-                            "arguments": {"query": "phi"}
-                        }
-                    }
-                }]
-            }
-        }]
-    }"#
+fn request_executor_session_json(multiple: bool) -> String {
+    let second = if multiple {
+        r#", {
+            "id": "call-2",
+            "call_id": "call-2",
+            "name": "lookup",
+            "arguments": {"query": "second"}
+        }"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{
+            "frames": [{{
+                "step": {{
+                    "kind": "request_executor",
+                    "detail": "tool execution is pending",
+                    "pending_messages": [{{"role": "assistant", "content": "pending"}}],
+                    "tool_calls": [{{
+                        "id": "call-1",
+                        "call_id": "call-1",
+                        "name": "lookup",
+                        "arguments": {{"query": "first"}}
+                    }}{second}]
+                }},
+                "delta": {{"history": [{{"role": "system", "content": "system"}}]}}
+            }}]
+        }}"#
+    )
 }
 
 fn unique_session_path(label: &str) -> std::path::PathBuf {

@@ -11,6 +11,7 @@ use crate::{
     features::pretty_history,
     headlessterm::{HeadlessTerminal, JobHandle},
     message::{PhiMessage, PhiToolMessage},
+    render::PhiProviderCall,
 };
 
 #[derive(Args)]
@@ -41,6 +42,11 @@ pub enum SessionCommand {
         before_help = banner::startup_banner()
     )]
     Replace(SessionStepTransformArgs),
+    #[command(
+        about = "Resolve the first call in the current RequestExecutor step",
+        before_help = banner::startup_banner()
+    )]
+    ToolResult(SessionToolResultArgs),
     #[command(
         about = "Inspect a session's current eval-state and governance status as JSON",
         before_help = banner::startup_banner()
@@ -95,6 +101,22 @@ pub struct SessionStepTransformArgs {
 }
 
 #[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("result")
+        .required(true)
+        .multiple(false)
+        .args(["json", "text"])
+))]
+pub struct SessionToolResultArgs {
+    #[arg(value_name = "SESSION")]
+    pub file: Option<PathBuf>,
+    #[arg(long, value_name = "JSON")]
+    pub json: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    pub text: Option<String>,
+}
+
+#[derive(Args)]
 pub struct SessionPeekArgs {
     #[arg(value_name = "SESSION")]
     pub file: Option<PathBuf>,
@@ -117,6 +139,7 @@ pub async fn run(
         SessionCommand::Append(args) => append(args),
         SessionCommand::Next(args) => next(home_spec, args),
         SessionCommand::Replace(args) => replace(home_spec, args),
+        SessionCommand::ToolResult(args) => tool_result(home_spec, args),
         SessionCommand::Peek(args) => peek(home_spec, args),
         SessionCommand::Rollback(args) => rollback(args),
         SessionCommand::History(args) => history(args),
@@ -158,8 +181,7 @@ fn peek(home_spec: Option<&str>, args: SessionPeekArgs) -> Result<(), Box<dyn st
 
 fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
     transform(args.file, |session| {
-        let messages = args.messages.resolve(session.history().to_messages())?;
-        Ok(session.append_messages(messages))
+        Ok(session.append_messages(args.messages.messages()))
     })
 }
 
@@ -179,6 +201,24 @@ fn replace(
     transform(args.file, |session| Ok(session.replace(step)))
 }
 
+fn tool_result(
+    home_spec: Option<&str>,
+    args: SessionToolResultArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = match (args.json, args.text) {
+        (Some(json), None) => serde_json::from_str(&json)
+            .map_err(|error| format!("invalid --json tool result: {error}"))?,
+        (None, Some(text)) => serde_json::Value::String(text),
+        _ => unreachable!("clap requires exactly one tool result input"),
+    };
+    let resume_call = provider_call(home_spec)?;
+    transform(args.file, |session| {
+        session
+            .insert_tool_result(result, resume_call)
+            .map_err(Into::into)
+    })
+}
+
 fn provider_step(
     home_spec: Option<&str>,
     provider: bool,
@@ -186,9 +226,16 @@ fn provider_step(
     if !provider {
         return Err("a session step kind is required".into());
     }
+    Ok(PhiReActStep::request_provider_with_call(
+        "ready",
+        provider_call(home_spec)?,
+    ))
+}
+
+fn provider_call(home_spec: Option<&str>) -> Result<PhiProviderCall, Box<dyn std::error::Error>> {
     let home = crate::home::load_home(home_spec)?;
     let defaults = ModelRequestDefaults::from_config(&home.config()?)?;
-    Ok(PhiReActStep::request_provider("ready", &defaults))
+    Ok(PhiProviderCall::from_parts(&defaults, Vec::new()))
 }
 
 fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {

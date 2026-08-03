@@ -522,24 +522,29 @@ impl PhiAgentRuntime {
                         return runtime.continue_failed(failure);
                     }
 
-                    let tool_call_message = PhiMessage::tool_call(
-                        request.call_id.clone().or(Some(request.id.clone())),
-                        request.name.clone(),
-                        request.arguments.clone(),
-                    );
-                    let tool_result_message = PhiMessage::tool_result(
+                    let resume_call = runtime.request_provider_call();
+                    let (mut messages, next_step) = crate::session::resolve_tool_result(
+                        pending_messages,
+                        request,
+                        remaining_tool_calls,
                         response.call_id.clone().or(Some(response.id.clone())),
-                        Some(response.name.clone()),
+                        response.name.clone(),
                         serde_json::to_value(&response.output)
                             .expect("tool output should serialize into history"),
+                        resume_call,
                     );
-
-                    let committed_assistants = pending_messages
+                    let committed_assistants = messages
                         .iter()
                         .filter(|message| matches!(message, PhiMessage::Assistant(_)))
                         .cloned()
                         .collect::<Vec<_>>();
-                    for message in pending_messages {
+                    let tool_result_message = messages
+                        .pop()
+                        .expect("resolved tool messages must end with a tool result");
+                    let tool_call_message = messages
+                        .pop()
+                        .expect("resolved tool messages must contain a tool call");
+                    for message in messages {
                         runtime.commit_message(message);
                     }
                     for assistant in &committed_assistants {
@@ -551,18 +556,7 @@ impl PhiAgentRuntime {
                     }
                     runtime.commit_message(tool_call_message);
                     runtime.commit_tool_result(tool_result_message);
-                    let step = if remaining_tool_calls.is_empty() {
-                        runtime.request_provider_step(
-                            "tool result committed; model response is pending",
-                        )
-                    } else {
-                        PhiReActStep::request_executor(
-                            "additional tool execution is pending",
-                            Vec::new(),
-                            remaining_tool_calls,
-                        )
-                    };
-                    StepBounce::CreateNextStep(runtime, step)
+                    StepBounce::CreateNextStep(runtime, next_step)
                 })
             }),
         )

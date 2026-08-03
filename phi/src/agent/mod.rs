@@ -502,10 +502,11 @@ impl PhiAgentRuntime {
     }
 
     pub(crate) fn request_provider_step(&self, detail: impl Into<String>) -> PhiReActStep {
-        PhiReActStep::request_provider_with_call(
-            detail,
-            render::PhiProviderCall::from_parts(&self.model_defaults, self.tool_definitions()),
-        )
+        PhiReActStep::request_provider_with_call(detail, self.request_provider_call())
+    }
+
+    pub(crate) fn request_provider_call(&self) -> render::PhiProviderCall {
+        render::PhiProviderCall::from_parts(&self.model_defaults, self.tool_definitions())
     }
 
     pub(crate) fn request_provider_request(
