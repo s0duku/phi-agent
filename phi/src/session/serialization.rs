@@ -266,7 +266,7 @@ mod tests {
 
         assert!(matches!(
             appended.step(),
-            PhiAgentStep::ReAct(crate::session::PhiReActStep::RequestCompact)
+            PhiAgentStep::ReAct(crate::session::PhiReActStep::RequestCompact { retain_rate: 0.1 })
         ));
         assert_eq!(expr.expr().unwrap().history(), parent.history());
         assert_eq!(expr.lookup::<i32>("attempt"), Some(2));

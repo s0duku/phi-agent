@@ -14,7 +14,13 @@ use crate::{
 
 use provider::DynProvider;
 pub(crate) use provider::{PhiModelResponse, PhiModelTurnState, PhiProviderCall};
-pub(crate) use utils::{approx_history_token_count, approx_text_token_count};
+pub(crate) use utils::{
+    approx_history_token_count, approx_message_token_count, approx_text_token_count,
+};
+
+pub(crate) fn compact_prompt_token_count() -> usize {
+    compact::compact_prompt_token_count()
+}
 
 #[derive(Clone, Debug)]
 pub(in crate::render) struct PhiRenderedMessages(Vec<Arc<PhiMessage>>);
@@ -99,13 +105,14 @@ impl PhiRender {
         &self,
         request: PhiProviderCall,
         history: PhiHistory,
+        retain_rate: f32,
     ) -> PhiAgentRuntimeResult<PhiHistory> {
         #[cfg(test)]
         if let Some(compact_override) = &self.compact_override {
             return compact_override(&history);
         }
 
-        compact::compact_history(self, &request, &history).await
+        compact::compact_history(self, &request, &history, retain_rate).await
     }
 }
 

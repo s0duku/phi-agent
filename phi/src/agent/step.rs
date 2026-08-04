@@ -245,8 +245,8 @@ impl PhiAgentRuntime {
     pub(crate) fn eval_step_with_modules(mut self, cont: StepCont, index: usize) -> StepBounce {
         if index >= self.modules.len() {
             return match self.base_step().clone() {
-                PhiAgentStep::ReAct(PhiReActStep::RequestCompact) => {
-                    self.step_request_compact(cont)
+                PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate }) => {
+                    self.step_request_compact(cont, retain_rate)
                 }
                 PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }) => {
                     self.request_provider(cont)
@@ -298,7 +298,7 @@ impl PhiAgentRuntime {
         }
     }
 
-    fn step_request_compact(self, _cont: StepCont) -> StepBounce {
+    fn step_request_compact(self, _cont: StepCont, retain_rate: f32) -> StepBounce {
         StepBounce::ContEval(
             self,
             StepCont::new(move |runtime| {
@@ -320,7 +320,7 @@ impl PhiAgentRuntime {
                         return runtime.continue_failed(error);
                     }
 
-                    match runtime.render.compact(request, history).await {
+                    match runtime.render.compact(request, history, retain_rate).await {
                         Ok(mut history) => {
                             let mut after_event = PhiAgentStepEvent::AfterCompactResponse {
                                 history: &mut history,
@@ -331,6 +331,15 @@ impl PhiAgentRuntime {
                             runtime.delta = history.into();
                             StepBounce::CreateNextStep(runtime, PhiReActStep::Compacted)
                         }
+                        Err(crate::error::PhiAgentRuntimeError::CompactExceededLimit {
+                            detail,
+                            ..
+                        }) => runtime.continue_failed(
+                            crate::error::PhiAgentRuntimeError::compact_exceeded_limit(
+                                detail,
+                                retain_rate,
+                            ),
+                        ),
                         Err(error) => runtime.continue_failed(
                             crate::error::PhiAgentRuntimeError::request_compact(error.detail()),
                         ),

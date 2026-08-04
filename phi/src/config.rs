@@ -167,7 +167,7 @@ pub const fn default_context_tokens() -> usize {
 }
 
 pub const fn default_auto_compact_threshold_tokens() -> usize {
-    DEFAULT_CONTEXT_TOKENS * 9 / 10
+    DEFAULT_CONTEXT_TOKENS * 8 / 10
 }
 
 pub const fn default_tool_threshold_tokens() -> usize {

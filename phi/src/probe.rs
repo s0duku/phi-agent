@@ -33,7 +33,7 @@ pub fn probe_session(session: &Session, modules: Vec<PhiModuleProbeJson>) -> Phi
 
 fn step_kind(step: &PhiAgentStep) -> &'static str {
     match step {
-        PhiAgentStep::ReAct(PhiReActStep::RequestCompact) => "request_compact",
+        PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. }) => "request_compact",
         PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }) => "request_provider",
         PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { .. }) => "request_executor",
         PhiAgentStep::ReAct(PhiReActStep::Compacted) => "compacted",

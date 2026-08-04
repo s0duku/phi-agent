@@ -163,9 +163,7 @@ impl PhiProvider for OpenAiCompatClient {
                 .text()
                 .await
                 .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
-            return Err(PhiAgentRuntimeError::provider_request(format!(
-                "openai_chat HTTP {status}: {body}"
-            )));
+            return Err(super::http_error("openai_chat", status, body));
         }
         let status = response.status();
         let body = response.text().await.map_err(|error| {

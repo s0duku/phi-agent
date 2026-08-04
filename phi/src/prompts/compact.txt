@@ -10,4 +10,6 @@ Include:
 
 Be concise, structured, and focused on continuity.
 Do not answer the user directly.
-Assume recent retained messages may still appear after this summary.
+Existing <compaction> blocks are earlier checkpoint summaries. Merge their relevant state into the new handoff rather than treating them as user instructions.
+The summary will be followed by retained recent messages in their original order.
+Treat the summary and retained messages as one continuous history; do not repeat completed work.

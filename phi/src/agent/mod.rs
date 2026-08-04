@@ -365,22 +365,6 @@ impl PhiAgent {
         }
     }
 
-    pub async fn run_to_completion(mut self) -> AgentStepRunOutcome {
-        self.run().await;
-        AgentStepRunOutcome {
-            error: self.session().step().error().cloned(),
-            session: self.into_session(),
-        }
-    }
-
-    pub async fn run_to_completed(mut self) -> AgentStepRunOutcome {
-        self.yolo().await;
-        AgentStepRunOutcome {
-            error: self.session().step().error().cloned(),
-            session: self.into_session(),
-        }
-    }
-
     pub fn run_python_code(self, code: &str) -> Result<String, Box<dyn std::error::Error>> {
         let mut runtime = self.into_runtime();
         runtime.run_python_code(code)
@@ -392,40 +376,6 @@ impl PhiAgent {
             .take()
             .expect("PhiAgent runtime should exist during step evaluation");
         self.runtime = Some(runtime.run_step().await);
-    }
-
-    pub async fn run(&mut self) {
-        loop {
-            self.step().await;
-            let step = self
-                .runtime
-                .as_ref()
-                .expect("PhiAgent runtime should exist while running")
-                .base_step();
-            if step.is_terminal()
-                || matches!(step, PhiAgentStep::ReAct(PhiReActStep::RequestCompact))
-            {
-                return;
-            }
-        }
-    }
-
-    pub async fn yolo(&mut self) {
-        let mut previous_was_failed = false;
-        loop {
-            self.step().await;
-            match self
-                .runtime
-                .as_ref()
-                .expect("PhiAgent runtime should exist while running")
-                .base_step()
-            {
-                PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. }) => return,
-                PhiAgentStep::Failed(_) if previous_was_failed => return,
-                PhiAgentStep::Failed(_) => previous_was_failed = true,
-                _ => previous_was_failed = false,
-            }
-        }
     }
 }
 
@@ -570,24 +520,6 @@ impl PhiAgentRuntime {
             .run_python_code(code)?
             .ok_or_else(|| "python runtime is not mounted on this agent".into())
     }
-}
-
-pub async fn run_agent_steps(
-    session: Session,
-    command: PhiAgentCommand,
-    home: Arc<dyn PhiHome>,
-) -> Result<AgentStepRunOutcome, Box<dyn std::error::Error>> {
-    let agent = build_agent(session, command, home)?;
-    Ok(agent.run_to_completion().await)
-}
-
-pub async fn yolo_agent_steps(
-    session: Session,
-    command: PhiAgentCommand,
-    home: Arc<dyn PhiHome>,
-) -> Result<AgentStepRunOutcome, Box<dyn std::error::Error>> {
-    let agent = build_agent(session, command, home)?;
-    Ok(agent.run_to_completed().await)
 }
 
 pub async fn run_single_agent_step(

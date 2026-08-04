@@ -123,10 +123,54 @@ fn compact_equivalence_agent(session: Session, command: PhiAgentCommand) -> crat
         .with_model_defaults(test_model_defaults())
         .with_render(render)
         .with_module(
-            crate::features::governance::auto_compact::AutoCompactPolicy::with_threshold(100),
+            crate::features::governance::auto_compact::AutoCompactPolicy::with_threshold(200),
         )
         .build()
         .expect("compact equivalence agent should build")
+}
+
+async fn run_to_completion(mut agent: crate::agent::PhiAgent) -> crate::agent::AgentStepRunOutcome {
+    loop {
+        agent.step().await;
+        let session = agent.session();
+        let step = session.step();
+        if step.is_terminal()
+            || matches!(
+                step,
+                PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. })
+            )
+        {
+            return crate::agent::AgentStepRunOutcome {
+                error: session.step().error().cloned(),
+                session: agent.into_session(),
+            };
+        }
+    }
+}
+
+async fn run_to_completed(mut agent: crate::agent::PhiAgent) -> crate::agent::AgentStepRunOutcome {
+    let mut previous_was_failed = false;
+    loop {
+        agent.step().await;
+        let session = agent.session();
+        let step = session.step();
+        match step {
+            PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. }) => {
+                return crate::agent::AgentStepRunOutcome {
+                    error: session.step().error().cloned(),
+                    session: agent.into_session(),
+                };
+            }
+            PhiAgentStep::Failed(_) if previous_was_failed => {
+                return crate::agent::AgentStepRunOutcome {
+                    error: session.step().error().cloned(),
+                    session: agent.into_session(),
+                };
+            }
+            PhiAgentStep::Failed(_) => previous_was_failed = true,
+            _ => previous_was_failed = false,
+        }
+    }
 }
 
 fn serialized_session(session: &Session) -> serde_json::Value {
@@ -327,13 +371,14 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
     .prepare()
     .expect("run builder should prepare");
     let run_modules = crate::features::build_default_modules(run_builder.context());
-    let run_outcome = run_builder
-        .with_module_layout(run_modules)
-        .with_module(RejectFirstModelResponseModule { rejected: false })
-        .build()
-        .expect("run agent should build")
-        .run_to_completion()
-        .await;
+    let run_outcome = run_to_completion(
+        run_builder
+            .with_module_layout(run_modules)
+            .with_module(RejectFirstModelResponseModule { rejected: false })
+            .build()
+            .expect("run agent should build"),
+    )
+    .await;
 
     assert!(matches!(
         run_outcome.session.step(),
@@ -351,13 +396,14 @@ async fn yolo_continues_when_run_would_stop_at_runtime_failure() {
             .prepare()
             .expect("yolo builder should prepare");
     let yolo_modules = crate::features::build_default_modules(yolo_builder.context());
-    let yolo_outcome = yolo_builder
-        .with_module_layout(yolo_modules)
-        .with_module(RejectFirstModelResponseModule { rejected: false })
-        .build()
-        .expect("yolo agent should build")
-        .run_to_completed()
-        .await;
+    let yolo_outcome = run_to_completed(
+        yolo_builder
+            .with_module_layout(yolo_modules)
+            .with_module(RejectFirstModelResponseModule { rejected: false })
+            .build()
+            .expect("yolo agent should build"),
+    )
+    .await;
 
     assert!(yolo_outcome.error.is_none());
     assert_eq!(
@@ -388,7 +434,7 @@ async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() 
             ),
         ])),
     };
-    let outcome =
+    let outcome = run_to_completed(
         crate::agent::PhiAgent::builder(session, PhiAgentCommand::Yolo(PhiAgentCommand::yolo()))
             .with_home(Arc::new(LocalPhiHome::new(
                 super::support::unique_test_home(),
@@ -396,9 +442,9 @@ async fn yolo_continues_after_provider_requests_follow_up_without_a_tool_call() 
             .with_model_defaults(test_model_defaults())
             .with_client(Arc::new(client))
             .build()
-            .expect("agent should build")
-            .run_to_completed()
-            .await;
+            .expect("agent should build"),
+    )
+    .await;
 
     assert_eq!(
         outcome.session.history(),
@@ -503,7 +549,7 @@ async fn compact_trajectory_matches_yolo_run_and_rebuilt_step_agents() {
     assert_eq!(step_trajectory.len(), 5);
     assert!(matches!(
         step_trajectory[0].step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+        PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate: 0.1 })
     ));
     assert!(matches!(
         step_trajectory[1].step(),
@@ -535,11 +581,10 @@ async fn compact_trajectory_matches_yolo_run_and_rebuilt_step_agents() {
         );
     }
 
-    let yolo_final = compact_equivalence_agent(
+    let yolo_final = run_to_completed(compact_equivalence_agent(
         initial.clone(),
         PhiAgentCommand::Yolo(PhiAgentCommand::yolo()),
-    )
-    .run_to_completed()
+    ))
     .await
     .session;
     assert_eq!(
@@ -547,22 +592,24 @@ async fn compact_trajectory_matches_yolo_run_and_rebuilt_step_agents() {
         serialized_session(step_trajectory.last().expect("trajectory should finish"))
     );
 
-    let first_run =
-        compact_equivalence_agent(initial, PhiAgentCommand::Run(PhiAgentCommand::run()))
-            .run_to_completion()
-            .await
-            .session;
+    let first_run = run_to_completion(compact_equivalence_agent(
+        initial,
+        PhiAgentCommand::Run(PhiAgentCommand::run()),
+    ))
+    .await
+    .session;
     assert_eq!(
         serialized_session(&first_run),
         serialized_session(&step_trajectory[0]),
         "run should expose the request-compact boundary"
     );
 
-    let final_run =
-        compact_equivalence_agent(first_run, PhiAgentCommand::Run(PhiAgentCommand::run()))
-            .run_to_completion()
-            .await
-            .session;
+    let final_run = run_to_completion(compact_equivalence_agent(
+        first_run,
+        PhiAgentCommand::Run(PhiAgentCommand::run()),
+    ))
+    .await
+    .session;
     assert_eq!(
         serialized_session(&final_run),
         serialized_session(step_trajectory.last().expect("trajectory should finish")),

@@ -92,9 +92,7 @@ impl PhiProvider for ResponsesClient {
                 .text()
                 .await
                 .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
-            return Err(PhiAgentRuntimeError::provider_request(format!(
-                "HTTP {status} from responses API: {body}"
-            )));
+            return Err(super::http_error("openai_response", status, body));
         }
 
         let status = response.status();
@@ -392,6 +390,12 @@ impl ResponsesCreateResponse {
                     .as_ref()
                     .map(ResponsesError::detail)
                     .unwrap_or_else(|| "response failed without error details".to_string());
+                if super::is_context_limit_error(None, &detail) {
+                    return Err(PhiAgentRuntimeError::compact_exceeded_limit(
+                        format!("openai_response failed: {detail}"),
+                        0.0,
+                    ));
+                }
                 Err(PhiAgentRuntimeError::provider_response(format!(
                     "openai_response failed: {detail}"
                 )))

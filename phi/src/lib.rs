@@ -348,7 +348,7 @@ async fn run_cli_agent(
             session.step().is_terminal()
                 || matches!(
                     session.step(),
-                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. })
                 )
         };
         if completed {

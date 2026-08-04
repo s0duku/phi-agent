@@ -26,6 +26,10 @@ pub enum PhiAgentRuntimeError {
     RequestCompact {
         detail: String,
     },
+    CompactExceededLimit {
+        detail: String,
+        retain_rate: f32,
+    },
     ProviderRequest {
         detail: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +100,13 @@ impl PhiAgentRuntimeError {
         }
     }
 
+    pub fn compact_exceeded_limit(detail: impl Into<String>, retain_rate: f32) -> Self {
+        Self::CompactExceededLimit {
+            detail: detail.into(),
+            retain_rate,
+        }
+    }
+
     pub fn provider_request(detail: impl Into<String>) -> Self {
         Self::ProviderRequest {
             detail: detail.into(),
@@ -155,6 +166,7 @@ impl PhiAgentRuntimeError {
     pub fn detail(&self) -> &str {
         match self {
             Self::RequestCompact { detail, .. }
+            | Self::CompactExceededLimit { detail, .. }
             | Self::ProviderRequest { detail, .. }
             | Self::ProviderResponse { detail, .. }
             | Self::Module { detail, .. }
@@ -192,6 +204,13 @@ impl PhiAgentRuntimeError {
             Self::ProviderRequest { retry, .. } | Self::ProviderResponse { retry, .. } => {
                 retry.as_ref()
             }
+            _ => None,
+        }
+    }
+
+    pub fn compact_retain_rate(&self) -> Option<f32> {
+        match self {
+            Self::CompactExceededLimit { retain_rate, .. } => Some(*retain_rate),
             _ => None,
         }
     }

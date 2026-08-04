@@ -8,19 +8,24 @@ use crate::{
 };
 
 pub struct AutoCompactPolicy {
+    context_tokens: usize,
     threshold_tokens: usize,
 }
 
 impl AutoCompactPolicy {
     pub const fn new(context_tokens: usize) -> Self {
         Self {
-            threshold_tokens: context_tokens.saturating_mul(9) / 10,
+            context_tokens,
+            threshold_tokens: context_tokens.saturating_mul(8) / 10,
         }
     }
 
     #[cfg(test)]
     pub const fn with_threshold(threshold_tokens: usize) -> Self {
-        Self { threshold_tokens }
+        Self {
+            context_tokens: threshold_tokens,
+            threshold_tokens,
+        }
     }
 }
 
@@ -47,7 +52,8 @@ impl PhiModule for AutoCompactPolicy {
         }
 
         let history = runtime.history();
-        let rough_tokens = approx_history_token_count(&history);
+        let rough_tokens = approx_history_token_count(&history)
+            .saturating_add(crate::render::compact_prompt_token_count());
         if rough_tokens < self.precheck_threshold_tokens() {
             return next.call(runtime, cont);
         }
@@ -61,7 +67,9 @@ impl PhiModule for AutoCompactPolicy {
             Ok(token_count) => token_count,
             Err(error) => return Err(StepInterveneError::new(runtime, error)),
         };
-        if token_count < self.threshold_tokens {
+        let compact_request_tokens =
+            token_count.saturating_add(crate::render::compact_prompt_token_count());
+        if compact_request_tokens < self.threshold_tokens {
             return next.call(runtime, cont);
         }
 
@@ -74,7 +82,7 @@ impl PhiModule for AutoCompactPolicy {
 
 impl AutoCompactPolicy {
     const fn precheck_threshold_tokens(&self) -> usize {
-        self.threshold_tokens.saturating_mul(3) / 4
+        self.context_tokens.saturating_mul(3) / 5
     }
 }
 
@@ -93,9 +101,9 @@ mod tests {
     use super::AutoCompactPolicy;
 
     #[test]
-    fn uses_ninety_percent_of_context_window() {
-        assert_eq!(AutoCompactPolicy::new(100).threshold_tokens, 90);
-        assert_eq!(AutoCompactPolicy::new(100).precheck_threshold_tokens(), 67);
+    fn uses_eighty_percent_of_context_window() {
+        assert_eq!(AutoCompactPolicy::new(100).threshold_tokens, 80);
+        assert_eq!(AutoCompactPolicy::new(100).precheck_threshold_tokens(), 60);
     }
 
     #[test]
@@ -120,7 +128,9 @@ mod tests {
             .run_single_step()
             .await;
 
-        let PhiAgentStep::ReAct(PhiReActStep::RequestCompact) = outcome.session.step() else {
+        let PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate: 0.1 }) =
+            outcome.session.step()
+        else {
             panic!("clean request should enter request compact");
         };
         let expr = outcome.session.clone().into_expr();
@@ -172,7 +182,7 @@ mod tests {
 
         assert!(!matches!(
             outcome.session.step(),
-            PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. })
         ));
     }
 
@@ -202,7 +212,7 @@ mod tests {
 
         assert!(!matches!(
             outcome.session.step(),
-            PhiAgentStep::ReAct(PhiReActStep::RequestCompact)
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. })
         ));
     }
 }

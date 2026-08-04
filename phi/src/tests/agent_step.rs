@@ -5,10 +5,7 @@ use crate::{
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     home::LocalPhiHome,
-    message::{
-        PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolMessage,
-        PhiUserMessage,
-    },
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolMessage},
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, PhiReActStep, Session},
@@ -424,47 +421,45 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn request_compact_leaves_unchanged_history_alone() {
-    for history in [
-        vec![
-            PhiMessage::system("sys1"),
-            PhiMessage::system("sys2"),
-            PhiMessage::user("hello"),
-            PhiMessage::assistant("world"),
-        ],
-        vec![PhiMessage::system("sys1"), PhiMessage::system("sys2")],
-    ] {
-        let session = Session::from_root(PhiAgentStep::request_compact(), history.clone());
+async fn request_compact_leaves_all_system_history_unchanged() {
+    let history = vec![PhiMessage::system("sys1"), PhiMessage::system("sys2")];
+    let session = Session::from_root(PhiAgentStep::request_compact(), history.clone());
 
-        let outcome = step_agent_builder(session)
-            .with_client(Arc::new(EmptyProvider))
-            .build()
-            .expect("agent should build")
-            .run_single_step()
-            .await;
+    let outcome = step_agent_builder(session)
+        .with_client(Arc::new(EmptyProvider))
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await;
 
-        assert_eq!(outcome.session.history(), history);
-        assert!(matches!(
-            outcome.session.step(),
-            PhiAgentStep::ReAct(PhiReActStep::Compacted)
-        ));
-    }
+    assert_eq!(outcome.session.history(), history);
+    assert!(matches!(
+        outcome.session.step(),
+        PhiAgentStep::ReAct(PhiReActStep::Compacted)
+    ));
 }
 
 #[tokio::test]
 async fn request_compact_retains_recent_user_tail_and_compacts_everything_else() {
-    let big = "x".repeat(100_000);
+    let big = "x".repeat(200_000);
+    let tool_call = PhiMessage::tool_call(
+        Some("call-1".into()),
+        "bash",
+        serde_json::json!({"cmd": "echo ok"}),
+    );
+    let tool_result = PhiMessage::tool_result(
+        Some("call-1".into()),
+        Some("bash".into()),
+        serde_json::json!({"ok": true}),
+    );
     let session = Session::from_root(
         PhiAgentStep::request_compact(),
         vec![
             PhiMessage::system("sys"),
             PhiMessage::user(big.clone()),
             PhiMessage::assistant("a1"),
-            PhiMessage::tool_result(
-                Some("call-1".into()),
-                Some("bash".into()),
-                serde_json::json!({"ok": true}),
-            ),
+            tool_call.clone(),
+            tool_result.clone(),
             PhiMessage::user("second"),
             PhiMessage::assistant("a2"),
             PhiMessage::user("third"),
@@ -479,19 +474,18 @@ async fn request_compact_retains_recent_user_tail_and_compacts_everything_else()
         .await;
 
     let history = outcome.session.history();
-    assert_eq!(history.len(), 5);
+    assert_eq!(history.len(), 8);
     assert_eq!(history[0], PhiMessage::system("sys"));
-    assert!(matches!(
-        &history[1],
-        PhiMessage::User(PhiUserMessage::Text(text))
-            if !text.is_empty() && text.len() < big.len()
-    ));
-    assert_eq!(history[2], PhiMessage::user("second"));
-    assert_eq!(history[3], PhiMessage::user("third"));
     assert_eq!(
-        history[4],
-        PhiMessage::user("[CONTEXT CHECKPOINT SUMMARY]\nsummary")
+        history[1],
+        PhiMessage::user("<compaction>summary</compaction>")
     );
+    assert_eq!(history[2], PhiMessage::assistant("a1"));
+    assert_eq!(history[3], tool_call);
+    assert_eq!(history[4], tool_result);
+    assert_eq!(history[5], PhiMessage::user("second"));
+    assert_eq!(history[6], PhiMessage::assistant("a2"));
+    assert_eq!(history[7], PhiMessage::user("third"));
 
     let expr = outcome.session.clone().into_expr();
     let compacted = &expr;
@@ -510,6 +504,11 @@ async fn request_compact_retains_recent_user_tail_and_compacts_everything_else()
             PhiMessage::system("sys"),
             PhiMessage::user(big.clone()),
             PhiMessage::assistant("a1"),
+            PhiMessage::tool_call(
+                Some("call-1".into()),
+                "bash",
+                serde_json::json!({"cmd": "echo ok"}),
+            ),
             PhiMessage::tool_result(
                 Some("call-1".into()),
                 Some("bash".into()),

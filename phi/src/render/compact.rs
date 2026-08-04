@@ -1,87 +1,42 @@
 use crate::{
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
-    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiUserMessage},
-    utils::APPROX_BYTES_PER_TOKEN,
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiToolMessage},
 };
 
-use super::{PhiProviderCall, PhiRender, approx_history_token_count, approx_text_token_count};
+use super::{
+    PhiProviderCall, PhiRender, approx_history_token_count, approx_message_token_count,
+    approx_text_token_count,
+};
 
-const AUTO_COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 const COMPACT_SUMMARY_MAX_TOKENS: u64 = 4_096;
 const COMPACT_PROMPT: &str = include_str!("../prompts/compact.txt");
-const COMPACT_SUMMARY_PREFIX: &str = "[CONTEXT CHECKPOINT SUMMARY]";
+
+pub(super) fn compact_prompt_token_count() -> usize {
+    approx_text_token_count(COMPACT_PROMPT)
+}
 
 pub(super) async fn compact_history(
     render: &PhiRender,
     request: &PhiProviderCall,
     history: &PhiHistory,
+    retain_rate: f32,
 ) -> PhiAgentRuntimeResult<PhiHistory> {
-    let history_tokens = approx_history_token_count(history);
-    if history_tokens <= AUTO_COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS {
+    let system_end = history
+        .iter()
+        .position(|message| !matches!(message, PhiMessage::System(_)))
+        .unwrap_or(history.len());
+    if system_end == history.len() {
         return Ok(history.clone());
     }
-
-    let first_non_system = history
-        .iter()
-        .position(|message| !matches!(message, PhiMessage::System(_)));
-
-    let Some(index) = first_non_system else {
-        return Ok(history.clone());
-    };
-
-    let mut remaining_tokens = AUTO_COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS;
-    let mut retained_users: Vec<(usize, PhiMessage)> = Vec::new();
-    let non_system_messages = history.iter().skip(index).enumerate().collect::<Vec<_>>();
-
-    for (offset, message) in non_system_messages.iter().rev() {
-        let PhiMessage::User(PhiUserMessage::Text(text)) = message else {
-            continue;
-        };
-
-        if remaining_tokens == 0 {
-            break;
-        }
-
-        let message_index = index + offset;
-        let tokens = approx_text_token_count(text);
-        if tokens <= remaining_tokens {
-            retained_users.push((message_index, (*message).clone()));
-            remaining_tokens = remaining_tokens.saturating_sub(tokens);
-            continue;
-        }
-
-        retained_users.push((
-            message_index,
-            PhiMessage::User(PhiUserMessage::Text(truncate_user_text_to_token_budget(
-                text,
-                remaining_tokens,
-            ))),
-        ));
-        break;
-    }
-
-    retained_users.reverse();
-
-    let retained_indices = retained_users
-        .iter()
-        .map(|(message_index, _)| *message_index)
-        .collect::<std::collections::BTreeSet<_>>();
-    let compacted = non_system_messages
-        .iter()
-        .filter(|(offset, _)| !retained_indices.contains(&(index + offset)))
-        .map(|(_, message)| (*message).clone())
-        .collect::<Vec<_>>();
-
-    if compacted.is_empty() {
+    let retain_tokens =
+        ((approx_history_token_count(history) as f32) * retain_rate).floor() as usize;
+    let retain_start = retained_suffix_start(history, system_end, retain_tokens);
+    if retain_start == system_end {
         return Ok(history.clone());
     }
-
-    let prefix = retained_users
-        .into_iter()
-        .map(|(_, message)| message)
-        .collect::<Vec<_>>();
-    let compacted_history = PhiHistory::from_messages(compacted);
-    let mut summary_input = compacted_history.clone();
+    let messages = history.to_messages();
+    let retained = messages[retain_start..].to_vec();
+    let mut summary_input = PhiHistory::from_messages(messages[..retain_start].to_vec());
     summary_input.push(PhiMessage::user(COMPACT_PROMPT));
 
     let mut summary_request = request.clone();
@@ -114,44 +69,73 @@ pub(super) async fn compact_history(
         ));
     }
 
-    let mut next_history = history.iter().take(index).cloned().collect::<Vec<_>>();
-    next_history.extend(prefix);
+    let mut next_history = messages[..system_end].to_vec();
     next_history.push(PhiMessage::user(format!(
-        "{COMPACT_SUMMARY_PREFIX}\n{summary}"
+        "<compaction>{summary}</compaction>"
     )));
+    next_history.extend(retained);
 
     Ok(next_history.into())
 }
 
-fn truncate_user_text_to_token_budget(text: &str, token_budget: usize) -> String {
-    if token_budget == 0 {
-        return String::new();
+fn retained_suffix_start(history: &PhiHistory, system_end: usize, token_budget: usize) -> usize {
+    let messages = history.iter().collect::<Vec<_>>();
+    let mut start = messages.len();
+    let mut tokens = 0usize;
+    while start > system_end {
+        let message_tokens = approx_message_token_count(messages[start - 1]);
+        if start < messages.len() && tokens.saturating_add(message_tokens) > token_budget {
+            break;
+        }
+        start -= 1;
+        tokens = tokens.saturating_add(message_tokens);
     }
 
-    let mut end = text
-        .len()
-        .min(token_budget.saturating_mul(APPROX_BYTES_PER_TOKEN));
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
+    loop {
+        let mut paired_call_start = start;
+        for message in &messages[start..] {
+            let PhiMessage::Tool(PhiToolMessage::ToolResult { id: Some(id), .. }) = message else {
+                continue;
+            };
+            if let Some(call_index) = messages[..start].iter().rposition(|candidate| {
+                matches!(
+                    candidate,
+                    PhiMessage::Tool(PhiToolMessage::ToolCall {
+                        id: Some(call_id),
+                        ..
+                    }) if call_id == id
+                )
+            }) {
+                paired_call_start = paired_call_start.min(call_index);
+            }
+        }
+        if paired_call_start == start || paired_call_start < system_end {
+            break;
+        }
+        start = paired_call_start;
     }
-    text[..end].to_string()
+    start
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
 
     use crate::{
         config::ModelRequestDefaults,
-        message::{PhiMessage, PhiUserMessage},
+        message::PhiMessage,
         render::{PhiModelResponse, PhiProviderCall, PhiRender, TestClient},
     };
 
-    use super::compact_history;
+    use super::{compact_history, retained_suffix_start};
 
     struct SummaryProvider;
+
+    struct CapturingSummaryProvider {
+        messages: Arc<Mutex<Option<crate::message::PhiHistory>>>,
+    }
 
     #[async_trait]
     impl TestClient for SummaryProvider {
@@ -166,12 +150,29 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl TestClient for CapturingSummaryProvider {
+        async fn complete(
+            &self,
+            _request: &PhiProviderCall,
+            messages: &crate::message::PhiHistory,
+        ) -> crate::error::PhiAgentRuntimeResult<PhiModelResponse> {
+            *self
+                .messages
+                .lock()
+                .expect("capture lock should be healthy") = Some(messages.clone());
+            Ok(PhiModelResponse::unspecified(vec![PhiMessage::assistant(
+                "summary",
+            )]))
+        }
+    }
+
     fn test_request() -> PhiProviderCall {
         PhiProviderCall::from_parts(&ModelRequestDefaults::defaults(), Vec::new())
     }
 
     #[tokio::test]
-    async fn compact_history_leaves_small_history_unchanged() {
+    async fn compact_history_leaves_history_unchanged_when_rate_covers_all() {
         let history = vec![
             PhiMessage::system("sys"),
             PhiMessage::user("hello"),
@@ -181,7 +182,7 @@ mod tests {
 
         let render = PhiRender::from_test_client(Arc::new(SummaryProvider));
         assert_eq!(
-            compact_history(&render, &test_request(), &history)
+            compact_history(&render, &test_request(), &history, 1.0)
                 .await
                 .expect("compact should succeed"),
             history
@@ -189,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_history_summarizes_middle_and_retains_recent_users() {
+    async fn compact_history_places_summary_before_the_retained_suffix() {
         let large = "x".repeat(100_000);
         let history = vec![
             PhiMessage::system("sys"),
@@ -200,23 +201,82 @@ mod tests {
         .into();
 
         let render = PhiRender::from_test_client(Arc::new(SummaryProvider));
-        let compacted = compact_history(&render, &test_request(), &history)
+        let compacted = compact_history(&render, &test_request(), &history, 0.1)
             .await
             .expect("compact should succeed");
         let messages = compacted.to_messages();
 
         assert_eq!(messages[0], PhiMessage::system("sys"));
         assert_eq!(
-            messages.last(),
-            Some(&PhiMessage::user(
-                "[CONTEXT CHECKPOINT SUMMARY]\nsummary from provider"
-            ))
+            messages[1],
+            PhiMessage::user("<compaction>summary from provider</compaction>")
         );
-        assert!(matches!(
-            &messages[1],
-            PhiMessage::User(PhiUserMessage::Text(text))
-                if !text.is_empty() && text.len() < large.len()
-        ));
-        assert_eq!(messages[2], PhiMessage::user("recent"));
+        assert_eq!(messages[2], PhiMessage::assistant("a1"));
+        assert_eq!(messages[3], PhiMessage::user("recent"));
+        assert_eq!(messages.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn compact_history_partitions_every_original_message_without_dropping_any() {
+        let captured = Arc::new(Mutex::new(None));
+        let history = vec![
+            PhiMessage::system("system"),
+            PhiMessage::user("old user"),
+            PhiMessage::assistant("old assistant"),
+            PhiMessage::user("recent user"),
+        ]
+        .into();
+        let render = PhiRender::from_test_client(Arc::new(CapturingSummaryProvider {
+            messages: captured.clone(),
+        }));
+
+        let compacted = compact_history(&render, &test_request(), &history, 0.1)
+            .await
+            .expect("compact should succeed");
+        let summary_input = captured
+            .lock()
+            .expect("capture lock should be healthy")
+            .clone()
+            .expect("summary request should capture its input");
+        let summary_messages = summary_input.to_messages();
+        assert_eq!(
+            summary_messages.last(),
+            Some(&PhiMessage::user(include_str!("../prompts/compact.txt")))
+        );
+
+        let original = history.to_messages();
+        let retained = compacted.to_messages()[2..].to_vec();
+        assert_eq!(&original[..1], &compacted.to_messages()[..1]);
+        assert_eq!(
+            original,
+            summary_messages[..summary_messages.len() - 1]
+                .iter()
+                .chain(retained.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn retained_suffix_keeps_tool_call_and_result_together() {
+        let history = vec![
+            PhiMessage::system("sys"),
+            PhiMessage::user("old"),
+            PhiMessage::tool_call(
+                Some("call-1".into()),
+                "bash",
+                serde_json::json!({"cmd": "echo ok"}),
+            ),
+            PhiMessage::tool_result(
+                Some("call-1".into()),
+                Some("bash".into()),
+                serde_json::json!({"stdout": "ok"}),
+            ),
+        ]
+        .into();
+
+        let start = retained_suffix_start(&history, 1, 1);
+
+        assert_eq!(start, 2);
     }
 }

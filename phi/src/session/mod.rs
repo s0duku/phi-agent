@@ -45,7 +45,9 @@ impl PhiFailedStep {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PhiReActStep {
-    RequestCompact,
+    RequestCompact {
+        retain_rate: f32,
+    },
     RequestProvider {
         detail: String,
         #[serde(flatten)]
@@ -73,7 +75,7 @@ impl PhiAgentStep {
     }
 
     pub fn request_compact() -> Self {
-        Self::ReAct(PhiReActStep::RequestCompact)
+        Self::ReAct(PhiReActStep::request_compact())
     }
 
     pub fn request_executor(
@@ -156,7 +158,11 @@ impl PhiReActStep {
     }
 
     pub fn request_compact() -> Self {
-        Self::RequestCompact
+        Self::RequestCompact { retain_rate: 0.1 }
+    }
+
+    pub(crate) fn request_compact_with_retain_rate(retain_rate: f32) -> Self {
+        Self::RequestCompact { retain_rate }
     }
 
     pub fn request_executor(
@@ -179,7 +185,7 @@ impl PhiReActStep {
 
     pub fn detail(&self) -> &str {
         match self {
-            Self::RequestCompact => "request compact",
+            Self::RequestCompact { .. } => "request compact",
             Self::Compacted => "after compacted",
             Self::RequestProvider { detail, .. }
             | Self::RequestExecutor { detail, .. }
@@ -198,7 +204,9 @@ impl PhiReActStep {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum PhiAgentStepWire {
-    RequestCompact,
+    RequestCompact {
+        retain_rate: f32,
+    },
     RequestProvider {
         detail: String,
         #[serde(flatten)]
@@ -222,7 +230,9 @@ enum PhiAgentStepWire {
 impl From<PhiAgentStepWire> for PhiAgentStep {
     fn from(step: PhiAgentStepWire) -> Self {
         match step {
-            PhiAgentStepWire::RequestCompact => Self::ReAct(PhiReActStep::RequestCompact),
+            PhiAgentStepWire::RequestCompact { retain_rate } => {
+                Self::ReAct(PhiReActStep::RequestCompact { retain_rate })
+            }
             PhiAgentStepWire::RequestProvider { detail, call } => {
                 Self::ReAct(PhiReActStep::RequestProvider { detail, call })
             }
@@ -245,7 +255,11 @@ impl From<PhiAgentStepWire> for PhiAgentStep {
 impl From<&PhiAgentStep> for PhiAgentStepWire {
     fn from(step: &PhiAgentStep) -> Self {
         match step {
-            PhiAgentStep::ReAct(PhiReActStep::RequestCompact) => Self::RequestCompact,
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate }) => {
+                Self::RequestCompact {
+                    retain_rate: *retain_rate,
+                }
+            }
             PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, call }) => {
                 Self::RequestProvider {
                     detail: detail.clone(),
@@ -447,6 +461,13 @@ impl Session {
     pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {
         fn validate_expr(expr: &PhiStepExpr) -> Result<(), PhiAgentRuntimeError> {
             match expr.step() {
+                PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate })
+                    if !(0.0..=0.5).contains(retain_rate) || *retain_rate == 0.0 =>
+                {
+                    return Err(PhiAgentRuntimeError::session(format!(
+                        "request_compact retain_rate must be greater than 0 and at most 0.5, got {retain_rate}"
+                    )));
+                }
                 PhiAgentStep::ReAct(PhiReActStep::Compacted) if expr.expr().is_none() => {
                     return Err(PhiAgentRuntimeError::session(
                         "compacted frame must preserve a parent expr",

@@ -14,7 +14,7 @@ use crate::{
     executor::ToolCallOutput,
     message::PhiMessage,
     module::{PhiModule, PhiModuleLayout},
-    session::PhiAgentStep,
+    session::{PhiAgentStep, PhiReActStep},
 };
 use governance::auto_compact::AutoCompactPolicy;
 use governance::loop_guard::{
@@ -141,6 +141,32 @@ impl PhiModule for DefaultFailedRecoveryModule {
         cont: StepCont,
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
+        if let PhiAgentStep::Failed(failed) = runtime.base_step()
+            && let PhiAgentRuntimeError::CompactExceededLimit { retain_rate, .. } = failed.error()
+            && runtime.base_expr().expr().is_some_and(|parent| {
+                matches!(
+                    parent.step(),
+                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact {
+                        retain_rate: parent_rate
+                    }) if parent_rate == retain_rate
+                )
+            })
+        {
+            let next_rate = *retain_rate + 0.05;
+            if next_rate > 0.5 {
+                runtime
+                    .emit_warning("compact retained-history limit reached; preserving failed step");
+                return Ok(StepBounce::KeepBaseStep(runtime));
+            }
+            runtime.emit_warning(&format!(
+                "compact request exceeded the provider context limit; retrying with {next_rate}% retained history"
+            ));
+            return Ok(StepBounce::ReplaceBaseStep(
+                runtime,
+                PhiReActStep::request_compact_with_retain_rate(next_rate),
+            ));
+        }
+
         if let PhiAgentStep::Failed(failed) = runtime.base_step().clone()
             && let error = failed.error()
             && matches!(
