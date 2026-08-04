@@ -110,6 +110,13 @@ impl PhiModule for RejectFirstModelResponseModule {
 }
 
 fn compact_equivalence_agent(session: Session, command: PhiAgentCommand) -> crate::agent::PhiAgent {
+    let post_compact_history = PhiHistory::from_messages(vec![
+        PhiMessage::user("compacted context"),
+        PhiMessage::assistant("first"),
+    ]);
+    let compact_threshold = crate::render::compact_prompt_token_count()
+        + crate::render::approx_history_token_count(&post_compact_history)
+        + 1;
     let render = crate::render::PhiRender::from_test_client(Arc::new(HistoryDrivenProvider))
         .with_compact_override(Arc::new(|_history| {
             Ok(PhiHistory::from_messages(vec![PhiMessage::user(
@@ -123,7 +130,9 @@ fn compact_equivalence_agent(session: Session, command: PhiAgentCommand) -> crat
         .with_model_defaults(test_model_defaults())
         .with_render(render)
         .with_module(
-            crate::features::governance::auto_compact::AutoCompactPolicy::with_threshold(200),
+            crate::features::governance::auto_compact::AutoCompactPolicy::with_threshold(
+                compact_threshold,
+            ),
         )
         .build()
         .expect("compact equivalence agent should build")
