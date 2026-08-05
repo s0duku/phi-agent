@@ -31,7 +31,7 @@ pub(super) struct PendingOutput {
 }
 
 impl OutputJournal {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(initial_rendered_rows: Vec<String>) -> Self {
         Self {
             bytes: VecDeque::new(),
             line_count: 0,
@@ -40,7 +40,7 @@ impl OutputJournal {
             end_offset: 0,
             checkpoint: TerminalCheckpoint {
                 stream_offset: 0,
-                rendered_rows: Vec::new(),
+                rendered_rows: initial_rendered_rows,
             },
         }
     }
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn delivery_only_acknowledges_the_observed_prefix() {
-        let mut output = OutputJournal::new();
+        let mut output = OutputJournal::new(Vec::new());
         output.append(b"first\n", 1_000, 1024);
         let first =
             TerminalObservation::from_rendered_rows(vec!["first".to_owned()], output.end_offset);

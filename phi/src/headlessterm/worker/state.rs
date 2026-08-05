@@ -54,11 +54,12 @@ pub(crate) struct TerminalUpdate {
 
 impl TerminalEmulator {
     fn new() -> Self {
+        let initial_rendered_rows = vec![String::new(); usize::from(ROWS)];
         Self {
             parser: vte::Parser::new(),
             dispatcher: Dispatcher::default(),
             screen: vt100::Parser::new(ROWS, COLS, SCROLLBACK_ROWS),
-            output: OutputJournal::new(),
+            output: OutputJournal::new(initial_rendered_rows),
         }
     }
 

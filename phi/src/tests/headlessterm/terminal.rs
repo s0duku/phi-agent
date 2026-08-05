@@ -68,6 +68,17 @@ fn private_display_controls_keep_their_wire_order() {
 }
 
 #[test]
+fn empty_screen_control_sequences_do_not_create_visible_output() {
+    let mut terminal = TerminalState::new();
+    let update = terminal.process(b"\x1b[2J\x1b[H");
+    let observation = terminal.observe(update.activity);
+
+    assert!(update.activity.displayed());
+    assert!(!observation.changed_since_checkpoint());
+    assert_eq!(terminal.rendered_output(), "");
+}
+
+#[test]
 fn device_and_size_queries_have_headlessterm_responses() {
     let mut terminal = TerminalState::new();
     let update = terminal.process(b"\x1b[5n\x1b[c\x1b[>c\x1b[18t");
