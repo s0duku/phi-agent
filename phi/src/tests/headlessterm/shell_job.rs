@@ -212,6 +212,39 @@ async fn interaction_restarts_running_job_expiration() {
     assert!(matches!(expired.status(), JobStatus::NoExist));
 }
 
+#[tokio::test]
+async fn cancelled_interaction_releases_worker_without_consuming_output() {
+    let command = if cfg!(windows) {
+        "Start-Sleep -Milliseconds 300; Write-Output after-cancel; Start-Sleep -Seconds 30"
+    } else {
+        "sleep 0.3; printf after-cancel; sleep 30"
+    };
+    let (handle, initial) = HeadlessTerminal::new()
+        .exec_job(command, Duration::ZERO, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(initial.is_running());
+    let handle = handle.unwrap();
+
+    let pending = access_interact(JobHandle(handle.0.clone()), "", Duration::from_secs(30));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), pending)
+            .await
+            .is_err()
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let read = tokio::time::timeout(
+        Duration::from_secs(1),
+        access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO),
+    )
+    .await
+    .expect("cancelled interaction should release the worker promptly");
+    assert!(read.outputs().contains("after-cancel"));
+
+    let _ = HeadlessTerminal::new().close_job(handle).await;
+}
+
 fn long_running_command() -> &'static str {
     if cfg!(windows) {
         "Start-Sleep -Seconds 30"

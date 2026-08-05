@@ -12,7 +12,13 @@ pub(crate) use step::{
     StepInterveneResult,
 };
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 pub(crate) use crate::expr::{PhiExprDelta, PhiStepExpr};
 #[cfg(test)]
@@ -76,11 +82,24 @@ pub struct PhiAgent {
     runtime: Option<PhiAgentRuntime>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct PhiCancellation {
+    inner: Arc<PhiCancellationState>,
+}
+
+#[derive(Default)]
+struct PhiCancellationState {
+    cancelled: AtomicBool,
+    commit_on_cancel: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
 #[derive(Clone)]
 pub(crate) struct PhiRuntimeSetup {
     config: PhiConfig,
     command: PhiAgentCommand,
     home: Arc<dyn PhiHome>,
+    cancellation: PhiCancellation,
 }
 
 pub(crate) struct PhiAgentRuntime {
@@ -268,6 +287,7 @@ impl PreparedPhiAgentBuilder {
                     config: self.context.config,
                     command: self.context.command,
                     home: self.home,
+                    cancellation: PhiCancellation::default(),
                 },
             }),
         })
@@ -347,6 +367,42 @@ impl PhiAgent {
             .expect("PhiAgent runtime should exist during step evaluation");
         self.runtime = Some(runtime.run_step().await);
     }
+
+    pub(crate) fn cancellation(&self) -> PhiCancellation {
+        self.runtime
+            .as_ref()
+            .expect("PhiAgent runtime should exist while borrowing cancellation")
+            .setup
+            .cancellation
+            .clone()
+    }
+}
+
+impl PhiCancellation {
+    pub(crate) fn commit_current_step_on_cancel(&self) {
+        self.inner.commit_on_cancel.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn cancel(&self) {
+        if !self.inner.cancelled.swap(true, Ordering::AcqRel) {
+            self.inner.notify.notify_waiters();
+        }
+    }
+
+    pub(crate) fn should_commit_current_step(&self) -> bool {
+        self.inner.commit_on_cancel.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        if self.inner.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let notified = self.inner.notify.notified();
+        if self.inner.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        notified.await;
+    }
 }
 
 impl PhiAgentRuntime {
@@ -366,6 +422,10 @@ impl PhiRuntimeSetup {
 
     pub(crate) fn home(&self) -> &dyn PhiHome {
         self.home.as_ref()
+    }
+
+    pub(crate) fn cancellation(&self) -> &PhiCancellation {
+        &self.cancellation
     }
 }
 

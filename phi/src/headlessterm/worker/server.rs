@@ -1,7 +1,7 @@
 use std::io;
 use std::time::Duration;
 
-use interprocess::local_socket::{Listener, traits::Listener as _};
+use interprocess::local_socket::{Listener, Stream, traits::Listener as _, traits::Stream as _};
 
 use crate::headlessterm::job::{HeadlessTermError, JobAccess, TerminalCommand, WorkerLaunchStage};
 
@@ -123,7 +123,7 @@ enum OperationResult {
     },
 }
 
-fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutcome, String> {
+fn serve(stream: &mut Stream, job: &mut RunningJob) -> Result<ServeOutcome, String> {
     let request: Request = match rpc::read_frame(stream) {
         Ok(request) => request,
         Err(_) => {
@@ -142,16 +142,31 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
                 Ok(OperationResult::Written(status))
             })
         }
-        Request::Access(JobAccess::Interact { data, return_when }) => job
-            .interact(data.as_bytes(), return_when)
-            .map(|interaction| {
+        Request::Access(JobAccess::Interact { data, return_when }) => {
+            stream
+                .set_nonblocking(true)
+                .map_err(|error| error.to_string())?;
+            let interaction =
+                job.interact(data.as_bytes(), return_when, || client_connected(stream));
+            let Some(interaction) = interaction? else {
+                return Ok(ServeOutcome {
+                    handled: true,
+                    should_exit: false,
+                    terminal_flushed: false,
+                });
+            };
+            stream
+                .set_nonblocking(false)
+                .map_err(|error| error.to_string())?;
+            Ok({
                 let (status, waited, pending) = interaction.into_parts();
                 OperationResult::Terminal {
                     status,
                     waited,
                     pending,
                 }
-            }),
+            })
+        }
         Request::Close => job.close().and_then(|status| {
             job.observe_terminal()?;
             Ok(OperationResult::Terminal {
@@ -204,8 +219,20 @@ fn serve(stream: &mut impl ReadWrite, job: &mut RunningJob) -> Result<ServeOutco
     )
 }
 
+fn client_connected(stream: &mut Stream) -> bool {
+    let mut byte = [0_u8; 1];
+    matches!(
+        std::io::Read::read(stream, &mut byte),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            )
+    )
+}
+
 fn write_response(
-    stream: &mut impl ReadWrite,
+    stream: &mut Stream,
     response: Response,
     delivery: Option<super::state::TerminalDelivery>,
     close_requested: bool,
@@ -229,9 +256,6 @@ fn write_response(
         terminal_flushed,
     })
 }
-
-trait ReadWrite: std::io::Read + std::io::Write {}
-impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)

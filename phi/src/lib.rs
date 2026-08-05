@@ -69,6 +69,7 @@ enum SessionInput {
 enum CliAgentExit {
     Completed,
     Interrupted,
+    InterruptedAfterStep,
     Panicked(Box<dyn Any + Send>),
 }
 
@@ -348,6 +349,9 @@ async fn run_cli_agent(
         let checkpoint = agent.session();
         match step_or_ctrl_c(&mut agent).await? {
             CliAgentExit::Completed => {}
+            CliAgentExit::InterruptedAfterStep => {
+                return Ok((agent.into_session(), CliAgentExit::InterruptedAfterStep));
+            }
             exit => return Ok((checkpoint, exit)),
         }
         let session = agent.session();
@@ -390,18 +394,21 @@ async fn step_or_interrupt<I>(
 where
     I: std::future::Future<Output = Result<(), std::io::Error>>,
 {
-    catch_future_unwind(async {
-        tokio::select! {
-            biased;
-            signal = interrupt => {
-                signal?;
-                Ok(CliAgentExit::Interrupted)
+    let cancellation = agent.cancellation();
+    let mut step = Box::pin(catch_future_unwind(agent.step()));
+    let outcome = tokio::select! {
+        biased;
+        signal = interrupt => {
+            signal?;
+            cancellation.cancel();
+            if !cancellation.should_commit_current_step() {
+                return Ok(CliAgentExit::Interrupted);
             }
-            () = agent.step() => Ok(CliAgentExit::Completed),
+            step.await.map(|()| CliAgentExit::InterruptedAfterStep)
         }
-    })
-    .await
-    .unwrap_or_else(|payload| Ok(CliAgentExit::Panicked(payload)))
+        outcome = &mut step => outcome.map(|()| CliAgentExit::Completed),
+    };
+    Ok(outcome.unwrap_or_else(CliAgentExit::Panicked))
 }
 
 async fn catch_future_unwind<F>(future: F) -> Result<F::Output, Box<dyn Any + Send>>
@@ -455,7 +462,10 @@ fn persist_cli_agent_session(
         persist_panicked_session(&session, session_input, quiet, payload);
     }
     persist_outcome_session(&session, session_input)?;
-    if matches!(exit, CliAgentExit::Interrupted) {
+    if matches!(
+        exit,
+        CliAgentExit::Interrupted | CliAgentExit::InterruptedAfterStep
+    ) {
         if !quiet {
             eprintln!(
                 "{}",

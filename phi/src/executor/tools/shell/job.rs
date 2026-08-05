@@ -1,5 +1,5 @@
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -121,7 +121,7 @@ impl PhiTool for ShellJobInteractTool {
     }
 
     fn description(&self) -> &str {
-        "Interact with a running job and consume its newly available output. Status running_output_settled means linear output became quiet but the job may produce more later. Status running_screen_sampled is a bounded snapshot of an interactive screen that may still be updating. Status running_wait_elapsed means the maximum wait elapsed, so output may be a stage snapshot and should be read again. Omit input to only read output; provide an empty string for pressing Enter once; non-empty unterminated input is submitted with one carriage return."
+        "Interact with a running job and consume its newly available output. Status running_output_settled means linear output became quiet but the job may produce more later. Status running_screen_sampled is a bounded snapshot of an interactive screen that may still be updating. Status running_wait_elapsed means the maximum wait elapsed, so output may be a stage snapshot and should be read again. Status running_user_interrupted means the interaction was interrupted by the user while the job remains running; continue with job_interact or stop it explicitly with job_close. Omit input to only read output; provide an empty string for pressing Enter once; non-empty unterminated input is submitted with one carriage return."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -151,7 +151,7 @@ impl PhiTool for ShellJobInteractTool {
     async fn call(
         &self,
         request: &mut ToolCallRequest,
-        _runtime: &PhiAgentRuntime,
+        runtime: &PhiAgentRuntime,
     ) -> PhiToolResult {
         let args = match parse_args::<InteractArgs>(request, self.name()) {
             Ok(args) => args,
@@ -160,30 +160,48 @@ impl PhiTool for ShellJobInteractTool {
         if let Err(error) = prepare_local_jobs() {
             return Ok(failure(request, self.name(), error));
         }
+        runtime
+            .setup()
+            .cancellation()
+            .commit_current_step_on_cancel();
         let handle_value = args.handle.clone();
         let handle = JobHandle(args.handle);
         let wait = Duration::from_millis(args.wait_ms);
-        let result = match interactive_input(args.input) {
-            InteractiveInput::Direct(data) => interact(handle, data, wait).await,
-            InteractiveInput::Submit(data) => {
-                let terminal = HeadlessTerminal::new();
-                let written = terminal
-                    .access_job(JobHandle(handle.0.clone()), JobAccess::Write { data })
-                    .await;
-                match written {
-                    Ok(JobAccessResult::Written(_)) => {}
-                    Ok(JobAccessResult::Interacted(_)) => {
-                        return Ok(failure(
-                            request,
-                            self.name(),
-                            "job access returned a terminal snapshot for write request".into(),
-                        ));
+        let started_at = Instant::now();
+        let interaction = async {
+            match interactive_input(args.input) {
+                InteractiveInput::Direct(data) => interact(handle, data, wait).await,
+                InteractiveInput::Submit(data) => {
+                    let terminal = HeadlessTerminal::new();
+                    let written = terminal
+                        .access_job(JobHandle(handle.0.clone()), JobAccess::Write { data })
+                        .await;
+                    match written {
+                        Ok(JobAccessResult::Written(_)) => {}
+                        Ok(JobAccessResult::Interacted(_)) => {
+                            return Err(crate::headlessterm::HeadlessTermError::protocol(
+                                "job access returned a terminal snapshot for write request",
+                            ));
+                        }
+                        Err(error) => return Err(error),
                     }
-                    Err(error) => return Err(Box::new(error)),
+                    tokio::time::sleep(SUBMIT_KEY_DELAY).await;
+                    interact(handle, "\r".into(), wait).await
                 }
-                tokio::time::sleep(SUBMIT_KEY_DELAY).await;
-                interact(handle, "\r".into(), wait).await
             }
+        };
+
+        let result = tokio::select! {
+            biased;
+            () = runtime.setup().cancellation().cancelled() => {
+                return Ok(interrupted_response(
+                    request,
+                    self.name(),
+                    JobHandle(handle_value),
+                    started_at.elapsed(),
+                ));
+            }
+            result = interaction => result,
         };
 
         match result {
@@ -196,6 +214,27 @@ impl PhiTool for ShellJobInteractTool {
             Err(error) => Err(Box::new(error)),
         }
     }
+}
+
+fn interrupted_response(
+    request: &ToolCallRequest,
+    name: &str,
+    handle: JobHandle,
+    waited: Duration,
+) -> ToolCallResponse {
+    ToolCallResponse::new(
+        request,
+        name,
+        serde_json::json!({
+            "status": "running_user_interrupted",
+            "running": true,
+            "exit_code": null,
+            "output": "",
+            "truncated": false,
+            "handle": handle.0,
+            "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+        }),
+    )
 }
 
 async fn interact(
@@ -428,5 +467,36 @@ mod tests {
             assert_eq!(response.output.as_value()["status"], expected);
             assert_eq!(response.output.as_value()["handle"], "mira-kest");
         }
+    }
+
+    #[test]
+    fn interrupted_interaction_explicitly_reports_that_the_job_is_still_running() {
+        let request = ToolCallRequest {
+            id: "call-1".into(),
+            call_id: None,
+            name: "job_interact".into(),
+            arguments: serde_json::json!({}),
+        };
+
+        let response = interrupted_response(
+            &request,
+            "job_interact",
+            JobHandle("mira-kest".into()),
+            Duration::from_millis(123),
+        );
+
+        assert_eq!(
+            response.output.as_value()["status"],
+            "running_user_interrupted"
+        );
+        assert_eq!(response.output.as_value()["running"], true);
+        assert_eq!(response.output.as_value()["handle"], "mira-kest");
+        assert_eq!(response.output.as_value()["waited_ms"], 123);
+        assert!(
+            ShellJobInteractTool
+                .description()
+                .contains("job remains running")
+        );
+        assert!(ShellJobInteractTool.description().contains("job_close"));
     }
 }

@@ -108,6 +108,9 @@ fn continuously_changing_output_reports_wait_elapsed() {
     assert!(matches!(initial.status(), JobStatus::RunningWaitElapsed));
     assert!(!initial.outputs().is_empty());
 
-    let closed = crate::headlessterm::worker::client::close_job(handle.unwrap()).unwrap();
+    let closed = crate::tests::headlessterm::support::block_on(
+        crate::headlessterm::worker::client::close_job(handle.unwrap()),
+    )
+    .unwrap();
     assert!(matches!(closed.status(), JobStatus::Closed(_)));
 }

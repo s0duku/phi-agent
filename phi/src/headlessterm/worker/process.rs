@@ -67,7 +67,8 @@ impl RunningJob {
         &mut self,
         input: &[u8],
         return_when: ReturnWhen,
-    ) -> Result<CompletedInteraction, String> {
+        mut connected: impl FnMut() -> bool,
+    ) -> Result<Option<CompletedInteraction>, String> {
         let started_at = Instant::now();
         if !input.is_empty() {
             self.pty.write_all(input)?;
@@ -78,23 +79,31 @@ impl RunningJob {
             interaction.observe(&self.observation, observed_at);
             if let Some(code) = self.refresh_status()? {
                 self.observe_after_exit()?;
-                return self.complete_interaction(Status::Exited(code), started_at.elapsed());
+                return self
+                    .complete_interaction(Status::Exited(code), started_at.elapsed())
+                    .map(Some);
             }
             match interaction.boundary() {
                 InteractionBoundary::Pending(remaining) => {
+                    if !connected() {
+                        return Ok(None);
+                    }
                     std::thread::sleep(remaining.min(POLL_INTERVAL));
                 }
                 InteractionBoundary::OutputSettled => {
                     return self
-                        .complete_interaction(Status::RunningOutputSettled, started_at.elapsed());
+                        .complete_interaction(Status::RunningOutputSettled, started_at.elapsed())
+                        .map(Some);
                 }
                 InteractionBoundary::ScreenSampled => {
                     return self
-                        .complete_interaction(Status::RunningScreenSampled, started_at.elapsed());
+                        .complete_interaction(Status::RunningScreenSampled, started_at.elapsed())
+                        .map(Some);
                 }
                 InteractionBoundary::WaitElapsed => {
                     return self
-                        .complete_interaction(Status::RunningWaitElapsed, started_at.elapsed());
+                        .complete_interaction(Status::RunningWaitElapsed, started_at.elapsed())
+                        .map(Some);
                 }
             }
         }

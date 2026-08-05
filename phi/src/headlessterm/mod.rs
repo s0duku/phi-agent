@@ -29,7 +29,7 @@ impl HeadlessTerminal {
         C: Into<TerminalCommand>,
         W: Into<ReturnWhen>,
     {
-        worker::client::exec_job(command.into(), return_when.into(), expiration)
+        worker::client::exec_job(command.into(), return_when.into(), expiration).await
     }
 
     pub async fn access_job(
@@ -37,11 +37,11 @@ impl HeadlessTerminal {
         handle: JobHandle,
         access: JobAccess,
     ) -> Result<JobAccessResult, HeadlessTermError> {
-        worker::client::access_job(handle, access)
+        worker::client::access_job(handle, access).await
     }
 
     pub async fn close_job(&self, handle: JobHandle) -> Result<JobInfo, HeadlessTermError> {
-        worker::client::close_job(handle)
+        worker::client::close_job(handle).await
     }
 }
 

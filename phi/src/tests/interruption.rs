@@ -9,9 +9,12 @@ use tokio::sync::Notify;
 
 use crate::{
     error::PhiAgentRuntimeResult,
-    message::{PhiHistory, PhiMessage},
+    executor::{ToolCallOutput, ToolCallRequest},
+    headlessterm::{HeadlessTerminal, JobHandle, ReturnWhen},
+    message::{PhiHistory, PhiMessage, PhiToolMessage},
+    module::{PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiProviderCall, TestClient},
-    session::{PhiAgentStep, Session},
+    session::{PhiAgentStep, PhiReActStep, Session},
     tests::support::{step_agent_builder, test_model_defaults},
 };
 
@@ -19,6 +22,22 @@ use super::support::unique_test_home;
 
 struct PendingProvider {
     started: Arc<Notify>,
+}
+
+struct MarkInterruptedToolResult;
+
+impl PhiModule for MarkInterruptedToolResult {
+    type ProbInfo = ();
+
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
+        let PhiAgentStepEvent::AfterToolCall { result, .. } = event else {
+            return Ok(());
+        };
+        let mut output = result.output.as_value().clone();
+        output["after_tool_call"] = serde_json::Value::Bool(true);
+        result.output = ToolCallOutput::new(output);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -64,6 +83,81 @@ async fn interrupted_step_leaves_the_pre_call_session_checkpoint_serializable() 
     let restored = Session::load_bytes(&serialized).unwrap();
     assert_eq!(restored.history(), checkpoint.history());
     assert_eq!(restored.step(), checkpoint.step());
+}
+
+#[tokio::test]
+async fn interrupted_job_interact_commits_a_structured_tool_result_before_exit() {
+    let terminal = HeadlessTerminal::new();
+    let command = if cfg!(windows) {
+        "Start-Sleep -Seconds 30"
+    } else {
+        "sleep 30"
+    };
+    let (handle, initial) = terminal
+        .exec_job(
+            command,
+            ReturnWhen::output_settled(std::time::Duration::ZERO),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert!(initial.is_running());
+    let handle = handle.unwrap();
+    let session = Session::from_root(
+        PhiAgentStep::request_executor(
+            "tool execution is pending",
+            Vec::new(),
+            vec![ToolCallRequest {
+                id: "call_1".into(),
+                call_id: Some("call_1".into()),
+                name: "job_interact".into(),
+                arguments: serde_json::json!({
+                    "handle": handle.0,
+                    "wait_ms": 30_000,
+                }),
+            }],
+        ),
+        vec![PhiMessage::user("wait for it")],
+    );
+    let mut agent = step_agent_builder(session)
+        .with_module(MarkInterruptedToolResult)
+        .build()
+        .unwrap();
+
+    let exit = crate::step_or_interrupt(&mut agent, async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(exit, crate::CliAgentExit::InterruptedAfterStep));
+    assert!(matches!(
+        agent.session().step(),
+        PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+    ));
+    let history = agent.session().history();
+    assert!(matches!(
+        &history[1],
+        PhiMessage::Tool(PhiToolMessage::ToolCall { id, name, .. })
+            if id.as_deref() == Some("call_1") && name == "job_interact"
+    ));
+    assert!(matches!(
+        &history[2],
+        PhiMessage::Tool(PhiToolMessage::ToolResult { id, name, result })
+            if id.as_deref() == Some("call_1")
+                && name.as_deref() == Some("job_interact")
+                && result["status"] == "running_user_interrupted"
+                && result["running"] == true
+                && result["after_tool_call"] == true
+                && result["output"] == ""
+                && result["truncated"] == false
+                && result["handle"] == handle.0
+                && result["waited_ms"].as_u64().is_some_and(|waited| waited >= 50)
+                && result["waited_ms"].as_u64().is_some_and(|waited| waited < 5_000)
+    ));
+
+    let _ = terminal.close_job(JobHandle(handle.0)).await;
 }
 
 struct PanickingProvider;
