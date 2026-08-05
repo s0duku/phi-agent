@@ -100,6 +100,43 @@ fn agent_commands_accept_null_executor() {
 }
 
 #[test]
+fn cli_model_retry_matches_library_command_defaults_and_explicit_values() {
+    let default_cli = Cli::try_parse_from(["phi", "step", "--user", "hello"])
+        .expect("step should parse without a retry option");
+    let crate::Command::Step(default_args) = default_cli.command else {
+        panic!("expected step command");
+    };
+    let default_command = crate::agent::PhiAgentCommand::from_step_args(
+        crate::agent::AgentCommandArgs::from(&default_args.base),
+    )
+    .expect("default step command should build");
+    assert_eq!(default_command.max_model_request_retries(), None);
+    assert_eq!(
+        crate::agent::PhiAgentCommand::Step(crate::agent::PhiAgentCommand::step())
+            .max_model_request_retries(),
+        None
+    );
+
+    let explicit_cli = Cli::try_parse_from([
+        "phi",
+        "step",
+        "--max-model-request-retries",
+        "5",
+        "--user",
+        "hello",
+    ])
+    .expect("step should parse an explicit retry budget");
+    let crate::Command::Step(explicit_args) = explicit_cli.command else {
+        panic!("expected step command");
+    };
+    let explicit_command = crate::agent::PhiAgentCommand::from_step_args(
+        crate::agent::AgentCommandArgs::from(&explicit_args.base),
+    )
+    .expect("explicit step command should build");
+    assert_eq!(explicit_command.max_model_request_retries(), Some(5));
+}
+
+#[test]
 fn null_executor_dominates_container_in_agent_command_options() {
     let cli = Cli::try_parse_from([
         "phi",

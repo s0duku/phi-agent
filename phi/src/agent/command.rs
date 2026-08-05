@@ -48,6 +48,7 @@ pub struct RunCommandArgs {
     pub max_steps: Option<usize>,
 }
 
+#[derive(Default)]
 pub struct AgentCommandArgs {
     pub quiet: bool,
     pub null_executor: bool,
@@ -74,19 +75,19 @@ impl PhiAgentCommand {
     pub fn run() -> RunCommand {
         RunCommand {
             max_steps: None,
-            options: AgentCommandOptions::default(),
+            options: AgentCommandArgs::default().into(),
         }
     }
 
     pub fn step() -> StepCommand {
         StepCommand {
-            options: AgentCommandOptions::default(),
+            options: AgentCommandArgs::default().into(),
         }
     }
 
     pub fn probe() -> ProbeCommand {
         ProbeCommand {
-            max_model_request_retries: Some(3),
+            max_model_request_retries: None,
         }
     }
 
@@ -184,16 +185,6 @@ impl PhiAgentCommand {
             Self::Run(command) | Self::Yolo(command) => Some(&command.options),
             Self::Step(command) => Some(&command.options),
             _ => None,
-        }
-    }
-}
-
-impl Default for AgentCommandOptions {
-    fn default() -> Self {
-        Self {
-            max_model_request_retries: Some(3),
-            quiet: false,
-            executor: ExecutorOptions::Enabled { container: None },
         }
     }
 }
@@ -340,6 +331,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::{AgentCommandArgs, PhiAgentCommand};
+
+    #[test]
+    fn library_command_defaults_do_not_enable_model_retry() {
+        for command in [
+            PhiAgentCommand::Run(PhiAgentCommand::run()),
+            PhiAgentCommand::Yolo(PhiAgentCommand::yolo()),
+            PhiAgentCommand::Step(PhiAgentCommand::step()),
+            PhiAgentCommand::Probe(PhiAgentCommand::probe()),
+        ] {
+            assert_eq!(command.max_model_request_retries(), None);
+        }
+    }
+
+    #[test]
+    fn normalized_command_options_preserve_explicit_model_retry_budget() {
+        let command = PhiAgentCommand::from_step_args(AgentCommandArgs {
+            max_model_request_retries: Some(5),
+            ..AgentCommandArgs::default()
+        })
+        .expect("step command should build");
+
+        assert_eq!(command.max_model_request_retries(), Some(5));
+    }
 
     #[test]
     fn null_executor_discards_container_when_command_options_are_built() {

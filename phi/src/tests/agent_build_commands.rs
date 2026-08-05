@@ -5,9 +5,10 @@ use crate::{
     error::PhiAgentRuntimeResult,
     executor::PhiTool,
     home::LocalPhiHome,
+    message::PhiMessage,
     module::PhiModule,
-    session::Session,
-    tests::support::unique_test_home,
+    session::{PhiAgentStep, Session},
+    tests::support::{test_model_defaults, unique_test_home},
 };
 
 #[derive(Default, Debug, Eq, PartialEq)]
@@ -72,6 +73,41 @@ fn commands_use_full_agent_build() {
     ] {
         assert_command_triggers_full_build(command);
     }
+}
+
+#[test]
+fn model_retry_module_is_installed_only_for_an_explicit_budget() {
+    let build = |command| {
+        crate::agent::build_agent(
+            Session::from_root(
+                PhiAgentStep::request_provider("ready", &test_model_defaults()),
+                vec![PhiMessage::user("hello")],
+            ),
+            command,
+            Arc::new(LocalPhiHome::new(unique_test_home())),
+        )
+        .expect("agent should build")
+    };
+
+    let default_agent = build(PhiAgentCommand::Step(PhiAgentCommand::step()));
+    assert!(
+        default_agent
+            .probe_report()
+            .modules
+            .iter()
+            .all(|module| module.name != "model_retry")
+    );
+
+    let retry_agent = build(PhiAgentCommand::Step(
+        PhiAgentCommand::step().with_max_model_request_retries(Some(3)),
+    ));
+    assert!(
+        retry_agent
+            .probe_report()
+            .modules
+            .iter()
+            .any(|module| module.name == "model_retry")
+    );
 }
 
 #[test]
