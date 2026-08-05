@@ -1,13 +1,30 @@
 use crate::{
     agent::{PhiAgentRuntime, StepCont, StepInterveneNext},
     error::PhiAgentRuntimeError,
-    expr::{DeltaLookup, PhiExprDelta, PhiStepExpr},
+    expr::{PhiExprDelta, PhiStepExpr, PhiVariable},
     module::{PhiAgentStepEvent, PhiModule},
     session::{PhiAgentStep, PhiModelRetryState, PhiReActStep},
 };
 use serde::Serialize;
 
-const MODEL_RETRY_STATE_STORE_KEY: &str = "phi_model_retry_state";
+pub(super) const MODEL_RETRY_STATE_VARIABLE: PhiVariable<PhiModelRetryState> =
+    PhiVariable::new("phi_model_retry_state");
+
+pub(super) fn model_retry_state(expr: &PhiStepExpr) -> Option<PhiModelRetryState> {
+    expr.lookup(MODEL_RETRY_STATE_VARIABLE)
+}
+
+fn store_model_retry_state(delta: &mut PhiExprDelta, retry: PhiModelRetryState) {
+    delta.store(MODEL_RETRY_STATE_VARIABLE, retry);
+}
+
+fn remove_model_retry_state(delta: &mut PhiExprDelta) {
+    delta.remove(MODEL_RETRY_STATE_VARIABLE);
+}
+
+pub(super) fn affects_model_retry_state(delta: &PhiExprDelta) -> bool {
+    delta.affects(MODEL_RETRY_STATE_VARIABLE)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelRetryProbe {
@@ -62,7 +79,7 @@ impl PhiModule for ModelRetryPolicy {
     fn probe(&self, runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
         let ancestor = request_provider_ancestor(runtime.base_expr());
         let attempt = ancestor
-            .and_then(PhiStepExpr::model_retry_state)
+            .and_then(model_retry_state)
             .map(|retry| retry.attempt);
         let boundary_matches =
             is_model_retry_failed_step(runtime.base_step()) && ancestor.is_some();
@@ -99,7 +116,7 @@ impl PhiModule for ModelRetryPolicy {
                 "model retry budget exhausted after {} attempts; resuming with a clean completion request",
                 self.max_retries
             ));
-            runtime.cur_delta_mut().unbind_model_retry_state();
+            remove_model_retry_state(runtime.cur_delta_mut());
             let step = runtime.request_provider_step("resuming after exhausted model retry budget");
             return Ok(crate::agent::StepBounce::ReplaceBaseStep(runtime, step));
         }
@@ -107,11 +124,12 @@ impl PhiModule for ModelRetryPolicy {
         let next_attempt = probe
             .next_attempt
             .expect("model retry intervention should compute a next attempt");
-        runtime
-            .cur_delta_mut()
-            .bind_model_retry_state(PhiModelRetryState {
+        store_model_retry_state(
+            runtime.cur_delta_mut(),
+            PhiModelRetryState {
                 attempt: next_attempt,
-            });
+            },
+        );
         let step = runtime.request_provider_step(format!(
             "retrying model request ({next_attempt}/{})",
             self.max_retries
@@ -143,53 +161,21 @@ impl PhiModule for ModelRetryPolicy {
             return Ok(());
         }
 
-        match delta.model_retry_state_binding() {
-            DeltaLookup::Value(_) | DeltaLookup::Unset => return Ok(()),
-            DeltaLookup::Missing => {}
+        if affects_model_retry_state(delta) {
+            return Ok(());
         }
 
-        let Some(previous_retry_state) = base_expr.model_retry_state() else {
+        let Some(previous_retry_state) = model_retry_state(base_expr) else {
             return Ok(());
         };
 
-        if delta.has_loop_guard_rejected_attempts_binding() {
-            delta.bind_model_retry_state(previous_retry_state);
+        if super::loop_guard::affects_loop_guard_rejected_attempts(delta) {
+            store_model_retry_state(delta, previous_retry_state);
         } else {
-            delta.unbind_model_retry_state();
+            remove_model_retry_state(delta);
         }
 
         Ok(())
-    }
-}
-
-impl PhiStepExpr {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn model_retry_state(&self) -> Option<PhiModelRetryState> {
-        self.lookup(MODEL_RETRY_STATE_STORE_KEY)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_model_retry_state(self, retry: PhiModelRetryState) -> Self {
-        self.with_store(MODEL_RETRY_STATE_STORE_KEY, retry)
-    }
-}
-
-impl PhiExprDelta {
-    pub(crate) fn model_retry_state_binding(&self) -> DeltaLookup<PhiModelRetryState> {
-        self.lookup(MODEL_RETRY_STATE_STORE_KEY)
-    }
-
-    pub(crate) fn bind_model_retry_state(&mut self, retry: PhiModelRetryState) {
-        self.unbind_model_retry_state();
-        self.bind(MODEL_RETRY_STATE_STORE_KEY, retry);
-    }
-
-    pub(crate) fn unbind_model_retry_state(&mut self) {
-        self.unbind(MODEL_RETRY_STATE_STORE_KEY);
-    }
-
-    pub(crate) fn has_model_retry_state_binding(&self) -> bool {
-        !matches!(self.model_retry_state_binding(), DeltaLookup::Missing)
     }
 }
 
@@ -256,13 +242,13 @@ mod tests {
         ));
         let expr = outcome.session.clone().into_expr();
         assert_eq!(
-            expr.model_retry_state(),
+            model_retry_state(&expr),
             Some(PhiModelRetryState { attempt: 1 })
         );
     }
 
     #[tokio::test]
-    async fn provider_retry_state_flows_without_store() {
+    async fn provider_retry_state_flows_across_steps() {
         let session = Session::from_root(
             PhiAgentStep::request_provider("ready", &test_model_defaults()),
             Vec::new(),
@@ -303,7 +289,10 @@ mod tests {
             PhiAgentStep::request_provider("retrying model request (3/3)", &test_model_defaults()),
             Vec::<PhiMessage>::new(),
         )
-        .with_model_retry_state(PhiModelRetryState { attempt: 3 });
+        .store(
+            MODEL_RETRY_STATE_VARIABLE,
+            PhiModelRetryState { attempt: 3 },
+        );
         let session = Session::from_expr(retrying_step.branch_failed(
             PhiAgentRuntimeError::provider_request("model request failed: timeout"),
         ));
@@ -323,7 +312,7 @@ mod tests {
             step => panic!("expected clean request-complete step, got {step:?}"),
         }
         assert_eq!(
-            outcome.session.clone().into_expr().model_retry_state(),
+            model_retry_state(&outcome.session.clone().into_expr()),
             None
         );
     }

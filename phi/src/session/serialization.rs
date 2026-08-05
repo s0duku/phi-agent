@@ -95,9 +95,13 @@ where
 mod tests {
     use super::*;
     use crate::error::PhiAgentRuntimeError;
-    use crate::expr::PhiStepExpr;
+    use crate::expr::{PhiStepExpr, PhiVariable};
     use crate::message::{PhiHistory, PhiMessage};
     use crate::session::PhiAgentStep;
+
+    const COUNT: PhiVariable<i32> = PhiVariable::new("count");
+    const CLEARED: PhiVariable<bool> = PhiVariable::new("cleared");
+    const ATTEMPT: PhiVariable<i32> = PhiVariable::new("attempt");
 
     #[test]
     fn round_trips_session_json() {
@@ -214,35 +218,32 @@ mod tests {
     }
 
     #[test]
-    fn session_serializes_structured_delta_store() {
+    fn session_serializes_structured_variable_effects() {
         let root = PhiStepExpr::new(
             PhiAgentStep::turn_end("root"),
             vec![PhiMessage::user("hello")],
         )
-        .with_store("count", 3)
-        .without_store("cleared");
+        .store(COUNT, 3)
+        .remove(CLEARED);
         let session = Session::from_expr(root);
 
         let json = serde_json::to_value(&session).unwrap();
         assert_eq!(json["frames"][0]["delta"]["history"][0]["role"], "user");
         assert_eq!(
-            json["frames"][0]["delta"]["store"]["bindings"]["count"]["kind"],
-            "set"
+            json["frames"][0]["delta"]["effects"]["count"]["kind"],
+            "store"
         );
+        assert_eq!(json["frames"][0]["delta"]["effects"]["count"]["value"], 3);
         assert_eq!(
-            json["frames"][0]["delta"]["store"]["bindings"]["count"]["value"],
-            3
-        );
-        assert_eq!(
-            json["frames"][0]["delta"]["store"]["bindings"]["cleared"]["kind"],
-            "unset"
+            json["frames"][0]["delta"]["effects"]["cleared"]["kind"],
+            "remove"
         );
 
         let loaded: Session = serde_json::from_value(json).unwrap();
         assert_eq!(loaded.history(), session.history());
         let expr = loaded.into_expr();
-        assert_eq!(expr.lookup::<i32>("count"), Some(3));
-        assert_eq!(expr.lookup::<bool>("cleared"), None);
+        assert_eq!(expr.lookup(COUNT), Some(3));
+        assert_eq!(expr.lookup(CLEARED), None);
     }
 
     #[test]
@@ -255,7 +256,7 @@ mod tests {
             parent
                 .clone()
                 .commit(PhiAgentStep::request_compact(), Vec::<PhiMessage>::new())
-                .with_store("attempt", 2),
+                .store(ATTEMPT, 2),
         );
 
         let appended = session.append_messages([
@@ -269,7 +270,7 @@ mod tests {
             PhiAgentStep::ReAct(crate::session::PhiReActStep::RequestCompact { retain_rate: 0.1 })
         ));
         assert_eq!(expr.expr().unwrap().history(), parent.history());
-        assert_eq!(expr.lookup::<i32>("attempt"), Some(2));
+        assert_eq!(expr.lookup(ATTEMPT), Some(2));
         assert_eq!(
             appended.history(),
             &[

@@ -1,5 +1,3 @@
-use serde::{Serialize, de::DeserializeOwned};
-
 mod command;
 mod step;
 
@@ -16,7 +14,7 @@ pub(crate) use step::{
 
 use std::{collections::BTreeSet, sync::Arc};
 
-pub(crate) use crate::expr::{DeltaLookup, PhiExprDelta, PhiStepExpr};
+pub(crate) use crate::expr::{PhiExprDelta, PhiStepExpr};
 #[cfg(test)]
 use crate::module::PhiModule;
 use crate::{
@@ -390,33 +388,8 @@ impl PhiAgentRuntime {
         self.setup.home()
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn lookup<T>(&self, name: &str) -> Option<T>
-    where
-        T: DeserializeOwned,
-    {
-        match self.delta.lookup(name) {
-            DeltaLookup::Value(value) => Some(value),
-            DeltaLookup::Unset => None,
-            DeltaLookup::Missing => self.base.lookup(name),
-        }
-    }
-
     pub(crate) fn cur_delta_mut(&mut self) -> &mut PhiExprDelta {
         &mut self.delta
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn store<T>(&mut self, name: &str, value: T)
-    where
-        T: Serialize,
-    {
-        self.delta.bind(name, value);
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn unstore(&mut self, name: &str) {
-        self.delta.unbind(name);
     }
 
     pub(crate) fn find_ancestor(

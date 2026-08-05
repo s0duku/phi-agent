@@ -12,6 +12,7 @@
 # Architecture
 
 - [Ownership boundaries](architecture/ownership.md)
+- [Variable effects](architecture/variable-effects.md)
 - [Failure and recovery](architecture/failure-recovery.md)
 - [Serialization](architecture/serialization.md)
 

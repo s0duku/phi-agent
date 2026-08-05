@@ -34,7 +34,9 @@ struct CaptureWarningsModule {
 struct RewriteArgumentsInsideTool;
 struct RegisterRewriteArgumentsToolModule;
 struct RegisterStructuredFailureToolModule;
+struct RegisterDeterministicSuccessToolModule;
 struct StructuredFailureTool;
+struct DeterministicSuccessTool;
 
 #[derive(serde::Serialize)]
 struct TestStructuredError {
@@ -200,6 +202,17 @@ impl PhiModule for RegisterStructuredFailureToolModule {
     }
 }
 
+impl PhiModule for RegisterDeterministicSuccessToolModule {
+    type ProbInfo = ();
+
+    fn module_tools(
+        &mut self,
+        _context: &crate::agent::PhiAgentBuildContext,
+    ) -> Vec<Arc<dyn PhiTool>> {
+        vec![Arc::new(DeterministicSuccessTool)]
+    }
+}
+
 #[async_trait]
 impl PhiTool for StructuredFailureTool {
     fn name(&self) -> &str {
@@ -223,6 +236,33 @@ impl PhiTool for StructuredFailureTool {
             code: 73,
             reason: "terminal unavailable",
         }))
+    }
+}
+
+#[async_trait]
+impl PhiTool for DeterministicSuccessTool {
+    fn name(&self) -> &str {
+        "deterministic_success"
+    }
+
+    fn description(&self) -> &str {
+        "Return a deterministic successful test result."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "additionalProperties": false})
+    }
+
+    async fn call(
+        &self,
+        request: &mut ToolCallRequest,
+        _runtime: &crate::agent::PhiAgentRuntime,
+    ) -> crate::executor::PhiToolResult {
+        Ok(ToolCallResponse::new(
+            request,
+            self.name(),
+            serde_json::json!({"status": "exited"}),
+        ))
     }
 }
 
@@ -1076,10 +1116,26 @@ async fn tool_step_commits_pending_assistant_then_tool_call_then_result() {
     };
     assert_eq!(id.as_deref(), Some("call_1"));
     assert_eq!(name.as_deref(), Some(shell_tool_name()));
-    assert_eq!(result["output"], serde_json::json!(shell_stdout_ok()));
-    assert_eq!(result["status"], serde_json::json!("exited"));
-    assert_eq!(result["exit_code"], serde_json::json!(0));
-    assert_eq!(result["handle"], serde_json::Value::Null);
+    assert_eq!(
+        result["output"],
+        serde_json::json!(shell_stdout_ok()),
+        "unexpected shell tool result: {result:#}"
+    );
+    assert_eq!(
+        result["status"],
+        serde_json::json!("exited"),
+        "unexpected shell tool result: {result:#}"
+    );
+    assert_eq!(
+        result["exit_code"],
+        serde_json::json!(0),
+        "unexpected shell tool result: {result:#}"
+    );
+    assert_eq!(
+        result["handle"],
+        serde_json::Value::Null,
+        "unexpected shell tool result: {result:#}"
+    );
 }
 
 #[tokio::test]
@@ -1312,8 +1368,8 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
                 ToolCallRequest {
                     id: "call_1".to_string(),
                     call_id: Some("call_1".to_string()),
-                    name: shell_tool_name().to_string(),
-                    arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
+                    name: "deterministic_success".to_string(),
+                    arguments: serde_json::json!({}),
                 },
                 ToolCallRequest {
                     id: "call_missing".to_string(),
@@ -1334,6 +1390,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
 
     let after_first = step_agent_builder(session)
         .with_client(Arc::new(EmptyProvider))
+        .with_module(RegisterDeterministicSuccessToolModule)
         .build()
         .expect("agent should build")
         .run_single_step()

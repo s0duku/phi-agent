@@ -7,6 +7,10 @@
   <a href="https://github.com/s0duku/phi-agent/actions/workflows/ci.yml">
     <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/s0duku/phi-agent/ci.yml?label=CI" />
   </a>
+  <a href="https://github.com/s0duku/phi-agent/releases">
+    <img alt="Release" src="https://img.shields.io/github/v/release/s0duku/phi-agent" />
+  </a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-informational" />
 </div>
 
 ---

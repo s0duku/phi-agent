@@ -4,7 +4,7 @@ mod similarity;
 use crate::{
     agent::{PhiAgentRuntime, StepCont, StepInterveneNext},
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
-    expr::{DeltaLookup, PhiExprDelta, PhiStepExpr},
+    expr::{PhiExprDelta, PhiStepExpr, PhiVariable},
     message::{PhiHistory, PhiMessage},
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
     session::{PhiAgentStep, PhiReActStep},
@@ -18,7 +18,24 @@ const DEFAULT_LOOPGUARD_MAX_RETRIES: usize = 5;
 const DEFAULT_LOOPGUARD_REASONING_NGRAM_SIZE: usize = 4;
 const DEFAULT_LOOPGUARD_REASONING_SIMILARITY_THRESHOLD: f64 = 0.90;
 const DEFAULT_LOOPGUARD_REASONING_MIN_CHARS: usize = 300;
-const LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY: &str = "phi_loop_guard_rejected_attempts";
+pub(super) const LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE: PhiVariable<usize> =
+    PhiVariable::new("phi_loop_guard_rejected_attempts");
+
+pub(super) fn loop_guard_rejected_attempts(expr: &PhiStepExpr) -> Option<usize> {
+    expr.lookup(LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE)
+}
+
+fn store_loop_guard_rejected_attempts(delta: &mut PhiExprDelta, rejected_attempts: usize) {
+    delta.store(LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE, rejected_attempts);
+}
+
+fn remove_loop_guard_rejected_attempts(delta: &mut PhiExprDelta) {
+    delta.remove(LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE);
+}
+
+pub(super) fn affects_loop_guard_rejected_attempts(delta: &PhiExprDelta) -> bool {
+    delta.affects(LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LoopGuardProbe {
@@ -134,9 +151,7 @@ impl PhiModule for LoopGuardPolicy {
 
     fn probe(&self, runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
         let ancestor = request_provider_ancestor(runtime.base_expr());
-        let rejected_attempts = ancestor
-            .and_then(PhiStepExpr::loop_guard_rejected_attempts)
-            .unwrap_or(0);
+        let rejected_attempts = ancestor.and_then(loop_guard_rejected_attempts).unwrap_or(0);
         let boundary_matches = is_loop_guard_failed_step(runtime.base_step()) && ancestor.is_some();
         let next_rejected_attempts = boundary_matches.then_some(rejected_attempts + 1);
         let exhausted = boundary_matches && rejected_attempts >= self.max_retries;
@@ -175,9 +190,7 @@ impl PhiModule for LoopGuardPolicy {
                 "loop guard budget exhausted after {} rejections; resuming with a clean completion request",
                 self.max_retries
             ));
-            runtime
-                .cur_delta_mut()
-                .unbind_loop_guard_rejected_attempts();
+            remove_loop_guard_rejected_attempts(runtime.cur_delta_mut());
             let step = runtime.request_provider_step("resuming after exhausted loop guard budget");
             return Ok(crate::agent::StepBounce::ReplaceBaseStep(runtime, step));
         }
@@ -185,9 +198,7 @@ impl PhiModule for LoopGuardPolicy {
         let next_rejected_attempts = probe
             .next_rejected_attempts
             .expect("loop guard intervention should compute next rejected attempts");
-        runtime
-            .cur_delta_mut()
-            .bind_loop_guard_rejected_attempts(next_rejected_attempts);
+        store_loop_guard_rejected_attempts(runtime.cur_delta_mut(), next_rejected_attempts);
         let step = runtime.request_provider_step("retrying completion after loop-guard rejection");
         let _ = next;
         let _ = cont;
@@ -206,10 +217,7 @@ impl PhiModule for LoopGuardPolicy {
                     detector.initialize(history, self.window);
                 }
 
-                if expr
-                    .loop_guard_rejected_attempts()
-                    .is_some_and(|attempts| attempts > 0)
-                {
+                if loop_guard_rejected_attempts(expr).is_some_and(|attempts| attempts > 0) {
                     request.temperature = request
                         .temperature
                         .map(|temperature| (temperature * 1.2).clamp(0.0, 2.0));
@@ -229,19 +237,18 @@ impl PhiModule for LoopGuardPolicy {
                     return Ok(());
                 }
 
-                match delta.loop_guard_rejected_attempts_binding() {
-                    DeltaLookup::Value(_) | DeltaLookup::Unset => return Ok(()),
-                    DeltaLookup::Missing => {}
+                if affects_loop_guard_rejected_attempts(delta) {
+                    return Ok(());
                 }
 
-                let Some(previous_attempts) = base_expr.loop_guard_rejected_attempts() else {
+                let Some(previous_attempts) = loop_guard_rejected_attempts(base_expr) else {
                     return Ok(());
                 };
 
-                if delta.has_model_retry_state_binding() {
-                    delta.bind_loop_guard_rejected_attempts(previous_attempts);
+                if super::model_retry::affects_model_retry_state(delta) {
+                    store_loop_guard_rejected_attempts(delta, previous_attempts);
                 } else {
-                    delta.unbind_loop_guard_rejected_attempts();
+                    remove_loop_guard_rejected_attempts(delta);
                 }
             }
             PhiAgentStepEvent::AfterModelResponse { message, .. } => {
@@ -258,40 +265,6 @@ impl PhiModule for LoopGuardPolicy {
                 detector.commit(message, self.window);
             }
         }
-    }
-}
-
-impl PhiStepExpr {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn loop_guard_rejected_attempts(&self) -> Option<usize> {
-        self.lookup(LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_loop_guard_rejected_attempts(self, rejected_attempts: usize) -> Self {
-        self.with_store(LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY, rejected_attempts)
-    }
-}
-
-impl PhiExprDelta {
-    pub(crate) fn loop_guard_rejected_attempts_binding(&self) -> DeltaLookup<usize> {
-        self.lookup(LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY)
-    }
-
-    pub(crate) fn bind_loop_guard_rejected_attempts(&mut self, rejected_attempts: usize) {
-        self.unbind_loop_guard_rejected_attempts();
-        self.bind(LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY, rejected_attempts);
-    }
-
-    pub(crate) fn unbind_loop_guard_rejected_attempts(&mut self) {
-        self.unbind(LOOP_GUARD_REJECTED_ATTEMPTS_STORE_KEY);
-    }
-
-    pub(crate) fn has_loop_guard_rejected_attempts_binding(&self) -> bool {
-        !matches!(
-            self.loop_guard_rejected_attempts_binding(),
-            DeltaLookup::Missing
-        )
     }
 }
 
@@ -341,7 +314,7 @@ mod tests {
                 ),
                 vec![PhiMessage::user("hello")],
             )
-            .with_loop_guard_rejected_attempts(1),
+            .store(LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE, 1),
         );
 
         let mut policy = LoopGuardPolicy {
@@ -373,7 +346,7 @@ mod tests {
             vec![PhiMessage::user("hello")],
         );
         let expr = session.into_expr();
-        assert_eq!(expr.loop_guard_rejected_attempts(), None);
+        assert_eq!(loop_guard_rejected_attempts(&expr), None);
 
         let mut request = test_request();
         let mut policy = LoopGuardPolicy {
@@ -409,7 +382,7 @@ mod tests {
             ),
             Vec::<PhiMessage>::new(),
         )
-        .with_loop_guard_rejected_attempts(3);
+        .store(LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE, 3);
         let session = Session::from_expr(retrying_step.branch_failed(
             PhiAgentRuntimeError::model_candidate_rejected("loop detected"),
         ));
@@ -433,11 +406,7 @@ mod tests {
             step => panic!("expected clean request-complete step, got {step:?}"),
         }
         assert_eq!(
-            outcome
-                .session
-                .clone()
-                .into_expr()
-                .loop_guard_rejected_attempts(),
+            loop_guard_rejected_attempts(&outcome.session.clone().into_expr()),
             None
         );
     }

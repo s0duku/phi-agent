@@ -1,5 +1,8 @@
 name: phi-agent CI
 
+env:
+  RUST_BACKTRACE: full
+
 on:
   push:
     branches:

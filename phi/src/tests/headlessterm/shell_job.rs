@@ -152,10 +152,23 @@ async fn windows_linear_output_beyond_one_screen_remains_complete() {
         .await
         .unwrap();
 
-    assert!(matches!(info.status(), JobStatus::Exited(0)));
-    assert_eq!(info.outputs().lines().count(), 100);
-    assert!(info.outputs().contains("line-1\n"));
-    assert!(info.outputs().contains("line-100"));
+    assert!(
+        matches!(info.status(), JobStatus::Exited(0)),
+        "Windows command did not exit before its output boundary: {info:#?}"
+    );
+    assert_eq!(
+        info.outputs().lines().count(),
+        100,
+        "Windows output was incomplete: {info:#?}"
+    );
+    assert!(
+        info.outputs().contains("line-1\n"),
+        "Windows output lost its first line: {info:#?}"
+    );
+    assert!(
+        info.outputs().contains("line-100"),
+        "Windows output lost its last line: {info:#?}"
+    );
 }
 
 #[tokio::test]

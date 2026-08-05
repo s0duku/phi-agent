@@ -6,6 +6,7 @@ use std::sync::{
 use crate::{
     agent::{PhiAgentRuntime, StepBounce, StepCont, StepInterveneError, StepInterveneNext},
     error::PhiAgentRuntimeError,
+    expr::{PhiStepExpr, PhiVariable},
     message::PhiMessage,
     module::PhiModule,
     session::{PhiAgentStep, PhiReActStep, Session},
@@ -19,6 +20,59 @@ struct AppendThenFailInterveneModule;
 struct StopInterveneModule;
 struct CountingInterveneModule {
     calls: Arc<AtomicUsize>,
+}
+
+const TEST_STATE: PhiVariable<String> = PhiVariable::new("test_state");
+
+enum EffectBounce {
+    Create,
+    Replace,
+    Fail,
+    Rollback,
+    Keep,
+}
+
+struct StoreEffectInterveneModule(EffectBounce);
+
+impl PhiModule for StoreEffectInterveneModule {
+    type ProbInfo = ();
+
+    fn intervene(
+        &mut self,
+        mut runtime: PhiAgentRuntime,
+        _cont: StepCont,
+        _next: StepInterveneNext,
+    ) -> crate::agent::StepInterveneResult {
+        runtime
+            .cur_delta_mut()
+            .store(TEST_STATE, String::from("current"));
+        match self.0 {
+            EffectBounce::Create => Ok(StepBounce::CreateNextStep(
+                runtime,
+                PhiReActStep::turn_end("create"),
+            )),
+            EffectBounce::Replace => Ok(StepBounce::ReplaceBaseStep(
+                runtime,
+                PhiReActStep::turn_end("replace"),
+            )),
+            EffectBounce::Fail => Err(StepInterveneError::new(
+                runtime,
+                PhiAgentRuntimeError::module("failed after effect"),
+            )),
+            EffectBounce::Rollback => Ok(StepBounce::RollbackStep(runtime)),
+            EffectBounce::Keep => Ok(StepBounce::KeepBaseStep(runtime)),
+        }
+    }
+}
+
+fn session_with_stored_state(value: &'static str) -> Session {
+    Session::from_expr(
+        PhiStepExpr::new(
+            PhiAgentStep::request_provider("ready", &test_model_defaults()),
+            vec![PhiMessage::user("base")],
+        )
+        .store(TEST_STATE, value.to_string()),
+    )
 }
 
 impl PhiModule for RewriteInterveneModule {
@@ -147,7 +201,7 @@ async fn intervene_may_stop_before_later_modules_run() {
 }
 
 #[tokio::test]
-async fn replace_base_step_extends_base_delta_with_current_delta() {
+async fn replace_base_step_composes_base_delta_then_current_delta() {
     let session = Session::from_root(
         PhiAgentStep::request_provider("ready", &test_model_defaults()),
         vec![PhiMessage::user("base")],
@@ -199,4 +253,64 @@ async fn runtime_failed_discards_current_delta_in_a_new_failed_frame() {
             .history(),
         &[PhiMessage::user("base")]
     );
+}
+
+#[tokio::test]
+async fn create_next_step_keeps_current_effect_in_the_new_frame() {
+    let outcome = step_agent_builder(session_with_stored_state("base"))
+        .with_client(stub_client(Vec::new()))
+        .with_module(StoreEffectInterveneModule(EffectBounce::Create))
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await;
+
+    let expr = outcome.session.into_expr();
+    assert_eq!(expr.lookup(TEST_STATE).as_deref(), Some("current"));
+    assert_eq!(
+        expr.expr()
+            .and_then(|base| base.lookup(TEST_STATE))
+            .as_deref(),
+        Some("base")
+    );
+}
+
+#[tokio::test]
+async fn replace_base_step_composes_current_effect_after_base_effect() {
+    let outcome = step_agent_builder(session_with_stored_state("base"))
+        .with_client(stub_client(Vec::new()))
+        .with_module(StoreEffectInterveneModule(EffectBounce::Replace))
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await;
+
+    let expr = outcome.session.into_expr();
+    assert_eq!(expr.lookup(TEST_STATE).as_deref(), Some("current"));
+    assert!(
+        expr.expr().is_none(),
+        "root replacement must remain one frame"
+    );
+}
+
+#[tokio::test]
+async fn non_committing_bounces_discard_current_variable_effects() {
+    for bounce in [
+        EffectBounce::Fail,
+        EffectBounce::Rollback,
+        EffectBounce::Keep,
+    ] {
+        let outcome = step_agent_builder(session_with_stored_state("base"))
+            .with_client(stub_client(Vec::new()))
+            .with_module(StoreEffectInterveneModule(bounce))
+            .build()
+            .expect("agent should build")
+            .run_single_step()
+            .await;
+
+        assert_eq!(
+            outcome.session.into_expr().lookup(TEST_STATE).as_deref(),
+            Some("base")
+        );
+    }
 }

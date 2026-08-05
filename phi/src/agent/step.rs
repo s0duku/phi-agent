@@ -191,17 +191,15 @@ impl PhiAgentRuntime {
                     return runtime;
                 }
                 StepBounce::ReplaceBaseStep(mut runtime, mut step) => {
-                    let current_delta = runtime.delta.clone();
+                    let current_delta = std::mem::take(&mut runtime.delta);
                     let base = std::mem::replace(&mut runtime.base, PhiStepExpr::empty_root());
-                    let mut delta = base.delta().clone();
-                    delta.extend(current_delta);
+                    let mut delta = base.delta().clone().then(current_delta);
                     if let Err(error) =
                         runtime.handle_bounce_transition(&mut step, &mut delta, true)
                     {
                         bounce = runtime.continue_failed(error);
                         continue;
                     }
-                    runtime.delta = PhiExprDelta::default();
                     runtime.base =
                         base.replace_base_step_with_delta(PhiAgentStep::ReAct(step), delta);
                     if let Some(error) = runtime.base.step().error() {

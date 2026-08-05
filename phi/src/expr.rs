@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -24,31 +24,49 @@ pub(crate) struct PhiStepExpr {
 pub(crate) struct PhiExprDelta {
     #[serde(default, skip_serializing_if = "PhiHistory::is_empty")]
     history: PhiHistory,
-    #[serde(default, skip_serializing_if = "PhiStoreDelta::is_empty")]
-    store: PhiStoreDelta,
+    #[serde(default, skip_serializing_if = "PhiVariableEffects::is_empty")]
+    effects: PhiVariableEffects,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
-pub(crate) struct PhiStoreDelta {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    bindings: BTreeMap<String, PhiStoreBinding>,
+#[serde(transparent)]
+struct PhiVariableEffects {
+    effects: BTreeMap<String, PhiVariableEffect>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum PhiStoreBinding {
-    Set { value: Value },
-    Unset,
+enum PhiVariableEffect {
+    Store { value: Value },
+    Remove,
 }
 
-pub(crate) trait PhiStoreKey {
-    type Value: Serialize + DeserializeOwned;
-    const NAME: &'static str;
+/// A serialized variable name coupled to the Rust type stored under that name.
+pub(crate) struct PhiVariable<T> {
+    name: &'static str,
+    value: PhantomData<fn() -> T>,
 }
+
+impl<T> PhiVariable<T> {
+    pub(crate) const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            value: PhantomData,
+        }
+    }
+}
+
+impl<T> Clone for PhiVariable<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for PhiVariable<T> {}
 
 impl PhiExprDelta {
     pub(crate) fn is_empty(&self) -> bool {
-        self.history.is_empty() && self.store.is_empty()
+        self.history.is_empty() && self.effects.is_empty()
     }
 
     pub(crate) fn history(&self) -> &PhiHistory {
@@ -59,29 +77,32 @@ impl PhiExprDelta {
         self.history.push(message);
     }
 
-    pub(crate) fn extend(&mut self, other: Self) {
-        for message in other.history.into_messages() {
+    /// Composes deltas in evaluation order; effects in `next` take precedence.
+    pub(crate) fn then(mut self, next: Self) -> Self {
+        for message in next.history.into_messages() {
             self.history.push(message);
         }
-        self.store.bindings.extend(other.store.bindings);
+        self.effects.then(next.effects);
+        self
     }
 
-    pub(crate) fn bind<T>(&mut self, name: &str, value: T)
+    pub(crate) fn store<T>(&mut self, variable: PhiVariable<T>, value: T)
     where
         T: Serialize,
     {
-        self.store.bind(name, value);
+        self.effects.store(variable.name, value);
     }
 
-    pub(crate) fn unbind(&mut self, name: &str) {
-        self.store.unbind(name);
+    pub(crate) fn remove<T>(&mut self, variable: PhiVariable<T>) {
+        self.effects.remove(variable.name);
     }
 
-    pub(crate) fn lookup<T>(&self, name: &str) -> DeltaLookup<T>
-    where
-        T: DeserializeOwned,
-    {
-        self.store.lookup(name)
+    fn lookup_impl(&self, name: &str) -> EffectLookup<'_> {
+        self.effects.lookup_impl(name)
+    }
+
+    pub(crate) fn affects<T>(&self, variable: PhiVariable<T>) -> bool {
+        self.effects.affects(variable.name)
     }
 }
 
@@ -89,7 +110,7 @@ impl From<PhiHistory> for PhiExprDelta {
     fn from(history: PhiHistory) -> Self {
         Self {
             history,
-            store: PhiStoreDelta::default(),
+            effects: PhiVariableEffects::default(),
         }
     }
 }
@@ -100,44 +121,46 @@ impl From<Vec<PhiMessage>> for PhiExprDelta {
     }
 }
 
-impl PhiStoreDelta {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.bindings.is_empty()
+impl PhiVariableEffects {
+    fn is_empty(&self) -> bool {
+        self.effects.is_empty()
     }
 
-    pub(crate) fn bind<T>(&mut self, name: &str, value: T)
+    fn then(&mut self, next: Self) {
+        self.effects.extend(next.effects);
+    }
+
+    fn store<T>(&mut self, name: &str, value: T)
     where
         T: Serialize,
     {
         let value = serde_json::to_value(value).expect("stored value should serialize");
-        self.bindings
-            .insert(name.to_string(), PhiStoreBinding::Set { value });
+        self.effects
+            .insert(name.to_string(), PhiVariableEffect::Store { value });
     }
 
-    pub(crate) fn unbind(&mut self, name: &str) {
-        self.bindings
-            .insert(name.to_string(), PhiStoreBinding::Unset);
+    fn remove(&mut self, name: &str) {
+        self.effects
+            .insert(name.to_string(), PhiVariableEffect::Remove);
     }
 
-    pub(crate) fn lookup<T>(&self, name: &str) -> DeltaLookup<T>
-    where
-        T: DeserializeOwned,
-    {
-        match self.bindings.get(name) {
-            Some(PhiStoreBinding::Set { value }) => match serde_json::from_value(value.clone()) {
-                Ok(value) => DeltaLookup::Value(value),
-                Err(_) => DeltaLookup::Unset,
-            },
-            Some(PhiStoreBinding::Unset) => DeltaLookup::Unset,
-            None => DeltaLookup::Missing,
+    fn lookup_impl(&self, name: &str) -> EffectLookup<'_> {
+        match self.effects.get(name) {
+            Some(PhiVariableEffect::Store { value }) => EffectLookup::Stored(value),
+            Some(PhiVariableEffect::Remove) => EffectLookup::Removed,
+            None => EffectLookup::Missing,
         }
+    }
+
+    fn affects(&self, name: &str) -> bool {
+        self.effects.contains_key(name)
     }
 }
 
-pub(crate) enum DeltaLookup<T> {
+enum EffectLookup<'a> {
     Missing,
-    Unset,
-    Value(T),
+    Removed,
+    Stored(&'a Value),
 }
 
 impl PhiStepExpr {
@@ -170,8 +193,7 @@ impl PhiStepExpr {
 
     /// Applies the frame transformation used by the ReplaceBaseStep bounce.
     pub(crate) fn replace_base_step(self, step: PhiAgentStep, current_delta: PhiExprDelta) -> Self {
-        let mut delta = self.delta.clone();
-        delta.extend(current_delta);
+        let delta = self.delta.clone().then(current_delta);
         self.replace_base_step_with_delta(step, delta)
     }
 
@@ -210,6 +232,23 @@ impl PhiStepExpr {
 
     #[must_use]
     #[cfg(test)]
+    pub(crate) fn store<T>(mut self, variable: PhiVariable<T>, value: T) -> Self
+    where
+        T: Serialize,
+    {
+        self.delta.store(variable, value);
+        self
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn remove<T>(mut self, variable: PhiVariable<T>) -> Self {
+        self.delta.remove(variable);
+        self
+    }
+
+    #[must_use]
+    #[cfg(test)]
     pub(crate) fn commit<H>(self, step: PhiAgentStep, delta: H) -> Self
     where
         H: Into<PhiExprDelta>,
@@ -244,54 +283,15 @@ impl PhiStepExpr {
         )
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_store<T>(mut self, name: &str, value: T) -> Self
-    where
-        T: Serialize,
-    {
-        self.delta.bind(name, value);
-        self
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn without_store(mut self, name: &str) -> Self {
-        self.delta.unbind(name);
-        self
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_key<K>(self, value: K::Value) -> Self
-    where
-        K: PhiStoreKey,
-    {
-        self.with_store(K::NAME, value)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn without_key<K>(self) -> Self
-    where
-        K: PhiStoreKey,
-    {
-        self.without_store(K::NAME)
-    }
-
-    pub(crate) fn lookup<T>(&self, name: &str) -> Option<T>
+    pub(crate) fn lookup<T>(&self, variable: PhiVariable<T>) -> Option<T>
     where
         T: DeserializeOwned,
     {
-        match self.delta.lookup(name) {
-            DeltaLookup::Value(value) => Some(value),
-            DeltaLookup::Unset => None,
-            DeltaLookup::Missing => self.expr.as_deref().and_then(|expr| expr.lookup(name)),
+        match self.delta.lookup_impl(variable.name) {
+            EffectLookup::Stored(value) => serde_json::from_value(value.clone()).ok(),
+            EffectLookup::Removed => None,
+            EffectLookup::Missing => self.expr.as_deref().and_then(|expr| expr.lookup(variable)),
         }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn lookup_key<K>(&self) -> Option<K::Value>
-    where
-        K: PhiStoreKey,
-    {
-        self.lookup(K::NAME)
     }
 
     pub(crate) fn history(&self) -> PhiHistory {
@@ -342,6 +342,17 @@ mod step_expr_tests {
     use crate::message::PhiMessage;
     use crate::session::serde_default_request_provider_step;
 
+    const FIRST: PhiVariable<i32> = PhiVariable::new("first");
+    const SECOND: PhiVariable<i32> = PhiVariable::new("second");
+    const ANSWER: PhiVariable<String> = PhiVariable::new("answer");
+    const NAME: PhiVariable<String> = PhiVariable::new("name");
+    const COUNT: PhiVariable<i32> = PhiVariable::new("count");
+    const MISSING: PhiVariable<bool> = PhiVariable::new("missing");
+    const RETRY_STATE: PhiVariable<i32> = PhiVariable::new("retry_state");
+    const RETRY_STATE_USIZE: PhiVariable<usize> = PhiVariable::new("retry_state");
+    const KEPT: PhiVariable<i32> = PhiVariable::new("kept");
+    const OVERRIDDEN: PhiVariable<String> = PhiVariable::new("overridden");
+
     #[test]
     fn clone_shares_parent_expr() {
         let expr = PhiStepExpr::branch(
@@ -359,18 +370,16 @@ mod step_expr_tests {
     }
 
     #[test]
-    fn store_writes_into_current_delta_store() {
-        let expr = PhiStepExpr::empty_root()
-            .with_store("first", 1)
-            .with_store("second", 2);
+    fn store_records_effects_in_the_current_delta() {
+        let expr = PhiStepExpr::empty_root().store(FIRST, 1).store(SECOND, 2);
 
-        assert_eq!(expr.delta().store.bindings.len(), 2);
-        assert_eq!(expr.lookup::<i32>("first"), Some(1));
-        assert_eq!(expr.lookup::<i32>("second"), Some(2));
+        assert_eq!(expr.delta().effects.effects.len(), 2);
+        assert_eq!(expr.lookup(FIRST), Some(1));
+        assert_eq!(expr.lookup(SECOND), Some(2));
     }
 
     #[test]
-    fn store_only_mutates_current_delta_store() {
+    fn store_only_affects_the_current_delta() {
         let base = PhiStepExpr {
             step: serde_default_request_provider_step(),
             delta: PhiExprDelta::from(vec![PhiMessage::user("earlier")]),
@@ -382,19 +391,19 @@ mod step_expr_tests {
             expr: Some(Arc::new(base)),
         };
 
-        expr = expr.with_store("answer", "world");
+        expr = expr.store(ANSWER, String::from("world"));
 
         assert_eq!(
             expr.expr()
                 .expect("base expr should exist")
                 .delta()
-                .store
-                .bindings
+                .effects
+                .effects
                 .len(),
             0
         );
         assert_eq!(expr.delta().history(), &PhiHistory::default());
-        assert_eq!(expr.lookup::<String>("answer"), Some(String::from("world")));
+        assert_eq!(expr.lookup(ANSWER), Some(String::from("world")));
         assert_eq!(
             expr.history(),
             PhiHistory::from_messages(vec![PhiMessage::user("earlier")])
@@ -402,13 +411,13 @@ mod step_expr_tests {
     }
 
     #[test]
-    fn lookup_prefers_current_delta_before_parent_expr() {
+    fn lookup_prefers_current_frame_effect_before_parent_expr() {
         let base = PhiStepExpr {
             step: serde_default_request_provider_step(),
             delta: {
                 let mut delta = PhiExprDelta::default();
-                delta.bind("name", "base");
-                delta.bind("count", 1);
+                delta.store(NAME, String::from("base"));
+                delta.store(COUNT, 1);
                 delta
             },
             expr: None,
@@ -419,20 +428,20 @@ mod step_expr_tests {
             expr: Some(Arc::new(base)),
         };
 
-        expr = expr.with_store("name", "current");
+        expr = expr.store(NAME, String::from("current"));
 
-        assert_eq!(expr.lookup::<String>("name"), Some(String::from("current")));
-        assert_eq!(expr.lookup::<i32>("count"), Some(1));
-        assert_eq!(expr.lookup::<bool>("missing"), None);
+        assert_eq!(expr.lookup(NAME), Some(String::from("current")));
+        assert_eq!(expr.lookup(COUNT), Some(1));
+        assert_eq!(expr.lookup(MISSING), None);
     }
 
     #[test]
-    fn unstore_blocks_parent_lookup() {
+    fn remove_blocks_parent_lookup() {
         let base = PhiStepExpr {
             step: serde_default_request_provider_step(),
             delta: {
                 let mut delta = PhiExprDelta::default();
-                delta.bind("retry_state", 3);
+                delta.store(RETRY_STATE, 3);
                 delta
             },
             expr: None,
@@ -443,18 +452,18 @@ mod step_expr_tests {
             expr: Some(Arc::new(base)),
         };
 
-        expr = expr.without_store("retry_state");
+        expr = expr.remove(RETRY_STATE);
 
-        assert_eq!(expr.lookup::<i32>("retry_state"), None);
+        assert_eq!(expr.lookup(RETRY_STATE), None);
     }
 
     #[test]
-    fn incompatible_current_store_binding_does_not_fall_back_to_parent() {
+    fn incompatible_current_store_effect_does_not_fall_back_to_parent() {
         let base = PhiStepExpr {
             step: serde_default_request_provider_step(),
             delta: {
                 let mut delta = PhiExprDelta::default();
-                delta.bind("count", 7);
+                delta.store(COUNT, 7);
                 delta
             },
             expr: None,
@@ -465,37 +474,35 @@ mod step_expr_tests {
             expr: Some(Arc::new(base)),
         };
 
-        expr = expr.with_store("count", "wrong-type");
+        expr.delta.effects.store("count", "wrong-type");
 
-        assert_eq!(expr.lookup::<i32>("count"), None);
+        assert_eq!(expr.lookup(COUNT), None);
     }
 
     #[test]
-    fn typed_store_keys_round_trip_and_support_unbind() {
-        struct RetryStateKey;
+    fn store_round_trips_and_remove_hides_parent_value() {
+        let expr = PhiStepExpr::empty_root().store(RETRY_STATE_USIZE, 2);
+        assert_eq!(expr.lookup(RETRY_STATE_USIZE), Some(2));
 
-        impl PhiStoreKey for RetryStateKey {
-            type Value = usize;
-            const NAME: &'static str = "retry_state";
-        }
-
-        let expr = PhiStepExpr::empty_root().with_key::<RetryStateKey>(2);
-        assert_eq!(expr.lookup_key::<RetryStateKey>(), Some(2));
-
-        let expr = expr.without_key::<RetryStateKey>();
-        assert_eq!(expr.lookup_key::<RetryStateKey>(), None);
+        let expr = PhiStepExpr::branch(
+            expr,
+            serde_default_request_provider_step(),
+            PhiExprDelta::default(),
+        )
+        .remove(RETRY_STATE_USIZE);
+        assert_eq!(expr.lookup(RETRY_STATE_USIZE), None);
     }
 
     #[test]
-    fn delta_extend_appends_history_and_overrides_store_bindings() {
+    fn delta_then_appends_history_and_applies_later_variable_effects() {
         let mut base = PhiExprDelta::from(vec![PhiMessage::user("base")]);
-        base.bind("kept", 1);
-        base.bind("overridden", "base");
+        base.store(KEPT, 1);
+        base.store(OVERRIDDEN, String::from("base"));
 
         let mut current = PhiExprDelta::from(vec![PhiMessage::assistant("current")]);
-        current.bind("overridden", "current");
-        current.unbind("kept");
-        base.extend(current);
+        current.store(OVERRIDDEN, String::from("current"));
+        current.remove(KEPT);
+        base = base.then(current);
 
         assert_eq!(
             base.history(),
@@ -504,10 +511,10 @@ mod step_expr_tests {
                 PhiMessage::assistant("current"),
             ])
         );
-        assert!(matches!(base.lookup::<i32>("kept"), DeltaLookup::Unset));
+        assert!(matches!(base.lookup_impl("kept"), EffectLookup::Removed));
         assert!(matches!(
-            base.lookup::<String>("overridden"),
-            DeltaLookup::Value(value) if value == "current"
+            base.lookup_impl("overridden"),
+            EffectLookup::Stored(value) if value == "current"
         ));
     }
 }

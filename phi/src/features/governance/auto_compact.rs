@@ -41,9 +41,8 @@ impl PhiModule for AutoCompactPolicy {
             return next.call(runtime, cont);
         };
 
-        if expr.model_retry_state().is_some()
-            || expr
-                .loop_guard_rejected_attempts()
+        if super::model_retry::model_retry_state(expr).is_some()
+            || super::loop_guard::loop_guard_rejected_attempts(expr)
                 .is_some_and(|attempts| attempts != 0)
         {
             return next.call(runtime, cont);
@@ -154,7 +153,10 @@ mod tests {
                 PhiAgentStep::request_provider("retrying", &defaults),
                 vec![PhiMessage::user("hello")],
             )
-            .with_model_retry_state(crate::session::PhiModelRetryState { attempt: 1 }),
+            .store(
+                crate::features::governance::model_retry::MODEL_RETRY_STATE_VARIABLE,
+                crate::session::PhiModelRetryState { attempt: 1 },
+            ),
         );
         let outcome = crate::agent::PhiAgent::builder(
             session,
@@ -184,7 +186,10 @@ mod tests {
                 PhiAgentStep::request_provider("loop retry", &defaults),
                 vec![PhiMessage::user("hello")],
             )
-            .with_loop_guard_rejected_attempts(1),
+            .store(
+                crate::features::governance::loop_guard::LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE,
+                1,
+            ),
         );
         let outcome = crate::agent::PhiAgent::builder(
             session,
