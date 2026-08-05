@@ -123,25 +123,37 @@ impl PhiModule for DefaultFailedRecoveryModule {
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
         if let PhiAgentStep::Failed(failed) = runtime.base_step()
-            && let PhiAgentRuntimeError::CompactExceededLimit { retain_rate, .. } = failed.error()
-            && runtime.base_expr().expr().is_some_and(|parent| {
-                matches!(
-                    parent.step(),
-                    PhiAgentStep::ReAct(PhiReActStep::RequestCompact {
-                        retain_rate: parent_rate
-                    }) if parent_rate == retain_rate
-                )
-            })
+            && matches!(
+                failed.error(),
+                PhiAgentRuntimeError::ContextExceededLimit { .. }
+            )
+            && let Some(parent) = runtime.base_expr().expr()
         {
-            let next_rate = *retain_rate + 0.05;
+            let next_rate = match parent.step() {
+                PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }) => 0.1,
+                PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate }) => {
+                    *retain_rate + 0.05
+                }
+                _ => return Ok(StepBounce::KeepBaseStep(runtime)),
+            };
             if next_rate > 0.5 {
                 runtime
                     .emit_warning("compact retained-history limit reached; preserving failed step");
                 return Ok(StepBounce::KeepBaseStep(runtime));
             }
-            runtime.emit_warning(&format!(
-                "compact request exceeded the provider context limit; retrying with {next_rate}% retained history"
-            ));
+            if matches!(
+                parent.step(),
+                PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
+            ) {
+                runtime.emit_warning(
+                    "provider request exceeded the context limit; recovering through compact with 10% retained history",
+                );
+            } else {
+                let retained_percent = (next_rate * 100.0).round() as u32;
+                runtime.emit_warning(&format!(
+                    "compact request exceeded the provider context limit; retrying with {retained_percent}% retained history"
+                ));
+            }
             return Ok(StepBounce::ReplaceBaseStep(
                 runtime,
                 PhiReActStep::request_compact_with_retain_rate(next_rate),
@@ -256,4 +268,142 @@ fn command_message_sender(
 
 fn command_max_model_request_retries(command: &PhiAgentCommand) -> Option<usize> {
     command.max_model_request_retries()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+
+    use crate::{
+        error::PhiAgentRuntimeError,
+        expr::PhiStepExpr,
+        message::PhiHistory,
+        render::{PhiModelResponse, PhiProviderCall, TestClient},
+        session::{PhiAgentStep, PhiReActStep, Session},
+        tests::support::{default_step_agent_builder, test_model_defaults},
+    };
+
+    struct ContextExceededProvider;
+
+    #[async_trait]
+    impl TestClient for ContextExceededProvider {
+        async fn complete(
+            &self,
+            _request: &PhiProviderCall,
+            _messages: &PhiHistory,
+        ) -> crate::error::PhiAgentRuntimeResult<PhiModelResponse> {
+            Err(PhiAgentRuntimeError::context_exceeded_limit(
+                "provider context overflow",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_context_overflow_enters_compact_instead_of_rollback_loop() {
+        let session = Session::from_root(
+            PhiAgentStep::request_provider("ready", &test_model_defaults()),
+            vec![crate::message::PhiMessage::user("large history")],
+        );
+        let mut agent = default_step_agent_builder(session)
+            .with_client(Arc::new(ContextExceededProvider))
+            .build()
+            .unwrap();
+
+        agent.step().await;
+        assert!(matches!(
+            agent.session().step(),
+            PhiAgentStep::Failed(failed)
+                if matches!(failed.error(), PhiAgentRuntimeError::ContextExceededLimit { .. })
+        ));
+
+        agent.step().await;
+        let expr = agent.into_session().into_expr();
+        assert!(matches!(
+            expr.step(),
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate: 0.1 })
+        ));
+        assert!(matches!(
+            expr.expr().map(PhiStepExpr::step),
+            Some(PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_context_overflow_replaces_failed_with_initial_compact_step() {
+        let provider = PhiStepExpr::new(
+            PhiAgentStep::request_provider("ready", &test_model_defaults()),
+            Vec::new(),
+        );
+        let session = Session::from_expr(provider.branch_failed(
+            PhiAgentRuntimeError::context_exceeded_limit("context overflow"),
+        ));
+
+        let outcome = default_step_agent_builder(session)
+            .build()
+            .unwrap()
+            .run_single_step()
+            .await
+            .session;
+        let expr = outcome.into_expr();
+
+        assert!(matches!(
+            expr.step(),
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate: 0.1 })
+        ));
+        assert!(matches!(
+            expr.expr().map(PhiStepExpr::step),
+            Some(PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }))
+        ));
+        assert!(expr.expr().and_then(PhiStepExpr::expr).is_none());
+    }
+
+    #[tokio::test]
+    async fn compact_context_overflow_replaces_failed_with_higher_retain_rate() {
+        let provider = PhiStepExpr::new(
+            PhiAgentStep::request_provider("ready", &test_model_defaults()),
+            Vec::new(),
+        );
+        let compact = PhiStepExpr::branch(
+            provider,
+            PhiAgentStep::request_compact(),
+            crate::expr::PhiExprDelta::default(),
+        );
+        let session = Session::from_expr(compact.branch_failed(
+            PhiAgentRuntimeError::context_exceeded_limit("context overflow"),
+        ));
+
+        let outcome = default_step_agent_builder(session)
+            .build()
+            .unwrap()
+            .run_single_step()
+            .await
+            .session;
+        let expr = outcome.into_expr();
+
+        assert!(matches!(
+            expr.step(),
+            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate })
+                if (*retain_rate - 0.15).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            expr.expr().map(PhiStepExpr::step),
+            Some(PhiAgentStep::ReAct(PhiReActStep::RequestCompact {
+                retain_rate: 0.1
+            }))
+        ));
+        assert!(matches!(
+            expr.expr()
+                .and_then(PhiStepExpr::expr)
+                .map(PhiStepExpr::step),
+            Some(PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }))
+        ));
+        assert!(
+            expr.expr()
+                .and_then(PhiStepExpr::expr)
+                .and_then(PhiStepExpr::expr)
+                .is_none()
+        );
+    }
 }

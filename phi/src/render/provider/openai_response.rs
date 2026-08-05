@@ -391,10 +391,9 @@ impl ResponsesCreateResponse {
                     .map(ResponsesError::detail)
                     .unwrap_or_else(|| "response failed without error details".to_string());
                 if super::is_context_limit_error(None, &detail) {
-                    return Err(PhiAgentRuntimeError::compact_exceeded_limit(
-                        format!("openai_response failed: {detail}"),
-                        0.0,
-                    ));
+                    return Err(PhiAgentRuntimeError::context_exceeded_limit(format!(
+                        "openai_response failed: {detail}"
+                    )));
                 }
                 Err(PhiAgentRuntimeError::provider_response(format!(
                     "openai_response failed: {detail}"

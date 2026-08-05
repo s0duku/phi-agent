@@ -330,14 +330,10 @@ impl PhiAgentRuntime {
                             runtime.delta = history.into();
                             StepBounce::CreateNextStep(runtime, PhiReActStep::Compacted)
                         }
-                        Err(crate::error::PhiAgentRuntimeError::CompactExceededLimit {
+                        Err(crate::error::PhiAgentRuntimeError::ContextExceededLimit {
                             detail,
-                            ..
                         }) => runtime.continue_failed(
-                            crate::error::PhiAgentRuntimeError::compact_exceeded_limit(
-                                detail,
-                                retain_rate,
-                            ),
+                            crate::error::PhiAgentRuntimeError::context_exceeded_limit(detail),
                         ),
                         Err(error) => runtime.continue_failed(
                             crate::error::PhiAgentRuntimeError::request_compact(error.detail()),

@@ -23,7 +23,7 @@ pub(super) fn http_error(
     let context_exceeded = is_context_limit_error(Some(status), &body);
     let detail = format!("{prefix} HTTP {status}: {body}");
     if context_exceeded {
-        PhiAgentRuntimeError::compact_exceeded_limit(detail, 0.0)
+        PhiAgentRuntimeError::context_exceeded_limit(detail)
     } else {
         PhiAgentRuntimeError::provider_request(detail)
     }
