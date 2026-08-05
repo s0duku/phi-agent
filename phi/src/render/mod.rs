@@ -1,6 +1,5 @@
 mod compact;
 mod provider;
-mod template;
 mod utils;
 
 use std::sync::Arc;
@@ -8,7 +7,6 @@ use std::sync::Arc;
 use crate::{
     config::ProviderConfig,
     error::PhiAgentRuntimeResult,
-    home::PhiHome,
     message::{PhiHistory, PhiMessage},
 };
 
@@ -41,10 +39,6 @@ impl PhiRenderedMessages {
     pub(crate) fn iter_rev(&self) -> impl Iterator<Item = &PhiMessage> {
         self.0.iter().rev().map(|message| message.as_ref())
     }
-
-    pub(crate) fn to_history(&self) -> PhiHistory {
-        PhiHistory::from_arcs(self.0.clone())
-    }
 }
 
 pub(crate) struct PhiRender {
@@ -65,28 +59,15 @@ impl PhiRender {
 
     pub(crate) async fn complete(
         &self,
-        home: &dyn PhiHome,
-        template: Option<&str>,
         request: &PhiProviderCall,
         history: &PhiHistory,
     ) -> PhiAgentRuntimeResult<PhiModelResponse> {
-        let rendered_messages = self.render_messages(history);
-        let rendered_messages =
-            template::render_template(home, template, request, &rendered_messages)?;
-        self.complete_rendered(request, rendered_messages).await
+        self.complete_rendered(request, self.render_messages(history))
+            .await
     }
 
-    pub(crate) fn provider_history_token_count(
-        &self,
-        home: &dyn PhiHome,
-        template: Option<&str>,
-        request: &PhiProviderCall,
-        history: &PhiHistory,
-    ) -> PhiAgentRuntimeResult<usize> {
-        let rendered_messages = self.render_messages(history);
-        let rendered_messages =
-            template::render_template(home, template, request, &rendered_messages)?;
-        Ok(approx_history_token_count(&rendered_messages.to_history()))
+    pub(crate) fn provider_history_token_count(&self, history: &PhiHistory) -> usize {
+        approx_history_token_count(history)
     }
 
     fn render_messages(&self, history: &PhiHistory) -> PhiRenderedMessages {
@@ -143,7 +124,8 @@ impl DynProvider for TestClientAdapter {
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
     ) -> PhiAgentRuntimeResult<PhiModelResponse> {
-        self.client.complete(request, &messages.to_history()).await
+        let history = PhiHistory::from_messages(messages.iter().cloned().collect());
+        self.client.complete(request, &history).await
     }
 }
 
@@ -170,29 +152,4 @@ pub(in crate::render) fn test_rendered_messages(
     messages: impl Into<PhiHistory>,
 ) -> PhiRenderedMessages {
     PhiRenderedMessages::from_history(messages.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::message::PhiMessage;
-
-    use super::test_rendered_messages;
-
-    #[test]
-    fn rendered_messages_preserve_history_shape() {
-        let rendered = test_rendered_messages(vec![
-            PhiMessage::system("sys"),
-            PhiMessage::user("hello"),
-            PhiMessage::assistant("world"),
-        ]);
-
-        assert_eq!(
-            rendered.to_history().to_messages(),
-            vec![
-                PhiMessage::system("sys"),
-                PhiMessage::user("hello"),
-                PhiMessage::assistant("world"),
-            ]
-        );
-    }
 }

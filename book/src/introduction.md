@@ -1,8 +1,9 @@
 # Introduction
 
-Phi is a Rust CLI agent runtime. It evaluates ReAct steps as functional expressions,
-keeps side-effecting tools in runtime-owned state, and exposes Session as the
-serialization and command-line boundary.
+Phi is a CLI-oriented Agent Runtime written in Rust. Its command-line interfaces
+directly expose the library's Session transformations, atomic ReAct evaluation,
+and HeadlessTerminal job operations. Session is the serialization boundary;
+side-effecting tools remain in runtime-owned state.
 
 This book documents the current implementation and design constraints. It is a
 development specification, not a stability promise.

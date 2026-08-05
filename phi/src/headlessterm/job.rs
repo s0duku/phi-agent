@@ -119,7 +119,8 @@ pub enum ReturnWhen {
     OutputSettled { try_wait: Duration },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     RunningOutputSettled,
     RunningScreenSampled,
@@ -129,20 +130,26 @@ pub enum JobStatus {
     NoExist,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum JobProcessStatus {
     Running,
     Exited(i8),
     NoExist,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct JobInfo {
     status: JobStatus,
     output: String,
     truncated: bool,
+    #[serde(rename = "waited_ms", with = "duration_millis")]
     waited: std::time::Duration,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(transparent)]
 pub struct JobHandle(pub String);
 
 /// An access request for a running job.
@@ -159,9 +166,30 @@ pub enum JobAccess {
     },
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum JobAccessResult {
     Written(JobProcessStatus),
     Interacted(JobInfo),
+}
+
+mod duration_millis {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        u64::deserialize(deserializer).map(Duration::from_millis)
+    }
 }
 
 impl JobHandle {
@@ -293,5 +321,52 @@ impl JobInfo {
 
     pub fn into_parts(self) -> (JobStatus, String, bool, std::time::Duration) {
         (self.status, self.output, self.truncated, self.waited)
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::{JobAccessResult, JobHandle, JobInfo, JobProcessStatus, JobStatus};
+    use std::time::Duration;
+
+    #[test]
+    fn exec_result_round_trips_through_the_cli_json_shape() {
+        let result = (
+            Some(JobHandle("mira-kest".into())),
+            JobInfo::new(
+                JobStatus::RunningWaitElapsed,
+                "partial".into(),
+                true,
+                Duration::from_millis(123),
+            ),
+        );
+        let json = serde_json::to_value(&result).unwrap();
+
+        assert_eq!(json[0], "mira-kest");
+        assert_eq!(json[1]["status"], "running_wait_elapsed");
+        assert_eq!(json[1]["waited_ms"], 123);
+        assert_eq!(
+            serde_json::from_value::<(Option<JobHandle>, JobInfo)>(json).unwrap(),
+            result
+        );
+    }
+
+    #[test]
+    fn access_results_round_trip_through_the_cli_json_shape() {
+        for result in [
+            JobAccessResult::Written(JobProcessStatus::Running),
+            JobAccessResult::Interacted(JobInfo::new(
+                JobStatus::Exited(7),
+                "done".into(),
+                false,
+                Duration::from_millis(4),
+            )),
+        ] {
+            let json = serde_json::to_value(&result).unwrap();
+            assert_eq!(
+                serde_json::from_value::<JobAccessResult>(json).unwrap(),
+                result
+            );
+        }
     }
 }

@@ -18,11 +18,7 @@ pub struct PhiModelRetryState {
 }
 
 pub(crate) fn serde_default_request_provider_step() -> PhiAgentStep {
-    PhiAgentStep::request_provider(
-        "ready",
-        &ModelRequestDefaults::from_config(&PhiConfig::default())
-            .expect("empty settings should always produce fallback model defaults"),
-    )
+    PhiAgentStep::request_provider("ready", &ModelRequestDefaults::from(&PhiConfig::default()))
 }
 
 #[derive(Clone, Debug, PartialEq)]

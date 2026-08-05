@@ -11,8 +11,6 @@ use std::{fmt, path::Path, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{PhiConfig, ambient_config};
-
 /// Errors owned by PhiHome implementations.
 ///
 /// This type deliberately does not depend on the agent evaluator. Callers that
@@ -21,8 +19,8 @@ use crate::config::{PhiConfig, ambient_config};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PhiHomeError {
     InvalidPath { detail: String },
+    NotFound { detail: String },
     Read { detail: String },
-    Template { detail: String },
 }
 
 pub type PhiHomeResult<T> = Result<T, PhiHomeError>;
@@ -40,17 +38,21 @@ impl PhiHomeError {
         }
     }
 
-    pub(crate) fn template(detail: impl Into<String>) -> Self {
-        Self::Template {
+    pub(crate) fn not_found(detail: impl Into<String>) -> Self {
+        Self::NotFound {
             detail: detail.into(),
         }
+    }
+
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. })
     }
 }
 
 impl fmt::Display for PhiHomeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let detail = match self {
-            Self::InvalidPath { detail } | Self::Read { detail } | Self::Template { detail } => {
+            Self::InvalidPath { detail } | Self::NotFound { detail } | Self::Read { detail } => {
                 detail
             }
         };
@@ -89,11 +91,6 @@ impl PhiHomeUrl {
     pub(crate) fn path(&self) -> &str {
         &self.path
     }
-
-    #[cfg(test)]
-    pub(crate) fn file_for_test(path: &str) -> Self {
-        Self::new("file", path)
-    }
 }
 
 impl fmt::Display for PhiHomeUrl {
@@ -111,44 +108,8 @@ pub trait PhiHome: Send + Sync {
 
     fn url_for_path(&self, path: &PhiHomePath) -> PhiHomeUrl;
 
-    fn config(&self) -> Result<PhiConfig, Box<dyn std::error::Error>> {
-        let mut config = match self.read_file(&self.url_for_path(&spec::config_path())) {
-            Ok(bytes) => parse_config_bytes(&bytes)?,
-            Err(_) => PhiConfig::default(),
-        };
-        config.extend(&ambient_config());
-        Ok(config)
-    }
-
-    fn list_plugins(&self) -> Result<Vec<PhiHomeUrl>, Box<dyn std::error::Error>> {
-        let mut plugins = self
-            .entries()?
-            .into_iter()
-            .filter(|entry| spec::is_plugin_path(entry.path()))
-            .map(|entry| self.url_for_path(entry.path()))
-            .collect::<Vec<_>>();
-        plugins.sort_by(|left, right| left.display().cmp(&right.display()));
-        Ok(plugins)
-    }
-
-    fn read_template(&self, name: &str) -> PhiHomeResult<String> {
-        for path in spec::template_candidates(name)? {
-            let url = self.url_for_path(&path);
-            if let Ok(bytes) = self.read_file(&url) {
-                return String::from_utf8(bytes).map_err(|error| {
-                    PhiHomeError::template(format!(
-                        "failed to decode phi template {} as UTF-8: {error}",
-                        path.as_str()
-                    ))
-                });
-            }
-        }
-
-        Err(PhiHomeError::template(format!(
-            "template not found: {} (searched under {})",
-            name.trim(),
-            spec::templates_dir().as_str()
-        )))
+    fn config(&self) -> PhiHomeUrl {
+        self.url_for_path(&spec::config_path())
     }
 }
 
@@ -158,7 +119,6 @@ pub struct PhiHomeDoctorReport {
     pub root: String,
     pub source: String,
     pub config_path: String,
-    pub plugins_path: String,
     pub tmp_path: String,
 }
 
@@ -183,35 +143,6 @@ pub fn load_home(spec: Option<&str>) -> Result<Arc<dyn PhiHome>, Box<dyn std::er
     Ok(home)
 }
 
-fn parse_config_bytes(bytes: &[u8]) -> Result<PhiConfig, Box<dyn std::error::Error>> {
-    let contents = std::str::from_utf8(bytes)?;
-    let value = contents.parse::<toml::Value>()?;
-    let table = value
-        .as_table()
-        .ok_or_else(|| "phi home config.toml must contain a top-level table".to_string())?;
-    let mut config = std::collections::BTreeMap::new();
-
-    for (key, value) in table {
-        let encoded = match value {
-            toml::Value::String(text) => text.clone(),
-            toml::Value::Integer(number) => number.to_string(),
-            toml::Value::Float(number) => number.to_string(),
-            toml::Value::Boolean(flag) => flag.to_string(),
-            toml::Value::Datetime(datetime) => datetime.to_string(),
-            toml::Value::Array(_) | toml::Value::Table(_) => {
-                return Err(format!(
-                    "phi home config key '{key}' must be a scalar value, not {}",
-                    value.type_str()
-                )
-                .into());
-            }
-        };
-        config.insert(key.clone(), encoded);
-    }
-
-    Ok(PhiConfig::new(config))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{LocalPhiHome, PhiHome, PhiHomeEntry, SqlitePhiHome, spec};
@@ -225,21 +156,10 @@ mod tests {
         let local_root = unique_temp_path("phi-home-local");
         let sqlite_path = unique_temp_file("phi-home-sqlite");
 
-        let entries = vec![
-            PhiHomeEntry::new(spec::config_path(), b"PHI_MODEL = \"demo\"\n".to_vec()),
-            PhiHomeEntry::new(
-                spec::PhiHomePath::new("/plugins/hello.py").expect("plugin path should resolve"),
-                b"print('hi')\n".to_vec(),
-            ),
-            PhiHomeEntry::new(
-                spec::template_candidates("hello.html")
-                    .expect("template path should resolve")
-                    .into_iter()
-                    .next()
-                    .expect("template path should exist"),
-                b"<message role=\"user\">hello</message>\n".to_vec(),
-            ),
-        ];
+        let entries = vec![PhiHomeEntry::new(
+            spec::config_path(),
+            b"model:\n  name: demo\n".to_vec(),
+        )];
 
         let local = LocalPhiHome::from_entries(local_root.clone(), &entries)
             .expect("local phi home should be constructible from canonical entries");

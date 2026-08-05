@@ -301,16 +301,25 @@ impl TestClient for ModelResponseProvider {
 }
 
 #[tokio::test]
-async fn no_exec_request_provider_keeps_only_custom_tools_from_config() {
+async fn null_executor_request_provider_keeps_only_custom_tools_from_config() {
     let _lock = env_lock();
     let root = unique_temp_dir("phi-request-complete-tools");
     std::fs::create_dir_all(&root).expect("temp home root should be creatable");
     std::fs::write(
-        root.join("config.toml"),
-        r#"PHI_TOOLS = '[{"name":"external_lookup","description":"External lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}]'
+        root.join("config.yml"),
+        r#"tools:
+  - name: external_lookup
+    description: External lookup
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+      required: [query]
+      additionalProperties: false
 "#,
     )
-    .expect("config.toml should be writable");
+    .expect("config.yml should be writable");
 
     let captured_request = Arc::new(Mutex::new(None));
     let session = Session::from_root(
@@ -320,7 +329,7 @@ async fn no_exec_request_provider_keeps_only_custom_tools_from_config() {
     let outcome = crate::agent::PhiAgent::builder(
         session,
         crate::agent::PhiAgentCommand::Step(
-            crate::agent::PhiAgentCommand::step().with_no_exec(true),
+            crate::agent::PhiAgentCommand::step().with_null_executor(true),
         ),
     )
     .with_home(Arc::new(LocalPhiHome::new(root.clone())))

@@ -58,10 +58,8 @@ pub fn run(args: HomeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 fn create_local_home(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&path)?;
-    fs::create_dir_all(path.join("plugins"))?;
-    fs::create_dir_all(path.join("templates"))?;
     fs::create_dir_all(path.join("tmp"))?;
-    let config_path = path.join("config.toml");
+    let config_path = path.join("config.yml");
     if !config_path.exists() {
         fs::write(config_path, b"")?;
     }
@@ -128,9 +126,7 @@ mod tests {
         .expect("home new should succeed");
 
         assert!(path.is_dir());
-        assert!(path.join("config.toml").is_file());
-        assert!(path.join("plugins").is_dir());
-        assert!(path.join("templates").is_dir());
+        assert!(path.join("config.yml").is_file());
         assert!(path.join("tmp").is_dir());
 
         std::fs::remove_dir_all(path).expect("temp home should be removable");
@@ -149,17 +145,10 @@ mod tests {
         })
         .expect("home new should succeed");
         std::fs::write(
-            local_path.join("config.toml"),
-            "PHI_MODEL = \"demo\"\nPHI_SYSTEM = \"hi\"\n",
+            local_path.join("config.yml"),
+            "model:\n  name: demo\nruntime:\n  system: hi\n",
         )
         .expect("config should be writable");
-        std::fs::write(local_path.join("plugins").join("hello.py"), "print('hi')\n")
-            .expect("plugin should be writable");
-        std::fs::write(
-            local_path.join("templates").join("hello.html"),
-            "<user>hello</user>\n",
-        )
-        .expect("template should be writable");
 
         run(HomeArgs {
             command: HomeCommand::Pack(HomePackArgs {

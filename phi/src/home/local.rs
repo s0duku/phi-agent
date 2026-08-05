@@ -73,8 +73,7 @@ impl PhiHome for LocalPhiHome {
             kind: "local".to_string(),
             root: self.root.display().to_string(),
             source: self.source.label().to_string(),
-            config_path: self.root.join("config.toml").display().to_string(),
-            plugins_path: self.root.join("plugins").display().to_string(),
+            config_path: self.root.join("config.yml").display().to_string(),
             tmp_path: self.root.join("tmp").display().to_string(),
         }
     }
@@ -82,10 +81,12 @@ impl PhiHome for LocalPhiHome {
     fn read_file(&self, source: &PhiHomeUrl) -> PhiHomeResult<Vec<u8>> {
         let path = url_to_path(source)?;
         fs::read(&path).map_err(|error| {
-            PhiHomeError::read(format!(
-                "failed to read phi home file {}: {error}",
-                path.display()
-            ))
+            let detail = format!("failed to read phi home file {}: {error}", path.display());
+            if error.kind() == std::io::ErrorKind::NotFound {
+                PhiHomeError::not_found(detail)
+            } else {
+                PhiHomeError::read(detail)
+            }
         })
     }
 
@@ -191,8 +192,6 @@ fn collect_entries(
 
 fn is_managed_home_path(path: &PhiHomePath) -> bool {
     path == &spec::config_path()
-        || spec::is_plugin_path(path)
-        || path.as_str().starts_with("/templates/")
 }
 
 fn url_to_path(url: &PhiHomeUrl) -> PhiHomeResult<PathBuf> {
@@ -275,21 +274,10 @@ mod tests {
     #[test]
     fn from_entries_round_trips_managed_home_files() {
         let root = unique_temp_dir("phi-home-entries");
-        let entries = vec![
-            PhiHomeEntry::new(spec::config_path(), b"PHI_MODEL = \"demo\"\n".to_vec()),
-            PhiHomeEntry::new(
-                spec::template_candidates("hello.html")
-                    .expect("template path should resolve")
-                    .into_iter()
-                    .next()
-                    .expect("template path should exist"),
-                b"<message role=\"user\">hello</message>\n".to_vec(),
-            ),
-            PhiHomeEntry::new(
-                spec::PhiHomePath::new("/plugins/hello.py").expect("plugin path should resolve"),
-                b"print('hi')\n".to_vec(),
-            ),
-        ];
+        let entries = vec![PhiHomeEntry::new(
+            spec::config_path(),
+            b"model:\n  name: demo\n".to_vec(),
+        )];
 
         let home = LocalPhiHome::from_entries(root.clone(), &entries)
             .expect("local phi home should be constructible from canonical entries");

@@ -1,6 +1,6 @@
 <div align="center">
   <img alt="Phi logo" src="assets/phi-logo.svg" width="96" />
-  <p><strong>A pure CLI agent for persistent interactive terminal workflows</strong></p>
+  <p><strong>CLI-oriented Agent Runtime</strong></p>
 </div>
 <div align="center">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg" />
@@ -15,30 +15,98 @@
 
 ![Phi demo 1](assets/demo1.gif) ![Phi demo 2](assets/demo2.gif)
 
-## Phi Agent
+## Phi Runtime
 
-**Phi** is a cli agent without heavy TUI, simply take everyhing from command arguments and enviroment variables, work with session through **stdin** and **stdout**.
+**Phi is a CLI-oriented Agent Runtime written in Rust.** The CLI is its primary
+operational interface, rather than a thin wrapper around a hidden interactive UI
+or service. Sessions, agent evaluation, recovery, and persistent terminal jobs
+are exposed as commands with explicit, serializable inputs and outputs.
 
-Phi reads input from command arguments, environment variables, `PhiHome`, and optional session JSON on stdin, then writes the updated session back to stdout or a session file.
+This makes the runtime usable as a standalone agent and as a composable command
+in scripts, pipelines, CI jobs, and other programs:
 
-Phi treats agent execution as step-by-step session evaluation.
+```text
+config + command + PhiHome -> runtime setup
+Session -> one agent step -> Session
+terminal job request -> typed job status and output
+```
 
-- `step` advances a session by exactly one atomic agent step.
-- `run` keeps stepping until the session reaches its next boundary.
-- `yolo` keeps stepping more aggressively through Phi's default recovery path.
+The Rust library in [`phi/`](phi/) defines these semantics. The CLI delegates to
+the same library operations, so command-line composition does not introduce a
+second execution model.
+
+## Core Interfaces
+
+### Session as the CLI boundary
+
+A `Session` is Phi's durable, serializable state and the boundary between the
+CLI and the agent runtime. Session commands are explicit ownership-consuming
+transformations: they read one Session, apply one operation, and write the new
+Session either to the same file or to stdout.
+
+- `session new` creates initialized state.
+- `session append` adds user or assistant messages to the current outer delta.
+- `session next` and `session replace` reproduce the corresponding step-frame
+  transitions without running the agent.
+- `session tool-result` resolves the current executor request with an externally
+  supplied result.
+- `session peek`, `history`, `rollback`, and `delete` inspect or manage state.
+
+This interface lets a shell script, a human, or another program inspect and
+modify a Session between agent steps without bypassing Session semantics.
+
+### Atomic agent evaluation
+
+Phi treats agent execution as step-by-step evaluation of serialized ReAct
+expressions.
+
+- `step` advances a Session by exactly one atomic agent step.
+- `run` repeatedly applies that same step operation until the next run boundary.
+- `yolo` repeatedly applies it through Phi's default continuation and recovery
+  policy.
+
+Failures and context compaction remain explicit step state. Each completed CLI
+operation persists the resulting Session, so evaluation can be inspected,
+rolled back, resumed, or driven by a different scheduler.
+
+### One HeadlessTerminal job interface
+
+Persistent shell and REPL processes use the same HeadlessTerminal job API at
+every boundary. The `phi headlessterm exec`, `access`, and `close` commands call
+the Rust `HeadlessTerminal::exec_job`, `access_job`, and `close_job` operations
+directly. Their JSON outputs preserve the library return shapes:
+`(Option<JobHandle>, JobInfo)`, `JobAccessResult`, and `JobInfo`, respectively.
+
+The built-in `bash_job`, `job_interact`, and `job_close` tools also use this API.
+Their tool-result envelope preserves the same handle, output, truncation, wait,
+and job-status semantics, including the distinction between exited jobs,
+settled output, screen samples, and elapsed waits. CLI users and agents therefore
+observe the same terminal lifecycle instead of separate terminal abstractions.
 
 ## Documentation
 
 The full architecture, runtime semantics, CLI workflows, private protocols, and
 development invariants are maintained in the [Phi Book](book/src/introduction.md).
 
-## Why Phi
+## Why CLI-oriented
 
-* **Headless Terminal**, `phi` can run command with headless terminal, so it can use GDB and other REPL command.
-* **Outside Cointainer**, instead of put `phi` into a container, `phi` takes advantage of headless terminal, use container's enviroment directly. 
-  * `docker run -dit --name phi-test-run docker.io/library/alpine /bin/sh`
-  * `phi yolo --user "list file" --container phi-test-run`
-* **Free Rollback**, `phi` use s-expression style to store the history, which allow easy to rollback.
+- **Composable state:** Session JSON can cross process boundaries through
+  stdin/stdout or remain in a file for repeated commands.
+- **Auditable execution:** one atomic `step` is the common evaluation unit behind
+  the higher-level schedulers.
+- **Persistent terminals:** jobs can survive individual tool calls and support
+  GDB, shells, and other interactive processes.
+- **Host or container execution:** Phi can operate in the host environment or
+  enter an already-running container without placing the Phi runtime inside it.
+- **Structural rollback:** the S-expression-style step structure makes rollback
+  an explicit Session transformation.
+
+For example, an existing container can be used as the command environment:
+
+```bash
+docker run -dit --name phi-test-run docker.io/library/alpine /bin/sh
+phi yolo --user "list files" --container phi-test-run
+```
 
 
 ## Config
@@ -52,7 +120,21 @@ export PHI_KEY=your_api_key
 export PHI_SYSTEM=""
 ```
 
-Or you can use `~/.phi/config.toml` to store this config
+Or use `~/.phi/config.yml` with the typed YAML schema:
+
+```yaml
+model:
+  name: gpt-5
+provider:
+  kind: openai_chat
+  api_key: your_api_key
+runtime:
+  system: ""
+```
+
+Use `--config FILE` to replace the config location supplied by Phi Home for a
+command. `PHI_*` environment variables are applied last and therefore override
+either YAML source.
 
 ## Sessions
 
@@ -65,7 +147,8 @@ cat session.json | phi step
 
 In pipeline mode:
 
-- empty stdin means "start from a new empty session"
+- no Session input starts a new Session only when `--user` or `--assistant` is present
+- empty stdin without a message prints command help
 - non-empty stdin is parsed as session JSON
 - stdout emits the updated session JSON
 
@@ -94,8 +177,11 @@ Main commands:
 - `phi session next [SESSION] --provider`
 - `phi session replace [SESSION] --provider`
 - `phi session tool-result [SESSION] (--json JSON|--text TEXT)`
+- `phi session rollback [SESSION]`
+- `phi session append [SESSION] (--user TEXT|--assistant TEXT)`
+- `phi headlessterm exec|access|close`
 - `phi doctor`
-- `phi session new [SESSION]`
+- `phi session new SESSION`
 - `phi session history [SESSION]`
 - `phi home new|pack|unpack`
 
@@ -108,10 +194,21 @@ phi yolo work.session --user "Keep going until done"
 phi session peek work.session
 phi session next work.session --provider
 phi session replace work.session --provider
-phi session tool-result work.session --json '{"output":"done"}'
+# When peek reports RequestExecutor, resolve its first pending call externally:
+phi session tool-result work.session --text "external tool output"
+phi session rollback work.session
 phi doctor
 phi session new work.session
 phi session history work.session
+```
+
+HeadlessTerminal commands expose the library job API as JSON:
+
+```bash
+phi headlessterm exec --wait-ms 1000 -- sh -lc 'printf ready'
+phi headlessterm access JOB_HANDLE --wait-ms 1000
+phi headlessterm access JOB_HANDLE --data 'continue' --write-only
+phi headlessterm close JOB_HANDLE
 ```
 
 ## Home
@@ -146,24 +243,9 @@ Phi includes built-in governance modules for:
 
 Auto-compact triggers when rendered provider-visible history approaches the configured context limit. Compact is still a normal step transition, so failures remain visible in session state and can be resumed by later scheduler steps.
 
-## Tools And Plugins
+## Tools
 
 Builtin tool execution is part of the same runtime step model. Tool calls are staged in the session step state first and only committed to history after execution completes.
-
-Python plugin support is subprocess-based. Phi does not link Python at build time; instead it probes a local Python executable at runtime and keeps a worker process alive for plugin loading and tool execution.
-
-You can inspect plugin/runtime status with:
-
-```bash
-phi doctor
-```
-
-If discovery is not enough:
-
-```bash
-export PHI_PYTHON=/usr/bin/python3
-phi doctor
-```
 
 ## Notes
 

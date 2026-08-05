@@ -1,6 +1,6 @@
 [package]
 name = "phi"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 include = [
     "Cargo.toml",
@@ -18,18 +18,16 @@ clap.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true
 interprocess = "2.4"
-minijinja.workspace = true
 portable-pty = "0.9"
 reqwest.workspace = true
-roxmltree.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 sha2 = "0.10"
 tokio.workspace = true
 tokio-stream.workspace = true
 owo-colors.workspace = true
-toml.workspace = true
 libc = "0.2"
 vt100 = "0.16"
 vte = "0.15"

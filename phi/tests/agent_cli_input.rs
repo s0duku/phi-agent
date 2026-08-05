@@ -84,8 +84,8 @@ fn session_new_commits_system_prompt_from_selected_home() {
     let root = unique_session_path("home").with_extension("home");
     std::fs::create_dir_all(&root).expect("test home should be created");
     std::fs::write(
-        root.join("config.toml"),
-        "PHI_SYSTEM = \"System prompt from explicit home.\"\nPHI_MODEL = \"session-home-model\"\n",
+        root.join("config.yml"),
+        "model:\n  name: session-home-model\nruntime:\n  system: System prompt from explicit home.\n",
     )
     .expect("test home config should be written");
     let session_path = unique_session_path("system");
@@ -123,6 +123,103 @@ fn session_new_commits_system_prompt_from_selected_home() {
     ));
 
     std::fs::remove_file(session_path).expect("test session should be removable");
+    std::fs::remove_dir_all(root).expect("test home should be removable");
+}
+
+#[test]
+fn explicit_config_replaces_home_config_for_session_creation() {
+    let root = unique_session_path("config-home").with_extension("home");
+    std::fs::create_dir_all(&root).expect("test home should be created");
+    std::fs::write(
+        root.join("config.yml"),
+        "model:\n  name: home-model\nruntime:\n  system: Home system.\n",
+    )
+    .expect("home config should be written");
+    let config_path = unique_session_path("explicit-config").with_extension("yml");
+    std::fs::write(
+        &config_path,
+        "model:\n  name: explicit-model\nruntime:\n  system: Explicit system.\n",
+    )
+    .expect("explicit config should be written");
+    let session_path = unique_session_path("explicit-config-session");
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "new",
+            session_path.to_string_lossy().as_ref(),
+            "--home",
+            root.to_string_lossy().as_ref(),
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+        ])
+        .env_remove("PHI_SYSTEM")
+        .env_remove("PHI_MODEL")
+        .output()
+        .expect("phi session new should execute");
+    assert!(
+        output.status.success(),
+        "phi session new failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&session_path).expect("session should load");
+    assert_eq!(
+        session.history(),
+        &[phi::message::PhiMessage::system("Explicit system.")]
+    );
+    assert!(matches!(
+        session.step(),
+        phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestProvider { call, .. })
+            if call.model == "explicit-model"
+    ));
+
+    std::fs::remove_file(session_path).expect("test session should be removable");
+    std::fs::remove_file(config_path).expect("test config should be removable");
+    std::fs::remove_dir_all(root).expect("test home should be removable");
+}
+
+#[test]
+fn environment_overrides_explicit_config() {
+    let root = unique_session_path("env-config-home").with_extension("home");
+    std::fs::create_dir_all(&root).expect("test home should be created");
+    let config_path = unique_session_path("env-explicit-config").with_extension("yml");
+    std::fs::write(
+        &config_path,
+        "model:\n  name: explicit-model\nruntime:\n  system: Explicit system.\n",
+    )
+    .expect("explicit config should be written");
+    let session_path = unique_session_path("env-config-session");
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "new",
+            session_path.to_string_lossy().as_ref(),
+            "--home",
+            root.to_string_lossy().as_ref(),
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+        ])
+        .env("PHI_MODEL", "environment-model")
+        .env("PHI_SYSTEM", "Environment system.")
+        .output()
+        .expect("phi session new should execute");
+    assert!(output.status.success());
+
+    let session = phi::session::Session::load(&session_path).expect("session should load");
+    assert_eq!(
+        session.history(),
+        &[phi::message::PhiMessage::system("Environment system.")]
+    );
+    assert!(matches!(
+        session.step(),
+        phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestProvider { call, .. })
+            if call.model == "environment-model"
+    ));
+
+    std::fs::remove_file(session_path).expect("test session should be removable");
+    std::fs::remove_file(config_path).expect("test config should be removable");
     std::fs::remove_dir_all(root).expect("test home should be removable");
 }
 

@@ -18,6 +18,7 @@
 # CLI
 
 - [Command overview](cli/overview.md)
+- [Configuration](cli/config.md)
 - [Agent commands](cli/agent.md)
 - [Session commands](cli/session.md)
 - [Headless terminal](cli/headlessterm.md)
@@ -25,7 +26,6 @@
 
 # Protocols
 
-- [Python runtime](protocols/python-runtime.md)
 - [Headless terminal wire protocol](protocols/headlessterm.md)
 
 # Development

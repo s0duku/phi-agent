@@ -75,16 +75,16 @@ fn commands_use_full_agent_build() {
 }
 
 #[test]
-fn no_exec_builds_an_empty_executor_without_loading_module_tools() {
+fn null_executor_builds_an_empty_executor_without_loading_module_tools() {
     let flags = Arc::new(Mutex::new(BuildFlags::default()));
-    let command = PhiAgentCommand::Step(PhiAgentCommand::step().with_no_exec(true));
+    let command = PhiAgentCommand::Step(PhiAgentCommand::step().with_null_executor(true));
     let agent = PhiAgent::builder(Session::empty(), command)
         .with_home(Arc::new(LocalPhiHome::new(unique_test_home())))
         .with_module(BuildProbeModule {
             flags: flags.clone(),
         })
         .build()
-        .expect("no-exec agent should build");
+        .expect("null-executor agent should build");
 
     let observed = flags.lock().expect("flags mutex should lock");
     assert!(observed.init_context_called);
@@ -109,11 +109,7 @@ fn doctor_report_includes_home_debug_information() {
     assert_eq!(report.home.root, root.display().to_string());
     assert_eq!(
         report.home.config_path,
-        root.join("config.toml").display().to_string()
-    );
-    assert_eq!(
-        report.home.plugins_path,
-        root.join("plugins").display().to_string()
+        root.join("config.yml").display().to_string()
     );
     assert_eq!(report.home.tmp_path, root.join("tmp").display().to_string());
 }

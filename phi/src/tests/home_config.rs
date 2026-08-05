@@ -8,12 +8,43 @@ use std::{
 use crate::{
     agent::PhiAgentBuildContext,
     config::PhiConfig,
-    home::LocalPhiHome,
+    home::{
+        LocalPhiHome, PhiHome, PhiHomeDoctorReport, PhiHomeEntry, PhiHomeError, PhiHomePath,
+        PhiHomeResult, PhiHomeUrl,
+    },
     message::PhiMessage,
     module::PhiModule,
     session::Session,
     tests::support::{ambient_step_agent_builder, env_lock, stub_client},
 };
+
+struct UnreadableConfigHome;
+
+impl PhiHome for UnreadableConfigHome {
+    fn doctor_report(&self) -> PhiHomeDoctorReport {
+        PhiHomeDoctorReport {
+            kind: "test".into(),
+            root: "test".into(),
+            source: "test".into(),
+            config_path: "test:/config.yml".into(),
+            tmp_path: "test:/tmp".into(),
+        }
+    }
+
+    fn read_file(&self, _source: &PhiHomeUrl) -> PhiHomeResult<Vec<u8>> {
+        Err(PhiHomeError::Read {
+            detail: "config storage is unavailable".into(),
+        })
+    }
+
+    fn entries(&self) -> Result<Vec<PhiHomeEntry>, Box<dyn std::error::Error>> {
+        Ok(Vec::new())
+    }
+
+    fn url_for_path(&self, _path: &PhiHomePath) -> PhiHomeUrl {
+        PhiHomeUrl::new("test", "/config.yml")
+    }
+}
 
 struct CaptureEnvModule {
     seen: Arc<Mutex<Option<PhiConfig>>>,
@@ -37,10 +68,10 @@ fn home_config_provides_base_settings_and_env_overrides_them() {
     let root = unique_temp_dir("phi-home-config-merge");
     fs::create_dir_all(&root).expect("temp home root should be creatable");
     fs::write(
-        root.join("config.toml"),
-        "PHI_MODEL = \"home-model\"\nPHI_ENABLE_REASONING = false\n",
+        root.join("config.yml"),
+        "model:\n  name: home-model\n  reasoning:\n    enabled: false\n",
     )
-    .expect("config.toml should be writable");
+    .expect("config.yml should be writable");
 
     let previous_phi_model = std::env::var_os("PHI_MODEL");
     let previous_phi_enable_reasoning = std::env::var_os("PHI_ENABLE_REASONING");
@@ -64,8 +95,8 @@ fn home_config_provides_base_settings_and_env_overrides_them() {
         .expect("capture lock should be healthy")
         .clone()
         .expect("module should observe merged env");
-    assert_eq!(captured.get("PHI_MODEL"), Some("env-model"));
-    assert_eq!(captured.get("PHI_ENABLE_REASONING"), Some("true"));
+    assert_eq!(captured.model().name, "env-model");
+    assert!(captured.model().reasoning.enabled);
 
     unsafe {
         restore_env("PHI_MODEL", previous_phi_model);
@@ -80,10 +111,10 @@ fn home_config_is_committed_when_constructing_a_session() {
     let root = unique_temp_dir("phi-home-config-init-middleware");
     fs::create_dir_all(&root).expect("temp home root should be creatable");
     fs::write(
-        root.join("config.toml"),
-        "PHI_SYSTEM = \"You are the home-config system prompt.\"\n",
+        root.join("config.yml"),
+        "runtime:\n  system: You are the home-config system prompt.\n",
     )
-    .expect("config.toml should be writable");
+    .expect("config.yml should be writable");
 
     let previous_phi_system = std::env::var_os("PHI_SYSTEM");
     unsafe {
@@ -102,6 +133,12 @@ fn home_config_is_committed_when_constructing_a_session() {
         restore_env("PHI_SYSTEM", previous_phi_system);
     }
     fs::remove_dir_all(root).expect("temp home should be removable");
+}
+
+#[test]
+fn home_config_read_failures_are_not_treated_as_missing_config() {
+    let error = crate::load_config(&UnreadableConfigHome, None).unwrap_err();
+    assert!(error.to_string().contains("config storage is unavailable"));
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

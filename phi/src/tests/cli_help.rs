@@ -8,6 +8,57 @@ fn root_help_starts_with_banner() {
 
     assert!(help.starts_with(banner::startup_banner()));
     assert!(help.contains(concat!("Version: ", env!("CARGO_PKG_VERSION"))));
+    assert!(!help.contains("--config <FILE>"));
+}
+
+#[test]
+fn config_is_shared_by_setup_consuming_commands() {
+    for args in [
+        vec!["phi", "run", "--config", "custom.yml", "--user", "hello"],
+        vec!["phi", "yolo", "--config", "custom.yml", "--user", "hello"],
+        vec!["phi", "step", "--config", "custom.yml", "--user", "hello"],
+        vec!["phi", "doctor", "--config", "custom.yml"],
+        vec![
+            "phi",
+            "session",
+            "new",
+            "session.json",
+            "--config",
+            "custom.yml",
+        ],
+    ] {
+        Cli::try_parse_from(args).expect("setup-consuming command should accept --config");
+    }
+
+    for args in [
+        vec!["phi", "home", "new", ".phi", "--config", "custom.yml"],
+        vec![
+            "phi",
+            "headlessterm",
+            "close",
+            "job-handle",
+            "--config",
+            "custom.yml",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(args).is_err(),
+            "command without setup must reject --config"
+        );
+    }
+
+    assert!(
+        Cli::try_parse_from([
+            "phi",
+            "session",
+            "append",
+            "session.json",
+            "--config",
+            "custom.yml",
+        ])
+        .is_err(),
+        "session transforms that do not consume setup must reject --config"
+    );
 }
 
 #[test]
@@ -34,24 +85,26 @@ fn direct_subcommand_help_starts_with_banner() {
         .to_string();
 
     assert!(help.starts_with(banner::startup_banner()));
-    assert!(help.contains("--no-exec"));
+    assert!(help.contains("--null-executor"));
+    assert!(!help.contains("--no-exec"));
+    assert!(!help.contains("--template"));
     assert!(!help.contains("--tool-result"));
 }
 
 #[test]
-fn agent_commands_accept_no_exec() {
+fn agent_commands_accept_null_executor() {
     for command in ["run", "yolo", "step"] {
-        Cli::try_parse_from(["phi", command, "--no-exec", "--user", "hello"])
-            .unwrap_or_else(|error| panic!("{command} should accept --no-exec: {error}"));
+        Cli::try_parse_from(["phi", command, "--null-executor", "--user", "hello"])
+            .unwrap_or_else(|error| panic!("{command} should accept --null-executor: {error}"));
     }
 }
 
 #[test]
-fn no_exec_dominates_container_in_agent_command_options() {
+fn null_executor_dominates_container_in_agent_command_options() {
     let cli = Cli::try_parse_from([
         "phi",
         "step",
-        "--no-exec",
+        "--null-executor",
         "--container",
         "unused-container",
         "--user",
@@ -66,7 +119,7 @@ fn no_exec_dominates_container_in_agent_command_options() {
     )
     .expect("step command should build");
 
-    assert!(command.no_exec());
+    assert!(command.null_executor());
     assert_eq!(command.container(), None);
 }
 
@@ -104,6 +157,18 @@ fn headlessterm_help_exposes_launch_local() {
         .render_help()
         .to_string();
     assert!(exec_help.contains("--container"));
+    let headlessterm = command
+        .find_subcommand_mut("headlessterm")
+        .expect("headlessterm subcommand should exist");
+    assert!(headlessterm.find_subcommand_mut("write").is_none());
+    let access_help = headlessterm
+        .find_subcommand_mut("access")
+        .expect("headlessterm access subcommand should exist")
+        .render_help()
+        .to_string();
+    assert!(access_help.contains("--data"));
+    assert!(access_help.contains("--wait-ms"));
+    assert!(access_help.contains("--write-only"));
 }
 
 #[test]

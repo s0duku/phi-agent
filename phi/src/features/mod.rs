@@ -1,6 +1,5 @@
 pub mod governance;
 mod observers;
-pub(crate) mod plugin;
 
 use std::io::IsTerminal;
 
@@ -9,7 +8,6 @@ use crate::{
         PhiAgentBuildContext, PhiAgentCommand, PhiAgentRuntime, StepBounce, StepCont,
         StepInterveneNext,
     },
-    config::{default_max_steps, optional_public_usize_from_config},
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallOutput,
     message::PhiMessage,
@@ -26,18 +24,12 @@ use governance::loop_guard::{
 pub(crate) use governance::model_retry::ModelRetryPolicy;
 pub use observers::echo::pretty_history;
 pub(crate) use observers::echo::{pretty_message, pretty_warning};
-pub use plugin::PluginRuntimeStatus;
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/system.txt");
 
 pub(crate) fn build_default_modules(context: &PhiAgentBuildContext) -> PhiModuleLayout {
-    let max_steps = command_max_steps(&context.command)
-        .or(
-            optional_public_usize_from_config(context.config(), "PHI_MAX_STEPS")
-                .ok()
-                .flatten(),
-        )
-        .unwrap_or(default_max_steps());
+    let max_steps =
+        command_max_steps(&context.command).unwrap_or_else(|| context.config().runtime().max_steps);
     let mut modules = PhiModuleLayout::default();
     modules.push_governance(Box::new(governance::step_budget::StepBudgetPolicy::new(
         max_steps,
@@ -53,10 +45,7 @@ pub(crate) fn build_default_modules(context: &PhiAgentBuildContext) -> PhiModule
     modules.push_governance(Box::new(governance::loop_guard::LoopGuardPolicy::new(
         loop_guard_config(),
     )));
-    let context_tokens = optional_public_usize_from_config(context.config(), "PHI_CONTEXT_TOKENS")
-        .ok()
-        .flatten()
-        .unwrap_or(crate::config::default_context_tokens());
+    let context_tokens = context.config().runtime().context_tokens;
     modules.push_governance(Box::new(AutoCompactPolicy::new(context_tokens)));
 
     modules.push_recovery(Box::new(DefaultFailedRecoveryModule));
@@ -84,17 +73,7 @@ pub(crate) fn build_runtime_modules(context: &PhiAgentBuildContext) -> PhiModule
     if let Some(sender) = command_message_sender(&context.command) {
         modules.push_observer(Box::new(observers::channel::ChannelModule::new(sender)));
     }
-    if let Some(plugin_module) = plugin::build_plugin_module(context) {
-        // Plugins are mounted after Phi's built-in runtime observers so the
-        // default UX stays stable, but still before recovery modules so
-        // plugins may override Phi's fallback failed-session behavior.
-        modules.push_extension(plugin_module);
-    }
     modules
-}
-
-pub fn plugin_runtime_status() -> PluginRuntimeStatus {
-    plugin::python_plugin_status()
 }
 
 pub(crate) fn pretty_info(message: &str) -> String {
@@ -109,7 +88,9 @@ pub(crate) fn configured_system_prompt_from_config(
     settings: &crate::config::PhiConfig,
 ) -> Option<String> {
     settings
-        .get("PHI_SYSTEM")
+        .runtime()
+        .system
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)

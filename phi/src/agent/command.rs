@@ -22,8 +22,6 @@ pub struct StepCommand {
 #[derive(Clone)]
 struct AgentCommandOptions {
     pub max_model_request_retries: Option<usize>,
-    pub template: Option<String>,
-    pub plugin_args: Vec<String>,
     pub quiet: bool,
     executor: ExecutorOptions,
 }
@@ -31,7 +29,7 @@ struct AgentCommandOptions {
 #[derive(Clone)]
 enum ExecutorOptions {
     Enabled { container: Option<String> },
-    Disabled,
+    Null,
 }
 
 #[derive(Clone)]
@@ -52,10 +50,8 @@ pub struct RunCommandArgs {
 
 pub struct AgentCommandArgs {
     pub quiet: bool,
-    pub no_exec: bool,
+    pub null_executor: bool,
     pub max_model_request_retries: Option<usize>,
-    pub template: Option<String>,
-    pub plugin_args: Vec<String>,
     pub container: Option<String>,
 }
 
@@ -154,24 +150,13 @@ impl PhiAgentCommand {
         )))
     }
 
-    pub fn plugin_args(&self) -> &[String] {
-        self.options()
-            .map(|options| options.plugin_args.as_slice())
-            .unwrap_or_default()
-    }
-
     pub fn container(&self) -> Option<&str> {
         self.options().and_then(AgentCommandOptions::container)
     }
 
-    pub fn template(&self) -> Option<&str> {
+    pub(crate) fn null_executor(&self) -> bool {
         self.options()
-            .and_then(|options| options.template.as_deref())
-    }
-
-    pub(crate) fn no_exec(&self) -> bool {
-        self.options()
-            .is_some_and(|options| matches!(options.executor, ExecutorOptions::Disabled))
+            .is_some_and(|options| matches!(options.executor, ExecutorOptions::Null))
     }
 
     pub(crate) fn max_steps(&self) -> Option<usize> {
@@ -207,8 +192,6 @@ impl Default for AgentCommandOptions {
     fn default() -> Self {
         Self {
             max_model_request_retries: Some(3),
-            template: None,
-            plugin_args: Vec::new(),
             quiet: false,
             executor: ExecutorOptions::Enabled { container: None },
         }
@@ -220,11 +203,9 @@ impl From<AgentCommandArgs> for AgentCommandOptions {
         let container = args.container.filter(|value| !value.trim().is_empty());
         Self {
             max_model_request_retries: args.max_model_request_retries,
-            template: args.template.filter(|value| !value.trim().is_empty()),
-            plugin_args: args.plugin_args,
             quiet: args.quiet,
-            executor: if args.no_exec {
-                ExecutorOptions::Disabled
+            executor: if args.null_executor {
+                ExecutorOptions::Null
             } else {
                 ExecutorOptions::Enabled { container }
             },
@@ -236,7 +217,7 @@ impl AgentCommandOptions {
     fn container(&self) -> Option<&str> {
         match &self.executor {
             ExecutorOptions::Enabled { container } => container.as_deref(),
-            ExecutorOptions::Disabled => None,
+            ExecutorOptions::Null => None,
         }
     }
 }
@@ -265,27 +246,17 @@ impl RunCommand {
         self
     }
 
-    pub fn with_template(mut self, template: Option<String>) -> Self {
-        self.options.template = template.filter(|value| !value.trim().is_empty());
-        self
-    }
-
     pub fn with_quiet(mut self, quiet: bool) -> Self {
         self.options.quiet = quiet;
         self
     }
 
-    pub fn with_no_exec(mut self, no_exec: bool) -> Self {
-        if no_exec {
-            self.options.executor = ExecutorOptions::Disabled;
-        } else if matches!(self.options.executor, ExecutorOptions::Disabled) {
+    pub fn with_null_executor(mut self, null_executor: bool) -> Self {
+        if null_executor {
+            self.options.executor = ExecutorOptions::Null;
+        } else if matches!(self.options.executor, ExecutorOptions::Null) {
             self.options.executor = ExecutorOptions::Enabled { container: None };
         }
-        self
-    }
-
-    pub fn with_plugin_args(mut self, plugin_args: Vec<String>) -> Self {
-        self.options.plugin_args = plugin_args;
         self
     }
 
@@ -306,27 +277,17 @@ impl StepCommand {
         self
     }
 
-    pub fn with_template(mut self, template: Option<String>) -> Self {
-        self.options.template = template.filter(|value| !value.trim().is_empty());
-        self
-    }
-
     pub fn with_quiet(mut self, quiet: bool) -> Self {
         self.options.quiet = quiet;
         self
     }
 
-    pub fn with_no_exec(mut self, no_exec: bool) -> Self {
-        if no_exec {
-            self.options.executor = ExecutorOptions::Disabled;
-        } else if matches!(self.options.executor, ExecutorOptions::Disabled) {
+    pub fn with_null_executor(mut self, null_executor: bool) -> Self {
+        if null_executor {
+            self.options.executor = ExecutorOptions::Null;
+        } else if matches!(self.options.executor, ExecutorOptions::Null) {
             self.options.executor = ExecutorOptions::Enabled { container: None };
         }
-        self
-    }
-
-    pub fn with_plugin_args(mut self, plugin_args: Vec<String>) -> Self {
-        self.options.plugin_args = plugin_args;
         self
     }
 
@@ -381,18 +342,16 @@ mod tests {
     use super::{AgentCommandArgs, PhiAgentCommand};
 
     #[test]
-    fn no_exec_discards_container_when_command_options_are_built() {
+    fn null_executor_discards_container_when_command_options_are_built() {
         let command = PhiAgentCommand::from_step_args(AgentCommandArgs {
             quiet: false,
-            no_exec: true,
+            null_executor: true,
             max_model_request_retries: Some(3),
-            template: None,
-            plugin_args: Vec::new(),
             container: Some("unused-container".to_string()),
         })
         .expect("step command should build");
 
-        assert!(command.no_exec());
+        assert!(command.null_executor());
         assert_eq!(command.container(), None);
     }
 }

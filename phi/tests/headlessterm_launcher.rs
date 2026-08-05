@@ -31,28 +31,42 @@ fn detached_container_survives_its_launcher() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let ready = loop {
         let output = Command::new(PHI)
-            .args(["headlessterm", "write", "--wait-ms", "0", &handle])
+            .args(["headlessterm", "access", "--wait-ms", "0", &handle])
             .output()
             .expect("container access should execute");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if output.status.success() && stderr.contains("status=running") {
-            break output;
+        let result = serde_json::from_slice::<phi::headlessterm::JobAccessResult>(&output.stdout);
+        if output.status.success()
+            && matches!(
+                result.as_ref(),
+                Ok(phi::headlessterm::JobAccessResult::Interacted(info))
+                    if info.is_running()
+            )
+        {
+            break result.unwrap();
         }
         assert!(
-            output.status.success() && stderr.contains("status=not-found"),
-            "unexpected container status while waiting for readiness: {stderr}"
+            output.status.success()
+                && matches!(
+                    result.as_ref(),
+                    Ok(phi::headlessterm::JobAccessResult::Interacted(info))
+                        if matches!(info.status(), phi::headlessterm::JobStatus::NoExist)
+                ),
+            "unexpected container status while waiting for readiness: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
         assert!(
             Instant::now() < deadline,
-            "detached container did not become ready: {stderr}"
+            "detached container did not become ready: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    assert!(
-        String::from_utf8_lossy(&ready.stderr).contains("status=running"),
-        "detached container reported an unexpected ready status: {}",
-        String::from_utf8_lossy(&ready.stderr)
-    );
+    let phi::headlessterm::JobAccessResult::Interacted(ready) = ready else {
+        panic!("access should return an interacted result");
+    };
+    assert!(ready.is_running());
 
     let closed = Command::new(PHI)
         .args(["headlessterm", "close", &handle])
@@ -63,6 +77,8 @@ fn detached_container_survives_its_launcher() {
         "container close failed: {}",
         String::from_utf8_lossy(&closed.stderr)
     );
+    serde_json::from_slice::<phi::headlessterm::JobInfo>(&closed.stdout)
+        .expect("close stdout should be the API JobInfo value");
 }
 
 fn unique_handle() -> String {

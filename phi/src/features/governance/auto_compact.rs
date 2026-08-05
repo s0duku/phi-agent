@@ -1,7 +1,5 @@
 use crate::{
-    agent::{
-        PhiAgentRuntime, StepCont, StepInterveneError, StepInterveneNext, StepInterveneResult,
-    },
+    agent::{PhiAgentRuntime, StepCont, StepInterveneNext, StepInterveneResult},
     module::PhiModule,
     render::approx_history_token_count,
     session::{PhiAgentStep, PhiReActStep},
@@ -58,15 +56,7 @@ impl PhiModule for AutoCompactPolicy {
             return next.call(runtime, cont);
         }
 
-        let request = runtime
-            .base_step()
-            .request_provider_call()
-            .cloned()
-            .expect("request provider should produce a provider call");
-        let token_count = match runtime.provider_history_token_count(&request, &history) {
-            Ok(token_count) => token_count,
-            Err(error) => return Err(StepInterveneError::new(runtime, error)),
-        };
+        let token_count = runtime.provider_history_token_count(&history);
         let compact_request_tokens =
             token_count.saturating_add(crate::render::compact_prompt_token_count());
         if compact_request_tokens < self.threshold_tokens {

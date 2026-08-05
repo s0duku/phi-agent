@@ -45,7 +45,8 @@ use clap::{
     FromArgMatches, Parser, Subcommand,
 };
 
-use agent::{PhiAgent, PhiAgentCommand, build_agent};
+use agent::{PhiAgent, PhiAgentCommand, build_agent_with_config};
+use config::PhiConfig;
 use features::{pretty_info, pretty_warning};
 use home::{command::HomeArgs, load_home};
 use message::PhiMessage;
@@ -145,6 +146,7 @@ async fn step_agent(
     home_spec: Option<&str>,
     args: StepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = args.base.config.as_deref();
     let session_input = read_session_input(args.base.session_path.as_deref())?;
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
     if matches!(session_input, SessionInput::MissingFile { .. }) {
@@ -155,12 +157,15 @@ async fn step_agent(
             return print_subcommand_help("step");
         }
         let home = load_home(home_spec)?;
-        let session = new_session(home.as_ref())?;
+        let config = load_config(home.as_ref(), config_path)?;
+        let session = new_session_with_config(&config)?;
         emit_new_session_history(&session, args.base.quiet);
-        return run_step_with_input(args, session_input, input_messages, session, home).await;
+        return run_step_with_input(args, session_input, input_messages, session, home, config)
+            .await;
     };
     let home = load_home(home_spec)?;
-    run_step_with_input(args, session_input, input_messages, session, home).await
+    let config = load_config(home.as_ref(), config_path)?;
+    run_step_with_input(args, session_input, input_messages, session, home, config).await
 }
 
 async fn run_step_with_input(
@@ -169,6 +174,7 @@ async fn run_step_with_input(
     input_messages: Vec<PhiMessage>,
     session: Session,
     home: std::sync::Arc<dyn home::PhiHome>,
+    config: PhiConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
@@ -180,6 +186,7 @@ async fn run_step_with_input(
             args: agent::StepCommandArgs::from(&args.base),
         })?,
         home,
+        config,
     )
     .await?;
     persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
@@ -190,6 +197,7 @@ async fn run_agent_with_step_limit(
     args: RunArgs,
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = args.base.config.as_deref();
     let session_input = read_session_input(args.base.session_path.as_deref())?;
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
     if matches!(session_input, SessionInput::MissingFile { .. }) {
@@ -200,7 +208,8 @@ async fn run_agent_with_step_limit(
             return print_subcommand_help("run");
         }
         let home = load_home(home_spec)?;
-        let session = new_session(home.as_ref())?;
+        let config = load_config(home.as_ref(), config_path)?;
+        let session = new_session_with_config(&config)?;
         emit_new_session_history(&session, args.base.quiet);
         return run_with_input(
             args,
@@ -209,10 +218,12 @@ async fn run_agent_with_step_limit(
             input_messages,
             session,
             home,
+            config,
         )
         .await;
     };
     let home = load_home(home_spec)?;
+    let config = load_config(home.as_ref(), config_path)?;
     run_with_input(
         args,
         forced_max_steps,
@@ -220,6 +231,7 @@ async fn run_agent_with_step_limit(
         input_messages,
         session,
         home,
+        config,
     )
     .await
 }
@@ -231,6 +243,7 @@ async fn run_with_input(
     input_messages: Vec<PhiMessage>,
     session: Session,
     home: std::sync::Arc<dyn home::PhiHome>,
+    config: PhiConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
@@ -244,6 +257,7 @@ async fn run_with_input(
             forced_max_steps: max_steps,
         })?,
         home,
+        config,
     )
     .await?;
     persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
@@ -254,6 +268,7 @@ async fn yolo_agent_with_step_limit(
     args: RunArgs,
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = args.base.config.as_deref();
     let session_input = read_session_input(args.base.session_path.as_deref())?;
     let input_messages = collect_effective_input_messages(&args.base, &session_input);
     if matches!(session_input, SessionInput::MissingFile { .. }) {
@@ -264,7 +279,8 @@ async fn yolo_agent_with_step_limit(
             return print_subcommand_help("yolo");
         }
         let home = load_home(home_spec)?;
-        let session = new_session(home.as_ref())?;
+        let config = load_config(home.as_ref(), config_path)?;
+        let session = new_session_with_config(&config)?;
         emit_new_session_history(&session, args.base.quiet);
         return yolo_with_input(
             args,
@@ -273,10 +289,12 @@ async fn yolo_agent_with_step_limit(
             input_messages,
             session,
             home,
+            config,
         )
         .await;
     };
     let home = load_home(home_spec)?;
+    let config = load_config(home.as_ref(), config_path)?;
     yolo_with_input(
         args,
         forced_max_steps,
@@ -284,6 +302,7 @@ async fn yolo_agent_with_step_limit(
         input_messages,
         session,
         home,
+        config,
     )
     .await
 }
@@ -295,6 +314,7 @@ async fn yolo_with_input(
     input_messages: Vec<PhiMessage>,
     session: Session,
     home: std::sync::Arc<dyn home::PhiHome>,
+    config: PhiConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     emit_existing_session_notice(&session_input, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
@@ -308,6 +328,7 @@ async fn yolo_with_input(
             forced_max_steps: max_steps,
         })?,
         home,
+        config,
     )
     .await?;
     persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
@@ -317,10 +338,11 @@ async fn run_cli_agent(
     session: Session,
     command: PhiAgentCommand,
     home: std::sync::Arc<dyn home::PhiHome>,
+    config: PhiConfig,
 ) -> Result<(Session, CliAgentExit), Box<dyn std::error::Error>> {
     let step_once = matches!(&command, PhiAgentCommand::Step(_));
     let yolo = matches!(&command, PhiAgentCommand::Yolo(_));
-    let mut agent = build_agent(session, command, home)?;
+    let mut agent = build_agent_with_config(session, command, home, config)?;
     let mut previous_was_failed = false;
     loop {
         let checkpoint = agent.session();
@@ -447,13 +469,15 @@ fn persist_cli_agent_session(
 
 fn doctor_runtime(
     home_spec: Option<&str>,
-    _args: DoctorArgs,
+    args: DoctorArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = load_home(home_spec)?;
-    let agent = build_agent(
+    let config = load_config(home.as_ref(), args.config.config.as_deref())?;
+    let agent = build_agent_with_config(
         Session::empty(),
         PhiAgentCommand::Doctor(PhiAgentCommand::doctor()),
         home,
+        config,
     )?;
     let report = agent.doctor_report();
     let stdout = io::stdout();
@@ -480,10 +504,35 @@ impl SessionInput {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn new_session(home: &dyn home::PhiHome) -> Result<Session, Box<dyn std::error::Error>> {
-    let config = home.config()?;
-    let defaults = config::ModelRequestDefaults::from_config(&config)?;
-    let history = features::configured_system_prompt_from_config(&config)
+    let config = load_config(home, None)?;
+    new_session_with_config(&config)
+}
+
+pub(crate) fn load_config(
+    home: &dyn home::PhiHome,
+    explicit_path: Option<&Path>,
+) -> Result<PhiConfig, Box<dyn std::error::Error>> {
+    let config = if let Some(path) = explicit_path {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("failed to read phi config {}: {error}", path.display()))?;
+        PhiConfig::from_yaml(&bytes)?
+    } else {
+        match home.read_file(&home.config()) {
+            Ok(bytes) => PhiConfig::from_yaml(&bytes)?,
+            Err(error) if error.is_not_found() => PhiConfig::default(),
+            Err(error) => return Err(Box::new(error)),
+        }
+    };
+    config.apply_process_env()
+}
+
+pub(crate) fn new_session_with_config(
+    config: &PhiConfig,
+) -> Result<Session, Box<dyn std::error::Error>> {
+    let defaults = config::ModelRequestDefaults::from(config);
+    let history = features::configured_system_prompt_from_config(config)
         .map(PhiMessage::system)
         .into_iter()
         .collect::<Vec<_>>();
@@ -685,17 +734,26 @@ enum Command {
 }
 
 #[derive(Args, Default)]
-struct DoctorArgs {}
+struct ConfigArgs {
+    /// Use this YAML file instead of the config location provided by PhiHome.
+    #[arg(long = "config", global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
+}
+
+#[derive(Args, Default)]
+struct DoctorArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+}
 
 #[derive(Default)]
 struct AgentCliArgs {
     session_path: Option<PathBuf>,
+    config: Option<PathBuf>,
     quiet: bool,
-    no_exec: bool,
+    null_executor: bool,
     max_model_request_retries: Option<usize>,
-    template: Option<String>,
     container: Option<String>,
-    plugin_args: Vec<String>,
     messages: cli::MessageArgs,
 }
 
@@ -723,10 +781,8 @@ impl From<&AgentCliArgs> for agent::AgentCommandArgs {
     fn from(value: &AgentCliArgs) -> Self {
         Self {
             quiet: value.quiet,
-            no_exec: value.no_exec,
+            null_executor: value.null_executor,
             max_model_request_retries: value.max_model_request_retries,
-            template: value.template.clone(),
-            plugin_args: value.plugin_args.clone(),
             container: value.container.clone(),
         }
     }
@@ -812,15 +868,11 @@ impl Args for StepArgs {
 fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
     AgentCliArgs {
         session_path: matches.remove_one::<PathBuf>("session_path"),
+        config: matches.remove_one::<PathBuf>("config"),
         quiet: matches.get_flag("quiet"),
-        no_exec: matches.get_flag("no_exec"),
+        null_executor: matches.get_flag("null_executor"),
         max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
-        template: matches.remove_one::<String>("template"),
         container: matches.remove_one::<String>("container"),
-        plugin_args: matches
-            .remove_many::<String>("plugin_args")
-            .map(|values| values.collect())
-            .unwrap_or_default(),
         messages: cli::MessageArgs::parse(matches),
     }
 }
@@ -829,25 +881,19 @@ fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
     if let Some(session_path) = matches.remove_one::<PathBuf>("session_path") {
         target.session_path = Some(session_path);
     }
+    if let Some(config) = matches.remove_one::<PathBuf>("config") {
+        target.config = Some(config);
+    }
     target.quiet |= matches.get_flag("quiet");
-    target.no_exec |= matches.get_flag("no_exec");
+    target.null_executor |= matches.get_flag("null_executor");
     if let Some(max_model_request_retries) =
         matches.remove_one::<usize>("max_model_request_retries")
     {
         target.max_model_request_retries = Some(max_model_request_retries);
     }
-    if let Some(template) = matches.remove_one::<String>("template") {
-        target.template = Some(template);
-    }
     if let Some(container) = matches.remove_one::<String>("container") {
         target.container = Some(container);
     }
-    target.plugin_args.extend(
-        matches
-            .remove_many::<String>("plugin_args")
-            .map(|values| values.collect::<Vec<_>>())
-            .unwrap_or_default(),
-    );
     target.messages.extend_from_matches(matches);
 }
 
@@ -859,16 +905,23 @@ fn add_agent_cli_args(cmd: ClapCommand) -> ClapCommand {
                 .value_parser(clap::value_parser!(PathBuf)),
         )
         .arg(
+            Arg::new("config")
+                .long("config")
+                .value_name("FILE")
+                .value_parser(clap::value_parser!(PathBuf))
+                .help("Use this YAML file instead of the config location provided by PhiHome"),
+        )
+        .arg(
             Arg::new("quiet")
                 .long("quiet")
                 .action(ArgAction::SetTrue)
                 .help("Disable human-readable stderr logs"),
         )
         .arg(
-            Arg::new("no_exec")
-                .long("no-exec")
+            Arg::new("null_executor")
+                .long("null-executor")
                 .action(ArgAction::SetTrue)
-                .help("Disable all built-in and module-provided executable tools"),
+                .help("Use an executor initialized without built-in or module-provided tools"),
         )
         .arg(
             Arg::new("max_model_request_retries")
@@ -876,13 +929,6 @@ fn add_agent_cli_args(cmd: ClapCommand) -> ClapCommand {
                 .value_name("N")
                 .value_parser(clap::value_parser!(usize)),
         )
-        .arg(Arg::new("template").long("template").value_name("NAME"))
-        .arg(Arg::new("container").long("container").value_name("NAME"))
-        .arg(
-            Arg::new("plugin_args")
-                .raw(true)
-                .num_args(0..)
-                .value_name("PLUGIN_ARGS"),
-        ),
+        .arg(Arg::new("container").long("container").value_name("NAME")),
     )
 }

@@ -539,7 +539,7 @@ mod tests {
 
     fn test_config() -> ProviderConfig {
         ProviderConfig {
-            provider: "openai_chat".to_string(),
+            kind: "openai_chat".to_string(),
             api_base: "https://example.test/v1".to_string(),
             api_key: "test-key".to_string(),
             fake_profile: "assistant_text".to_string(),

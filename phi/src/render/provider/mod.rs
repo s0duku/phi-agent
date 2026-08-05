@@ -258,13 +258,13 @@ where
 pub(in crate::render) fn build_provider(
     config: ProviderConfig,
 ) -> PhiAgentRuntimeResult<Box<dyn DynProvider>> {
-    if config.provider.trim() != "fake" && config.api_key.trim().is_empty() {
+    if config.kind.trim() != "fake" && config.api_key.trim().is_empty() {
         eprintln!(
             "phi provider: PHI_KEY is not configured; model requests will likely fail until an API key is set"
         );
     }
 
-    match config.provider.trim() {
+    match config.kind.trim() {
         "fake" => Ok(Box::new(FakeClient::new(config)?)),
         "openai_chat" => Ok(Box::new(OpenAiCompatClient::new(config))),
         "openai_response" => Ok(Box::new(ResponsesClient::new(config))),

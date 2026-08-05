@@ -94,7 +94,7 @@ impl PhiTool for ShellJobExecTool {
         }
         let terminal = HeadlessTerminal::new();
         let command = runtime
-            .config()
+            .setup()
             .command()
             .container()
             .map(|container| TerminalCommand::docker_exec(container, args.cmd.clone()))

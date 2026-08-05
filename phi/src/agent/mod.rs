@@ -20,9 +20,9 @@ pub(crate) use crate::expr::{DeltaLookup, PhiExprDelta, PhiStepExpr};
 #[cfg(test)]
 use crate::module::PhiModule;
 use crate::{
-    config::{ModelRequestDefaults, PhiConfig, PhiRuntimeSetup, ProviderConfig},
+    config::{ModelRequestDefaults, PhiConfig},
     error::PhiAgentRuntimeError,
-    executor::{PhiExecutor, PhiToolDefinition},
+    executor::{PhiExecutor, PhiToolDefinition, ToolOutputLimits},
     features::{build_default_modules, build_init_modules, build_runtime_modules},
     home::{PhiHome, PhiHomeDoctorReport},
     message::{PhiHistory, PhiMessage},
@@ -33,7 +33,6 @@ use crate::{
 
 #[derive(serde::Serialize)]
 pub struct DoctorReport {
-    pub python_plugin: crate::features::PluginRuntimeStatus,
     pub home: PhiHomeDoctorReport,
     pub system: DoctorSystemPrompt,
     pub tools: Vec<crate::executor::PhiToolDefinition>,
@@ -50,26 +49,15 @@ pub struct PhiAgentBuildContext {
     pub(crate) session: Session,
     pub(crate) command: PhiAgentCommand,
     pub(crate) config: PhiConfig,
-    pub(crate) home: Option<Arc<dyn PhiHome>>,
 }
 
 impl PhiAgentBuildContext {
-    pub(crate) fn new(session: Session, command: PhiAgentCommand) -> Self {
+    fn new(session: Session, command: PhiAgentCommand, config: PhiConfig) -> Self {
         Self {
             session,
             command,
-            config: PhiConfig::default(),
-            home: None,
+            config,
         }
-    }
-
-    pub(crate) fn bind_home(
-        &mut self,
-        home: Arc<dyn PhiHome>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.config = home.config()?;
-        self.home = Some(home);
-        Ok(())
     }
 
     pub fn config(&self) -> &PhiConfig {
@@ -78,10 +66,6 @@ impl PhiAgentBuildContext {
 
     pub fn command(&self) -> &PhiAgentCommand {
         &self.command
-    }
-
-    pub fn home(&self) -> Option<&Arc<dyn PhiHome>> {
-        self.home.as_ref()
     }
 }
 
@@ -94,6 +78,13 @@ pub struct PhiAgent {
     runtime: Option<PhiAgentRuntime>,
 }
 
+#[derive(Clone)]
+pub(crate) struct PhiRuntimeSetup {
+    config: PhiConfig,
+    command: PhiAgentCommand,
+    home: Arc<dyn PhiHome>,
+}
+
 pub(crate) struct PhiAgentRuntime {
     base: PhiStepExpr,
     delta: PhiExprDelta,
@@ -102,36 +93,38 @@ pub(crate) struct PhiAgentRuntime {
     modules: PhiModuleChain,
     render: render::PhiRender,
     model_defaults: ModelRequestDefaults,
-    render_template: Option<String>,
-    home: Arc<dyn PhiHome>,
-    config: PhiRuntimeSetup,
+    setup: PhiRuntimeSetup,
 }
 
 pub struct PhiAgentBuilder {
-    context: PhiAgentBuildContext,
+    session: Session,
+    command: PhiAgentCommand,
     modules: PhiModuleLayout,
     render: Option<render::PhiRender>,
     model_defaults: Option<ModelRequestDefaults>,
     home: Option<Arc<dyn PhiHome>>,
+    config: Option<PhiConfig>,
 }
 
 pub(crate) struct PreparedPhiAgentBuilder {
-    builder: PhiAgentBuilder,
+    context: PhiAgentBuildContext,
+    modules: PhiModuleLayout,
+    render: Option<render::PhiRender>,
+    model_defaults: Option<ModelRequestDefaults>,
+    home: Arc<dyn PhiHome>,
 }
 
 impl PhiAgentBuilder {
-    fn from_context(context: PhiAgentBuildContext) -> Self {
+    fn new(session: Session, command: PhiAgentCommand) -> Self {
         Self {
-            context,
+            session,
+            command,
             modules: PhiModuleLayout::default(),
             render: None,
             model_defaults: None,
             home: None,
+            config: None,
         }
-    }
-
-    pub fn context(&self) -> &PhiAgentBuildContext {
-        &self.context
     }
 
     pub(crate) fn prepare(mut self) -> Result<PreparedPhiAgentBuilder, Box<dyn std::error::Error>> {
@@ -143,13 +136,20 @@ impl PhiAgentBuilder {
             "PhiAgentBuilder requires a PhiHome instance before prepare/build".to_string()
         })?;
 
-        // Home config is part of the agent's durable runtime environment, so
-        // it must be visible before we derive any modules from the build
-        // context. Otherwise build-time module selection would see only
-        // process env while later runtime/reporting paths see merged settings.
-        self.context.bind_home(home.clone())?;
-        self.home = Some(home);
-        Ok(PreparedPhiAgentBuilder { builder: self })
+        // Resolve the immutable setup before deriving modules so every build
+        // stage and the resulting runtime observe the same config snapshot.
+        let config = self
+            .config
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| crate::load_config(home.as_ref(), None))?;
+        Ok(PreparedPhiAgentBuilder {
+            context: PhiAgentBuildContext::new(self.session, self.command, config),
+            modules: self.modules,
+            render: self.render,
+            model_defaults: self.model_defaults,
+            home,
+        })
     }
 
     #[cfg(test)]
@@ -182,6 +182,11 @@ impl PhiAgentBuilder {
         self
     }
 
+    pub(crate) fn with_config(mut self, config: PhiConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
     pub fn build(self) -> Result<PhiAgent, Box<dyn std::error::Error>> {
         self.prepare()?.build()
     }
@@ -189,23 +194,23 @@ impl PhiAgentBuilder {
 
 impl PreparedPhiAgentBuilder {
     pub fn context(&self) -> &PhiAgentBuildContext {
-        &self.builder.context
+        &self.context
     }
 
     #[cfg(test)]
     pub(crate) fn with_module(mut self, module: impl PhiModule + 'static) -> Self {
-        self.builder.modules.push_extension(Box::new(module));
+        self.modules.push_extension(Box::new(module));
         self
     }
 
     pub(crate) fn with_module_layout(mut self, layout: PhiModuleLayout) -> Self {
-        self.builder.modules.extend(layout);
+        self.modules.extend(layout);
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_client(mut self, client: Arc<dyn crate::render::TestClient>) -> Self {
-        self.builder.render = Some(render::PhiRender::from_test_client(client));
+        self.render = Some(render::PhiRender::from_test_client(client));
         self
     }
 
@@ -219,75 +224,53 @@ impl PreparedPhiAgentBuilder {
         //
         // The prepared builder exists so any module derivation uses the
         // exact same build context that final build() will consume.
-        let home = self
-            .builder
-            .home
-            .take()
-            .expect("PreparedPhiAgentBuilder should retain home after prepare()");
-        let mut modules = self.builder.modules.into_modules();
-        crate::module::init_context_modules(&mut modules, &mut self.builder.context)?;
+        let mut modules = self.modules.into_modules();
+        crate::module::init_context_modules(&mut modules, &mut self.context)?;
 
         let mut tools = Vec::new();
-        if !self.builder.context.command.no_exec() {
+        if !self.context.command.null_executor() {
             tools = crate::executor::builtins::default_tools();
-            crate::module::module_tools(&mut modules, &self.builder.context, &mut tools);
+            crate::module::module_tools(&mut modules, &self.context, &mut tools);
         }
-        let output_limits =
-            crate::config::tool_output_limits_from_config(&self.builder.context.config);
+        let output_limits = ToolOutputLimits::new(
+            self.context.config.executor().tool_threshold_tokens,
+            self.context.config.executor().tool_preview_bytes,
+        );
         let executor = PhiExecutor::from_tools(tools, output_limits)?;
 
-        let model_defaults = if let Some(model_defaults) = self.builder.model_defaults.take() {
+        let model_defaults = if let Some(model_defaults) = self.model_defaults.take() {
             model_defaults
         } else {
-            ModelRequestDefaults::from_config(&self.builder.context.config)?
+            ModelRequestDefaults::from(&self.context.config)
         };
-        let configured_tools = crate::config::phi_tools_from_config(&self.builder.context.config)?;
+        let configured_tools = self.context.config.tools().to_vec();
         if model_defaults.model.trim().is_empty() {
             eprintln!(
                 "phi provider: PHI_MODEL is not configured; model requests will likely fail until a model name is set"
             );
         }
-        let provider_config = ProviderConfig::from_config(&self.builder.context.config)?;
-        let render = if let Some(render) = self.builder.render.take() {
+        let provider_config = self.context.config.provider().clone();
+        let render = if let Some(render) = self.render.take() {
             render
         } else {
             render::build(provider_config)?
         };
-        let render_template = self
-            .builder
-            .context
-            .command
-            .template()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                self.builder
-                    .context
-                    .config
-                    .get("PHI_TEMPLATE")
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-            });
-
         // This is the single state ownership crossing into evaluation: Session is consumed
         // here, and the runtime retains only the functional expression plus transient delta.
         Ok(PhiAgent {
             runtime: Some(PhiAgentRuntime {
-                base: self.builder.context.session.into_expr(),
+                base: self.context.session.into_expr(),
                 delta: PhiExprDelta::default(),
                 executor,
                 configured_tools,
                 modules: PhiModuleChain::new(modules),
                 render,
                 model_defaults,
-                render_template,
-                home,
-                config: PhiRuntimeSetup::from_command(
-                    self.builder.context.config.clone(),
-                    &self.builder.context.command,
-                ),
+                setup: PhiRuntimeSetup {
+                    config: self.context.config,
+                    command: self.context.command,
+                    home: self.home,
+                },
             }),
         })
     }
@@ -295,7 +278,7 @@ impl PreparedPhiAgentBuilder {
 
 impl PhiAgent {
     pub fn builder(session: Session, command: PhiAgentCommand) -> PhiAgentBuilder {
-        PhiAgentBuilder::from_context(PhiAgentBuildContext::new(session, command))
+        PhiAgentBuilder::new(session, command)
     }
 
     pub fn into_session(self) -> Session {
@@ -333,9 +316,8 @@ impl PhiAgent {
             .as_ref()
             .expect("PhiAgent runtime should exist while building doctor report");
         let system_prompt =
-            crate::features::configured_system_prompt_from_config(runtime.config().config());
+            crate::features::configured_system_prompt_from_config(runtime.setup().config());
         DoctorReport {
-            python_plugin: crate::features::plugin_runtime_status(),
             home: runtime.home().doctor_report(),
             system: DoctorSystemPrompt {
                 enabled: system_prompt.is_some(),
@@ -343,11 +325,6 @@ impl PhiAgent {
             },
             tools: runtime.tool_definitions(),
         }
-    }
-
-    fn into_runtime(self) -> PhiAgentRuntime {
-        self.runtime
-            .expect("PhiAgent runtime should exist when splitting agent")
     }
 
     #[cfg(test)]
@@ -365,11 +342,6 @@ impl PhiAgent {
         }
     }
 
-    pub fn run_python_code(self, code: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let mut runtime = self.into_runtime();
-        runtime.run_python_code(code)
-    }
-
     pub async fn step(&mut self) {
         let runtime = self
             .runtime
@@ -380,10 +352,26 @@ impl PhiAgent {
 }
 
 impl PhiAgentRuntime {
-    pub(crate) fn config(&self) -> &PhiRuntimeSetup {
+    pub(crate) fn setup(&self) -> &PhiRuntimeSetup {
+        &self.setup
+    }
+}
+
+impl PhiRuntimeSetup {
+    pub(crate) fn config(&self) -> &PhiConfig {
         &self.config
     }
 
+    pub(crate) fn command(&self) -> &PhiAgentCommand {
+        &self.command
+    }
+
+    pub(crate) fn home(&self) -> &dyn PhiHome {
+        self.home.as_ref()
+    }
+}
+
+impl PhiAgentRuntime {
     pub(crate) fn base_expr(&self) -> &PhiStepExpr {
         &self.base
     }
@@ -399,7 +387,7 @@ impl PhiAgentRuntime {
     }
 
     pub(crate) fn home(&self) -> &dyn PhiHome {
-        self.home.as_ref()
+        self.setup.home()
     }
 
     #[allow(dead_code)]
@@ -438,17 +426,8 @@ impl PhiAgentRuntime {
         self.base.find_ancestor(predicate)
     }
 
-    pub(crate) fn provider_history_token_count(
-        &self,
-        request: &render::PhiProviderCall,
-        history: &PhiHistory,
-    ) -> crate::error::PhiAgentRuntimeResult<usize> {
-        self.render.provider_history_token_count(
-            self.home(),
-            self.render_template.as_deref(),
-            request,
-            history,
-        )
+    pub(crate) fn provider_history_token_count(&self, history: &PhiHistory) -> usize {
+        self.render.provider_history_token_count(history)
     }
 
     pub(crate) fn request_provider_step(&self, detail: impl Into<String>) -> PhiReActStep {
@@ -514,12 +493,6 @@ impl PhiAgentRuntime {
         let event = PhiAgentCommitEvent::WarningEmitted { message };
         self.modules.observe(&event);
     }
-
-    fn run_python_code(&mut self, code: &str) -> Result<String, Box<dyn std::error::Error>> {
-        self.modules
-            .run_python_code(code)?
-            .ok_or_else(|| "python runtime is not mounted on this agent".into())
-    }
 }
 
 pub async fn run_single_agent_step(
@@ -536,15 +509,35 @@ pub(crate) fn build_agent(
     command: PhiAgentCommand,
     home: Arc<dyn PhiHome>,
 ) -> Result<PhiAgent, Box<dyn std::error::Error>> {
-    let mut builder = PhiAgent::builder(session, command)
-        .with_home(home)
-        .prepare()?;
+    build_prepared_agent(
+        PhiAgent::builder(session, command)
+            .with_home(home)
+            .prepare()?,
+    )
+}
+
+pub(crate) fn build_agent_with_config(
+    session: Session,
+    command: PhiAgentCommand,
+    home: Arc<dyn PhiHome>,
+    config: PhiConfig,
+) -> Result<PhiAgent, Box<dyn std::error::Error>> {
+    build_prepared_agent(
+        PhiAgent::builder(session, command)
+            .with_home(home)
+            .with_config(config)
+            .prepare()?,
+    )
+}
+
+fn build_prepared_agent(
+    mut builder: PreparedPhiAgentBuilder,
+) -> Result<PhiAgent, Box<dyn std::error::Error>> {
     let init_modules = build_init_modules(builder.context());
     let default_modules = build_default_modules(builder.context());
     let runtime_modules = build_runtime_modules(builder.context());
     builder = builder.with_module_layout(init_modules);
     builder = builder.with_module_layout(default_modules);
     builder = builder.with_module_layout(runtime_modules);
-
     builder.build()
 }

@@ -134,10 +134,6 @@ impl PhiHistory {
             .collect()
     }
 
-    pub(crate) fn from_arcs(messages: Vec<Arc<PhiMessage>>) -> Self {
-        Self(messages)
-    }
-
     pub(crate) fn into_arcs(self) -> Vec<Arc<PhiMessage>> {
         self.0
     }

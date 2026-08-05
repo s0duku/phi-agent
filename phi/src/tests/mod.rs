@@ -5,8 +5,6 @@ mod headlessterm;
 mod home_config;
 mod interruption;
 mod module;
-mod plugin;
-mod render;
 mod session_input;
 mod step_semantics;
 pub(crate) mod support;

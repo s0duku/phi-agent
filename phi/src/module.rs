@@ -129,17 +129,6 @@ pub(crate) trait PhiModule: Send + Sync {
     // the step back onto an error path and leave behind a partially committed
     // session.
     fn observe(&mut self, _event: &PhiAgentCommitEvent<'_>) {}
-
-    // Some modules own runtime-specific execution environments that sit
-    // outside the agent step loop but still belong to the same initialized
-    // lifecycle. Returning Some(output) means the module handled the code
-    // execution; returning None means "not supported here".
-    fn run_python_code(
-        &mut self,
-        _code: &str,
-    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        Ok(None)
-    }
 }
 
 pub(crate) trait DynPhiModule: Send + Sync {
@@ -162,9 +151,6 @@ pub(crate) trait DynPhiModule: Send + Sync {
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()>;
 
     fn observe(&mut self, event: &PhiAgentCommitEvent<'_>);
-
-    fn run_python_code(&mut self, code: &str)
-    -> Result<Option<String>, Box<dyn std::error::Error>>;
 }
 
 impl<T> DynPhiModule for T
@@ -202,13 +188,6 @@ where
     fn observe(&mut self, event: &PhiAgentCommitEvent<'_>) {
         PhiModule::observe(self, event)
     }
-
-    fn run_python_code(
-        &mut self,
-        code: &str,
-    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        PhiModule::run_python_code(self, code)
-    }
 }
 
 #[derive(Default)]
@@ -233,6 +212,7 @@ impl PhiModuleLayout {
         self.observer.push(module);
     }
 
+    #[cfg(test)]
     pub(crate) fn push_extension(&mut self, module: Box<dyn DynPhiModule>) {
         self.extension.push(module);
     }
@@ -318,18 +298,6 @@ impl PhiModuleChain {
         for module in &mut self.modules {
             module.observe(event);
         }
-    }
-
-    pub(crate) fn run_python_code(
-        &mut self,
-        code: &str,
-    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        for module in &mut self.modules {
-            if let Some(output) = module.run_python_code(code)? {
-                return Ok(Some(output));
-            }
-        }
-        Ok(None)
     }
 }
 

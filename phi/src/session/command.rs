@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, io, io::IsTerminal, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    io,
+    io::IsTerminal,
+    path::{Path, PathBuf},
+};
 
 use clap::{Arg, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
@@ -71,6 +76,8 @@ pub enum SessionCommand {
 
 #[derive(Args)]
 pub struct SessionNewArgs {
+    #[command(flatten)]
+    config: crate::ConfigArgs,
     #[arg(value_name = "SESSION")]
     pub file: PathBuf,
 }
@@ -94,6 +101,8 @@ pub struct SessionRollbackArgs {
 
 #[derive(Args)]
 pub struct SessionStepTransformArgs {
+    #[command(flatten)]
+    config: crate::ConfigArgs,
     #[arg(value_name = "SESSION")]
     pub file: Option<PathBuf>,
     #[arg(long, required = true)]
@@ -108,6 +117,8 @@ pub struct SessionStepTransformArgs {
         .args(["json", "text"])
 ))]
 pub struct SessionToolResultArgs {
+    #[command(flatten)]
+    config: crate::ConfigArgs,
     #[arg(value_name = "SESSION")]
     pub file: Option<PathBuf>,
     #[arg(long, value_name = "JSON")]
@@ -118,6 +129,8 @@ pub struct SessionToolResultArgs {
 
 #[derive(Args)]
 pub struct SessionPeekArgs {
+    #[command(flatten)]
+    config: crate::ConfigArgs,
     #[arg(value_name = "SESSION")]
     pub file: Option<PathBuf>,
     #[arg(long = "max-model-request-retries", value_name = "N")]
@@ -148,6 +161,7 @@ pub async fn run(
 }
 
 fn peek(home_spec: Option<&str>, args: SessionPeekArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = args.config.config.as_deref();
     let session = match args.file.as_deref() {
         Some(path) => Session::load(path)?,
         None if io::stdin().is_terminal() => Session::empty(),
@@ -163,13 +177,15 @@ fn peek(home_spec: Option<&str>, args: SessionPeekArgs) -> Result<(), Box<dyn st
         }
     };
     let home = crate::home::load_home(home_spec)?;
+    let config = crate::load_config(home.as_ref(), config_path)?;
     let retries = args
         .max_model_request_retries
         .or(PhiAgentCommand::probe().max_model_request_retries);
-    let agent = crate::agent::build_agent(
+    let agent = crate::agent::build_agent_with_config(
         session,
         PhiAgentCommand::Probe(PhiAgentCommand::probe().with_max_model_request_retries(retries)),
         home,
+        config,
     )?;
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -189,7 +205,7 @@ fn next(
     home_spec: Option<&str>,
     args: SessionStepTransformArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let step = provider_step(home_spec, args.provider)?;
+    let step = provider_step(home_spec, args.config.config.as_deref(), args.provider)?;
     transform(args.file, |session| Ok(session.next(step)))
 }
 
@@ -197,7 +213,7 @@ fn replace(
     home_spec: Option<&str>,
     args: SessionStepTransformArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let step = provider_step(home_spec, args.provider)?;
+    let step = provider_step(home_spec, args.config.config.as_deref(), args.provider)?;
     transform(args.file, |session| Ok(session.replace(step)))
 }
 
@@ -205,13 +221,14 @@ fn tool_result(
     home_spec: Option<&str>,
     args: SessionToolResultArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = args.config.config.as_deref();
     let result = match (args.json, args.text) {
         (Some(json), None) => serde_json::from_str(&json)
             .map_err(|error| format!("invalid --json tool result: {error}"))?,
         (None, Some(text)) => serde_json::Value::String(text),
         _ => unreachable!("clap requires exactly one tool result input"),
     };
-    let resume_call = provider_call(home_spec)?;
+    let resume_call = provider_call(home_spec, config_path)?;
     transform(args.file, |session| {
         session
             .insert_tool_result(result, resume_call)
@@ -221,6 +238,7 @@ fn tool_result(
 
 fn provider_step(
     home_spec: Option<&str>,
+    config_path: Option<&Path>,
     provider: bool,
 ) -> Result<PhiReActStep, Box<dyn std::error::Error>> {
     if !provider {
@@ -228,13 +246,17 @@ fn provider_step(
     }
     Ok(PhiReActStep::request_provider_with_call(
         "ready",
-        provider_call(home_spec)?,
+        provider_call(home_spec, config_path)?,
     ))
 }
 
-fn provider_call(home_spec: Option<&str>) -> Result<PhiProviderCall, Box<dyn std::error::Error>> {
+fn provider_call(
+    home_spec: Option<&str>,
+    config_path: Option<&Path>,
+) -> Result<PhiProviderCall, Box<dyn std::error::Error>> {
     let home = crate::home::load_home(home_spec)?;
-    let defaults = ModelRequestDefaults::from_config(&home.config()?)?;
+    let config = crate::load_config(home.as_ref(), config_path)?;
+    let defaults = ModelRequestDefaults::from(&config);
     Ok(PhiProviderCall::from_parts(&defaults, Vec::new()))
 }
 
@@ -304,7 +326,8 @@ impl Args for SessionAppendArgs {
 
 fn new(home_spec: Option<&str>, args: SessionNewArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = crate::home::load_home(home_spec)?;
-    crate::new_session(home.as_ref())?.create(args.file)
+    let config = crate::load_config(home.as_ref(), args.config.config.as_deref())?;
+    crate::new_session_with_config(&config)?.create(args.file)
 }
 
 fn history(args: SessionHistoryArgs) -> Result<(), Box<dyn std::error::Error>> {

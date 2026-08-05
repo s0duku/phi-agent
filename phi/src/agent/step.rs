@@ -71,6 +71,7 @@ pub(crate) struct StepInterveneError {
 }
 
 impl StepInterveneError {
+    #[cfg(test)]
     pub(crate) fn new(runtime: PhiAgentRuntime, error: crate::error::PhiAgentRuntimeError) -> Self {
         Self { runtime, error }
     }
@@ -378,16 +379,7 @@ impl PhiAgentRuntime {
                     let PhiModelResponse {
                         messages: mut response_messages,
                         turn_state,
-                    } = match runtime
-                        .render
-                        .complete(
-                            runtime.home.as_ref(),
-                            runtime.render_template.as_deref(),
-                            &request,
-                            &request_history,
-                        )
-                        .await
-                    {
+                    } = match runtime.render.complete(&request, &request_history).await {
                         Ok(response_messages) => response_messages,
                         Err(failure) => {
                             return runtime.continue_failed(failure);

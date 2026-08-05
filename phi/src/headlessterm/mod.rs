@@ -1,7 +1,6 @@
 pub mod job;
 pub(crate) mod worker;
 
-use std::io::Write;
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
@@ -68,11 +67,14 @@ enum HeadlessTerminalCommand {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    Write {
+    Access {
         handle: String,
+        #[arg(long)]
         data: Option<String>,
         #[arg(long, default_value_t = 60_000)]
         wait_ms: u64,
+        #[arg(long)]
+        write_only: bool,
     },
     Close {
         handle: String,
@@ -117,38 +119,38 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            render(info.1, info.0.as_ref())?;
+            render(&info)?;
         }
-        HeadlessTerminalCommand::Write {
+        HeadlessTerminalCommand::Access {
             handle,
             data,
             wait_ms,
+            write_only,
         } => {
             let result = terminal
                 .access_job(
                     JobHandle(handle),
-                    JobAccess::Interact {
-                        data: data.unwrap_or_default(),
-                        return_when: ReturnWhen::output_settled(Duration::from_millis(wait_ms)),
+                    if write_only {
+                        JobAccess::Write {
+                            data: data.unwrap_or_default(),
+                        }
+                    } else {
+                        JobAccess::Interact {
+                            data: data.unwrap_or_default(),
+                            return_when: ReturnWhen::output_settled(Duration::from_millis(wait_ms)),
+                        }
                     },
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            let JobAccessResult::Interacted(info) = result else {
-                return Err(
-                    "job access returned a write acknowledgment for interact request".into(),
-                );
-            };
-            render(info, None)?;
+            render(&result)?;
         }
         HeadlessTerminalCommand::Close { handle } => {
-            render(
-                terminal
-                    .close_job(JobHandle(handle))
-                    .await
-                    .map_err(|error| error.to_string())?,
-                None,
-            )?;
+            let info = terminal
+                .close_job(JobHandle(handle))
+                .await
+                .map_err(|error| error.to_string())?;
+            render(&info)?;
         }
         HeadlessTerminalCommand::LaunchLocal {
             handle,
@@ -183,21 +185,10 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn render(info: JobInfo, handle: Option<&JobHandle>) -> Result<(), String> {
-    std::io::stdout()
-        .write_all(info.outputs().as_bytes())
-        .map_err(|error| error.to_string())?;
-    let status = match info.status() {
-        JobStatus::RunningOutputSettled => "running-output-settled".to_owned(),
-        JobStatus::RunningScreenSampled => "running-screen-sampled".to_owned(),
-        JobStatus::RunningWaitElapsed => "running-wait-elapsed".to_owned(),
-        JobStatus::Exited(code) => format!("exited:{code}"),
-        JobStatus::Closed(code) => format!("closed:{code}"),
-        JobStatus::NoExist => "not-found".to_owned(),
-    };
-    match handle {
-        Some(handle) => eprintln!("status={status} handle={}", handle.0),
-        None => eprintln!("status={status}"),
-    }
+fn render(value: &impl serde::Serialize) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string(value).map_err(|error| error.to_string())?
+    );
     Ok(())
 }

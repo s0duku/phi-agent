@@ -68,8 +68,7 @@ impl PhiHome for SqlitePhiHome {
             kind: "sqlite".to_string(),
             root: root.clone(),
             source: "explicit".to_string(),
-            config_path: format!("{root}#/config.toml"),
-            plugins_path: format!("{root}#/plugins"),
+            config_path: format!("{root}#/config.yml"),
             tmp_path: format!("{root}#/tmp"),
         }
     }
@@ -101,7 +100,7 @@ impl PhiHome for SqlitePhiHome {
             ))
         })?
         .ok_or_else(|| {
-            PhiHomeError::read(format!(
+            PhiHomeError::not_found(format!(
                 "sqlite phi home entry not found: {}",
                 source.path()
             ))
@@ -158,21 +157,10 @@ mod tests {
     #[test]
     fn from_entries_round_trips_canonical_home_entries() {
         let path = unique_temp_path("phi-home-sqlite");
-        let entries = vec![
-            PhiHomeEntry::new(spec::config_path(), b"PHI_MODEL = \"demo\"\n".to_vec()),
-            PhiHomeEntry::new(
-                spec::PhiHomePath::new("/plugins/hello.py").expect("plugin path should resolve"),
-                b"print('hi')\n".to_vec(),
-            ),
-            PhiHomeEntry::new(
-                spec::template_candidates("hello.html")
-                    .expect("template path should resolve")
-                    .into_iter()
-                    .next()
-                    .expect("template path should exist"),
-                b"<message role=\"user\">hello</message>\n".to_vec(),
-            ),
-        ];
+        let entries = vec![PhiHomeEntry::new(
+            spec::config_path(),
+            b"model:\n  name: demo\n".to_vec(),
+        )];
 
         let home = SqlitePhiHome::from_entries(path.clone(), &entries)
             .expect("sqlite phi home should be constructible from canonical entries");
