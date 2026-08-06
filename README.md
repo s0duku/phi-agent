@@ -19,6 +19,100 @@
 
 ![Phi demo 1](assets/demo1.gif) ![Phi demo 2](assets/demo2.gif)
 
+## Recommended User Workflow
+
+Phi is intended to be used together with a coding agent. Install the `phi` CLI,
+install the bundled `phi-agent-runtime` skill into Codex, Claude Code, or
+OpenCode, configure a model API key, and then ask the coding agent to build a
+Phi harness for the task you want to automate.
+
+### 1. Install Phi
+
+Download the release for your platform from
+[GitHub Releases](https://github.com/s0duku/phi-agent/releases), put the
+`phi` executable on `PATH`, and verify it:
+
+```bash
+phi --version
+phi --help
+```
+
+The harness machine only needs the installed `phi` executable and Python for
+complex controllers. It does not need a Rust toolchain or a Phi source
+checkout.
+
+### 2. Install the Phi skill
+
+Clone this repository or download it, then copy the skill directory into the
+skill location supported by your coding agent:
+
+```bash
+git clone --depth 1 https://github.com/s0duku/phi-agent.git
+```
+
+The skill is the directory
+[`skills/phi-agent-runtime/`](skills/phi-agent-runtime/). Typical global
+locations are:
+
+| Coding agent | Skill directory |
+| --- | --- |
+| Codex | `~/.codex/skills/phi-agent-runtime/` |
+| Claude Code | `~/.claude/skills/phi-agent-runtime/` |
+| OpenCode | `~/.config/opencode/skills/phi-agent-runtime/` |
+
+For example, on Unix-like systems:
+
+```bash
+cp -R phi-agent/skills/phi-agent-runtime ~/.codex/skills/
+# or ~/.claude/skills/ and ~/.config/opencode/skills/
+```
+
+Project-local installation is also supported by clients that discover
+`.agents/skills/`, `.claude/skills/`, or `.opencode/skills/`; copy the same
+`phi-agent-runtime` directory there when you want the skill scoped to one
+project. Restart the coding agent after installing and verify that it lists
+`phi-agent-runtime`.
+
+### 3. Configure a model
+
+Provide the API key through the environment or the Phi Home configuration. Do
+not put keys in a Session file, harness source, or git repository:
+
+```bash
+export PHI_PROVIDER=openai_chat
+export PHI_MODEL=gpt-5
+export PHI_KEY='your_api_key'
+```
+
+Use the provider and model appropriate for your account. `phi doctor` reports
+the resolved configuration without running an agent task:
+
+```bash
+phi doctor
+```
+
+### 4. Ask the coding agent to build the harness
+
+Describe the automation outcome, available external systems, approval rules,
+and how success should be detected. Explicitly ask the coding agent to use the
+`phi-agent-runtime` skill and to produce a Python harness around the Phi CLI:
+
+```text
+Use $phi-agent-runtime to build a Python harness with Phi for this task:
+
+Monitor our issue queue, summarize new incidents, ask for approval before
+creating a ticket, and persist progress so the workflow can resume tomorrow.
+Use `run` for normal progress, inspect the Session after each run, route
+external tools from Python, recover missing tools with rollback plus
+session tool-result, and add a deterministic dry-run test.
+```
+
+The coding agent should create the controller, define its tool allowlist and
+failure policy, use `phi session peek` for state decisions, and test the
+workflow with a bounded run budget. For a single simple task, the same skill
+can produce a shell harness; Python is recommended once the workflow has
+external tools, retries, approvals, or durable checkpoints.
+
 ## Phi Runtime
 
 **Phi is a CLI-oriented Agent Runtime written in Rust.** The CLI is its primary
@@ -91,6 +185,20 @@ observe the same terminal lifecycle instead of separate terminal abstractions.
 
 The full architecture, runtime semantics, CLI workflows, private protocols, and
 development invariants are maintained in the [Phi Book](book/src/introduction.md).
+
+## Agent Skill
+
+This repository distributes a Codex-compatible skill for teaching other agents
+to use Phi and build complex Python or shell harnesses. It covers external-tool
+routing, workflows, Session persistence, HeadlessTerminal jobs, and the runtime
+semantics needed to preserve correctness. See
+[`skills/phi-agent-runtime/`](skills/phi-agent-runtime/) for the skill and its
+progressively loaded references.
+
+An agent can load that directory from GitHub and invoke it as `$phi-agent-runtime`.
+The distributed skill assumes only an installed `phi` executable on the user's
+machine; the book is optional maintainer documentation, while the skill is the
+standalone CLI integration and harness guide.
 
 ## Why CLI-oriented
 

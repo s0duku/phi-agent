@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phi Agent Runtime"
+  short_description: "Build Python harnesses and workflows with Phi"
+  default_prompt: "Use $phi-agent-runtime to build a reliable Python harness around Phi."
