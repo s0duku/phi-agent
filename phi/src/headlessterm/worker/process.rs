@@ -67,7 +67,7 @@ impl RunningJob {
         &mut self,
         input: &[u8],
         return_when: ReturnWhen,
-        mut connected: impl FnMut() -> bool,
+        mut should_continue: impl FnMut() -> bool,
     ) -> Result<Option<CompletedInteraction>, String> {
         let started_at = Instant::now();
         if !input.is_empty() {
@@ -85,7 +85,7 @@ impl RunningJob {
             }
             match interaction.boundary() {
                 InteractionBoundary::Pending(remaining) => {
-                    if !connected() {
+                    if !should_continue() {
                         return Ok(None);
                     }
                     std::thread::sleep(remaining.min(POLL_INTERVAL));

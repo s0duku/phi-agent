@@ -16,12 +16,12 @@ use crate::headlessterm::job::TerminalCommand;
 pub(crate) use crate::headlessterm::job::WorkerLaunchStage;
 pub(crate) use startup::WorkerLaunchReport;
 
-pub(crate) fn worker_entry(
+pub(crate) async fn worker_entry(
     handle: &str,
     expiration: std::time::Duration,
     command: TerminalCommand,
 ) -> Result<(), String> {
-    server::run_worker(handle, command, expiration)
+    server::run_worker(handle, command, expiration).await
 }
 
 pub(crate) fn launch_worker(

@@ -1,10 +1,10 @@
 use std::io;
+#[cfg(all(test, unix))]
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use interprocess::local_socket::{
-    GenericFilePath, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions, Name,
-    ToFsName, ToNsName, prelude::*,
+    GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName, prelude::*,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -14,20 +14,22 @@ use crate::headlessterm::job::JobHandle;
 const ENDPOINT_PREFIX: &str = "phi-headlessterm-";
 const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
 
-pub(crate) fn bind(handle: &str) -> io::Result<Listener> {
+pub(crate) async fn bind_async(
+    handle: &str,
+) -> io::Result<interprocess::local_socket::tokio::Listener> {
     validate_handle(handle)?;
     if !GenericNamespaced::is_supported()
         && let Some(parent) = endpoint_path(&format!("{ENDPOINT_PREFIX}{handle}")).parent()
     {
         std::fs::create_dir_all(parent)?;
     }
-    let name = endpoint_name(handle)?;
+    use interprocess::local_socket::tokio::prelude::*;
     ListenerOptions::new()
-        .name(name)
-        .nonblocking(ListenerNonblockingMode::Accept)
-        .create_sync()
+        .name(endpoint_name(handle)?)
+        .create_tokio()
 }
 
+#[cfg(all(test, unix))]
 pub(crate) fn connect(handle: &str) -> io::Result<interprocess::local_socket::Stream> {
     validate_handle(handle)?;
     interprocess::local_socket::Stream::connect(endpoint_name(handle)?)
@@ -42,6 +44,7 @@ pub(crate) async fn connect_async(
     interprocess::local_socket::tokio::Stream::connect(endpoint_name(handle)?).await
 }
 
+#[cfg(all(test, unix))]
 pub(crate) fn write_frame<W: Write>(stream: &mut W, value: &impl Serialize) -> io::Result<()> {
     let data = serde_json::to_vec(value).map_err(io::Error::other)?;
     if data.len() > MAX_FRAME_SIZE {
@@ -57,6 +60,7 @@ pub(crate) fn write_frame<W: Write>(stream: &mut W, value: &impl Serialize) -> i
     stream.write_all(&data)
 }
 
+#[cfg(all(test, unix))]
 pub(crate) fn read_frame<R: Read, T: DeserializeOwned>(stream: &mut R) -> io::Result<T> {
     let mut length = [0_u8; 4];
     stream.read_exact(&mut length)?;

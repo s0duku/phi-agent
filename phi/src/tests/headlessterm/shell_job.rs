@@ -5,8 +5,7 @@ use crate::executor::tools::shell::job::{
     InteractArgs, InteractiveInput, ShellJobExecTool, ShellJobInteractTool, interactive_input,
 };
 use crate::headlessterm::{
-    HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobProcessStatus, JobStatus,
-    TerminalCommand,
+    HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, TerminalCommand,
 };
 
 async fn access_interact(handle: JobHandle, data: &str, try_wait: Duration) -> JobInfo {
@@ -233,10 +232,9 @@ async fn cancelled_interaction_releases_worker_without_consuming_output() {
             .is_err()
     );
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
     let read = tokio::time::timeout(
-        Duration::from_secs(1),
-        access_interact(JobHandle(handle.0.clone()), "", Duration::ZERO),
+        Duration::from_secs(3),
+        access_interact(JobHandle(handle.0.clone()), "", Duration::from_secs(2)),
     )
     .await
     .expect("cancelled interaction should release the worker promptly");

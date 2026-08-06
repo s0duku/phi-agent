@@ -1,11 +1,22 @@
 use serde::{Deserialize, Serialize};
 
-use crate::headlessterm::job::{HeadlessTermError, JobAccess};
+use crate::headlessterm::job::{HeadlessTermError, JobAccess, ReturnWhen};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum Request {
     Access(JobAccess),
+    Interact {
+        request_id: u64,
+        data: String,
+        return_when: ReturnWhen,
+    },
+    Cancel {
+        request_id: u64,
+    },
+    Acknowledge {
+        request_id: u64,
+    },
     Close,
 }
 

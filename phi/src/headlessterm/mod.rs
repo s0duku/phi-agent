@@ -158,7 +158,7 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
             command,
         } => {
             let command = command.join(" ");
-            let report = match serde_json::from_str(&command) {
+            let report = match parse_terminal_command(&command) {
                 Ok(command) => {
                     worker::launch_worker(&handle, Duration::from_millis(expiration_ms), command)
                 }
@@ -179,10 +179,20 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
             command,
         } => {
             let command = serde_json::from_str(&command).map_err(|error| error.to_string())?;
-            worker::worker_entry(&handle, Duration::from_millis(expiration_ms), command)?;
+            worker::worker_entry(&handle, Duration::from_millis(expiration_ms), command).await?;
         }
     }
     Ok(())
+}
+
+fn parse_terminal_command(command: &str) -> Result<TerminalCommand, serde_json::Error> {
+    serde_json::from_str(command).or_else(|error| {
+        if command.contains("\\\"") {
+            serde_json::from_str(&command.replace("\\\"", "\""))
+        } else {
+            Err(error)
+        }
+    })
 }
 
 fn render(value: &impl serde::Serialize) -> Result<(), String> {

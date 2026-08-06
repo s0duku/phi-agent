@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::headlessterm::job::{
@@ -25,12 +26,10 @@ pub(crate) async fn exec_job(
 ) -> Result<(Option<JobHandle>, JobInfo), HeadlessTermError> {
     let handle = JobHandle::random().map_err(HeadlessTermError::operation)?;
     launcher::spawn_worker(&handle, command, expiration)?;
-    let response = send_request(
+    let response = send_interaction(
         &handle.0,
-        Request::Access(JobAccess::Interact {
-            data: String::new(),
-            return_when,
-        }),
+        String::new(),
+        return_when,
         MissingEndpoint::RetryUntil(std::time::Instant::now() + WORKER_CONNECT_WAIT),
     )
     .await?;
@@ -48,13 +47,93 @@ pub(crate) async fn access_job(
     handle: JobHandle,
     access: JobAccess,
 ) -> Result<JobAccessResult, HeadlessTermError> {
-    let interacts = matches!(access, JobAccess::Interact { .. });
+    if let JobAccess::Interact { data, return_when } = access {
+        let response =
+            send_interaction(&handle.0, data, return_when, MissingEndpoint::Return).await?;
+        return response_into_job_info(response).map(JobAccessResult::Interacted);
+    }
     let response =
         send_request(&handle.0, Request::Access(access), MissingEndpoint::Return).await?;
-    if interacts {
-        response_into_job_info(response).map(JobAccessResult::Interacted)
-    } else {
-        response_into_status(response).map(JobAccessResult::Written)
+    response_into_status(response).map(JobAccessResult::Written)
+}
+
+struct CancelOnDrop {
+    handle: String,
+    request_id: u64,
+    armed: bool,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let handle = self.handle.clone();
+        let request_id = self.request_id;
+        tokio::spawn(async move {
+            if let Ok(mut stream) = rpc::connect_async(&handle).await {
+                let _ = rpc::write_frame_async(&mut stream, &Request::Cancel { request_id }).await;
+            }
+        });
+    }
+}
+
+async fn send_interaction(
+    handle: &str,
+    data: String,
+    return_when: ReturnWhen,
+    missing_endpoint: MissingEndpoint,
+) -> Result<Option<Response>, HeadlessTermError> {
+    static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+    let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let mut stream = connect(handle, missing_endpoint).await?;
+    let Some(stream) = stream.as_mut() else {
+        return Ok(None);
+    };
+    rpc::write_frame_async(
+        stream,
+        &Request::Interact {
+            request_id,
+            data,
+            return_when,
+        },
+    )
+    .await
+    .map_err(|error| HeadlessTermError::transport("write", error.to_string()))?;
+    let mut cancel = CancelOnDrop {
+        handle: handle.to_owned(),
+        request_id,
+        armed: true,
+    };
+    let response = rpc::read_frame_async(stream).await;
+    match response {
+        Ok(response) => {
+            rpc::write_frame_async(stream, &Request::Acknowledge { request_id })
+                .await
+                .map_err(|error| HeadlessTermError::transport("acknowledge", error.to_string()))?;
+            cancel.armed = false;
+            Ok(Some(response))
+        }
+        Err(error) if is_disconnected_endpoint(&error) => Ok(None),
+        Err(error) => Err(HeadlessTermError::transport("read", error.to_string())),
+    }
+}
+
+async fn connect(
+    handle: &str,
+    missing_endpoint: MissingEndpoint,
+) -> Result<Option<interprocess::local_socket::tokio::Stream>, HeadlessTermError> {
+    loop {
+        match rpc::connect_async(handle).await {
+            Ok(stream) => return Ok(Some(stream)),
+            Err(error) if is_missing_endpoint(&error) => match missing_endpoint {
+                MissingEndpoint::RetryUntil(deadline) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(WORKER_CONNECT_RETRY).await
+                }
+                MissingEndpoint::Return | MissingEndpoint::RetryUntil(_) => return Ok(None),
+            },
+            Err(error) => return Err(HeadlessTermError::transport("connect", error.to_string())),
+        }
     }
 }
 
@@ -125,19 +204,8 @@ async fn send_request(
     request: Request,
     missing_endpoint: MissingEndpoint,
 ) -> Result<Option<Response>, HeadlessTermError> {
-    let mut stream = loop {
-        match rpc::connect_async(handle).await {
-            Ok(stream) => break stream,
-            Err(error) if is_missing_endpoint(&error) => match missing_endpoint {
-                MissingEndpoint::RetryUntil(deadline) if std::time::Instant::now() < deadline => {
-                    tokio::time::sleep(WORKER_CONNECT_RETRY).await;
-                }
-                MissingEndpoint::Return | MissingEndpoint::RetryUntil(_) => return Ok(None),
-            },
-            Err(error) => {
-                return Err(HeadlessTermError::transport("connect", error.to_string()));
-            }
-        }
+    let Some(mut stream) = connect(handle, missing_endpoint).await? else {
+        return Ok(None);
     };
     if let Err(error) = rpc::write_frame_async(&mut stream, &request).await {
         if is_disconnected_endpoint(&error) {

@@ -18,12 +18,10 @@ pub(super) fn spawn_worker(
     #[cfg(test)]
     {
         let handle = handle.0.clone();
-        let worker = super::server::PreparedWorker::new(&handle, command, expiration)
-            .map_err(launch_report_error)?;
         std::thread::Builder::new()
             .name(format!("phi-headlessterm-{handle}"))
             .spawn(move || {
-                if let Err(error) = worker.run() {
+                if let Err(error) = super::server::run_test_worker(&handle, command, expiration) {
                     eprintln!("headlessterm worker failed: {error}");
                 }
             })
@@ -88,7 +86,7 @@ pub(super) fn launch_worker(
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     if let Err(error) = prevent_standard_handle_inheritance() {
         return WorkerLaunchReport::failed(WorkerLaunchStage::SpawnWorker, error);
@@ -109,6 +107,7 @@ pub(super) fn launch_worker(
             "detached worker did not expose its launch report",
         );
     };
+    let mut stderr = worker.stderr.take();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let mut line = String::new();
@@ -120,9 +119,17 @@ pub(super) fn launch_worker(
     });
     match receiver.recv_timeout(RPC_READY_WAIT) {
         Ok(Ok(line)) => serde_json::from_str(&line).unwrap_or_else(|error| {
+            let detail = stderr
+                .as_mut()
+                .and_then(|stderr| {
+                    let mut detail = String::new();
+                    std::io::Read::read_to_string(stderr, &mut detail).ok()?;
+                    Some(detail)
+                })
+                .unwrap_or_default();
             WorkerLaunchReport::failed(
                 WorkerLaunchStage::AwaitWorker,
-                format!("invalid worker launch report: {error}"),
+                format!("invalid worker launch report: {error}: {}", detail.trim()),
             )
         }),
         Ok(Err(error)) => WorkerLaunchReport::failed(WorkerLaunchStage::AwaitWorker, error),
@@ -176,9 +183,8 @@ fn configure_detached_worker(command: &mut Command) {
 fn configure_detached_worker(command: &mut Command) {
     use std::os::windows::process::CommandExt;
 
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -205,11 +211,4 @@ fn parse_launch_output(output: &Output) -> Result<WorkerLaunchReport, HeadlessTe
             }
         }
     }
-}
-
-#[cfg(test)]
-fn launch_report_error(report: WorkerLaunchReport) -> HeadlessTermError {
-    report
-        .into_result()
-        .expect_err("failed worker launch report should contain an error")
 }
