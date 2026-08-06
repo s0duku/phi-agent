@@ -143,11 +143,10 @@ fn serve(stream: &mut Stream, job: &mut RunningJob) -> Result<ServeOutcome, Stri
             })
         }
         Request::Access(JobAccess::Interact { data, return_when }) => {
-            stream
-                .set_nonblocking(true)
-                .map_err(|error| error.to_string())?;
-            let interaction =
-                job.interact(data.as_bytes(), return_when, || client_connected(stream));
+            let can_probe_disconnect = stream.set_nonblocking(true).is_ok();
+            let interaction = job.interact(data.as_bytes(), return_when, || {
+                !can_probe_disconnect || client_connected(stream)
+            });
             let Some(interaction) = interaction? else {
                 return Ok(ServeOutcome {
                     handled: true,
@@ -155,9 +154,11 @@ fn serve(stream: &mut Stream, job: &mut RunningJob) -> Result<ServeOutcome, Stri
                     terminal_flushed: false,
                 });
             };
-            stream
-                .set_nonblocking(false)
-                .map_err(|error| error.to_string())?;
+            if can_probe_disconnect {
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| error.to_string())?;
+            }
             Ok({
                 let (status, waited, pending) = interaction.into_parts();
                 OperationResult::Terminal {
@@ -219,16 +220,39 @@ fn serve(stream: &mut Stream, job: &mut RunningJob) -> Result<ServeOutcome, Stri
     )
 }
 
+#[cfg(unix)]
 fn client_connected(stream: &mut Stream) -> bool {
     let mut byte = [0_u8; 1];
-    matches!(
-        std::io::Read::read(stream, &mut byte),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            )
-    )
+    match std::io::Read::read(stream, &mut byte) {
+        Ok(0) => false,
+        Ok(_) => true,
+        Err(error) => matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn client_connected(stream: &mut Stream) -> bool {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::{Foundation::GetLastError, System::Pipes::PeekNamedPipe};
+
+    let Stream::NamedPipe(pipe) = stream;
+    unsafe {
+        if PeekNamedPipe(
+            pipe.as_handle().as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ) != 0
+        {
+            return true;
+        }
+        !matches!(GetLastError(), 109 | 232 | 233)
+    }
 }
 
 fn write_response(

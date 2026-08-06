@@ -9,6 +9,15 @@ use super::launcher;
 use super::protocol::{ProcessStatus, Request, Response, Status};
 use super::rpc;
 
+const WORKER_CONNECT_WAIT: Duration = Duration::from_secs(1);
+const WORKER_CONNECT_RETRY: Duration = Duration::from_millis(10);
+
+#[derive(Clone, Copy)]
+enum MissingEndpoint {
+    Return,
+    RetryUntil(std::time::Instant),
+}
+
 pub(crate) async fn exec_job(
     command: TerminalCommand,
     return_when: ReturnWhen,
@@ -16,14 +25,16 @@ pub(crate) async fn exec_job(
 ) -> Result<(Option<JobHandle>, JobInfo), HeadlessTermError> {
     let handle = JobHandle::random().map_err(HeadlessTermError::operation)?;
     launcher::spawn_worker(&handle, command, expiration)?;
-    let result = access_job(
-        JobHandle(handle.0.clone()),
-        JobAccess::Interact {
+    let response = send_request(
+        &handle.0,
+        Request::Access(JobAccess::Interact {
             data: String::new(),
             return_when,
-        },
+        }),
+        MissingEndpoint::RetryUntil(std::time::Instant::now() + WORKER_CONNECT_WAIT),
     )
     .await?;
+    let result = response_into_job_info(response).map(JobAccessResult::Interacted)?;
     let JobAccessResult::Interacted(info) = result else {
         return Err(HeadlessTermError::protocol(
             "job access returned a write acknowledgment for interact request",
@@ -38,7 +49,8 @@ pub(crate) async fn access_job(
     access: JobAccess,
 ) -> Result<JobAccessResult, HeadlessTermError> {
     let interacts = matches!(access, JobAccess::Interact { .. });
-    let response = send_request(&handle.0, Request::Access(access)).await?;
+    let response =
+        send_request(&handle.0, Request::Access(access), MissingEndpoint::Return).await?;
     if interacts {
         response_into_job_info(response).map(JobAccessResult::Interacted)
     } else {
@@ -51,7 +63,7 @@ pub(crate) async fn close_job(handle: JobHandle) -> Result<JobInfo, HeadlessTerm
 }
 
 async fn request(handle: &str, request: Request) -> Result<JobInfo, HeadlessTermError> {
-    response_into_job_info(send_request(handle, request).await?)
+    response_into_job_info(send_request(handle, request, MissingEndpoint::Return).await?)
 }
 
 fn response_into_job_info(response: Option<Response>) -> Result<JobInfo, HeadlessTermError> {
@@ -111,11 +123,21 @@ fn process_status(status: ProcessStatus) -> JobProcessStatus {
 async fn send_request(
     handle: &str,
     request: Request,
+    missing_endpoint: MissingEndpoint,
 ) -> Result<Option<Response>, HeadlessTermError> {
-    let mut stream = match rpc::connect_async(handle).await {
-        Ok(stream) => stream,
-        Err(error) if is_missing_endpoint(&error) => return Ok(None),
-        Err(error) => return Err(HeadlessTermError::transport("connect", error.to_string())),
+    let mut stream = loop {
+        match rpc::connect_async(handle).await {
+            Ok(stream) => break stream,
+            Err(error) if is_missing_endpoint(&error) => match missing_endpoint {
+                MissingEndpoint::RetryUntil(deadline) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(WORKER_CONNECT_RETRY).await;
+                }
+                MissingEndpoint::Return | MissingEndpoint::RetryUntil(_) => return Ok(None),
+            },
+            Err(error) => {
+                return Err(HeadlessTermError::transport("connect", error.to_string()));
+            }
+        }
     };
     if let Err(error) = rpc::write_frame_async(&mut stream, &request).await {
         if is_disconnected_endpoint(&error) {

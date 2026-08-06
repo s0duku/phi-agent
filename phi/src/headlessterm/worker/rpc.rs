@@ -28,7 +28,6 @@ pub(crate) fn bind(handle: &str) -> io::Result<Listener> {
         .create_sync()
 }
 
-#[cfg(test)]
 pub(crate) fn connect(handle: &str) -> io::Result<interprocess::local_socket::Stream> {
     validate_handle(handle)?;
     interprocess::local_socket::Stream::connect(endpoint_name(handle)?)

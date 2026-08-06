@@ -23,7 +23,9 @@ pub(super) fn spawn_worker(
         std::thread::Builder::new()
             .name(format!("phi-headlessterm-{handle}"))
             .spawn(move || {
-                let _ = worker.run();
+                if let Err(error) = worker.run() {
+                    eprintln!("headlessterm worker failed: {error}");
+                }
             })
             .map_err(|error| {
                 HeadlessTermError::launch(WorkerLaunchStage::SpawnWorker, error.to_string())
