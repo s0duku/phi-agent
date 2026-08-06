@@ -4,6 +4,8 @@ use crate::executor::PhiTool;
 use crate::executor::tools::shell::job::{
     InteractArgs, InteractiveInput, ShellJobExecTool, ShellJobInteractTool, interactive_input,
 };
+#[cfg(unix)]
+use crate::headlessterm::JobProcessStatus;
 use crate::headlessterm::{
     HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo, JobStatus, TerminalCommand,
 };
