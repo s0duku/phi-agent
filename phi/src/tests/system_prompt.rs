@@ -176,6 +176,45 @@ async fn built_in_system_prompt_is_committed_when_session_is_created() {
     }
 }
 
+#[tokio::test]
+async fn empty_phi_system_disables_system_prompt() {
+    let _lock = env_lock();
+    let previous = std::env::var_os("PHI_SYSTEM");
+    unsafe {
+        std::env::set_var("PHI_SYSTEM", "");
+    }
+
+    let session = crate::new_session(&LocalPhiHome::new(crate::tests::support::unique_test_home()))
+        .expect("session should initialize without a system prompt");
+    assert!(session.history().is_empty());
+
+    unsafe {
+        restore_env("PHI_SYSTEM", previous);
+    }
+}
+
+#[tokio::test]
+async fn empty_yaml_system_disables_system_prompt() {
+    let _lock = env_lock();
+    let root = crate::tests::support::unique_test_home();
+    std::fs::create_dir_all(&root).expect("test home should be creatable");
+    std::fs::write(root.join("config.yml"), "runtime:\n  system: \"\"\n")
+        .expect("config should be writable");
+    let previous = std::env::var_os("PHI_SYSTEM");
+    unsafe {
+        std::env::remove_var("PHI_SYSTEM");
+    }
+
+    let session = crate::new_session(&LocalPhiHome::new(root.clone()))
+        .expect("session should initialize without a system prompt");
+    assert!(session.history().is_empty());
+
+    unsafe {
+        restore_env("PHI_SYSTEM", previous);
+    }
+    std::fs::remove_dir_all(root).expect("test home should be removable");
+}
+
 unsafe fn restore_env(name: &str, value: Option<OsString>) {
     match value {
         Some(value) => unsafe { std::env::set_var(name, value) },

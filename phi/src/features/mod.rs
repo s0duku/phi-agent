@@ -87,17 +87,17 @@ pub fn configured_system_prompt(context: &PhiAgentBuildContext) -> Option<String
 pub(crate) fn configured_system_prompt_from_config(
     settings: &crate::config::PhiConfig,
 ) -> Option<String> {
-    settings
-        .runtime()
-        .system
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
+    match settings.runtime().system.as_deref() {
+        // An explicitly configured empty prompt disables the system message.
+        Some(system) => {
+            let system = system.trim();
+            (!system.is_empty()).then(|| system.to_string())
+        }
+        None => {
             let prompt = DEFAULT_SYSTEM_PROMPT.trim();
             (!prompt.is_empty()).then(|| prompt.to_string())
-        })
+        }
+    }
 }
 
 struct EmptySessionGuardModule;

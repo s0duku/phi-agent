@@ -229,7 +229,6 @@ Example OpenAI-compatible setup:
 export PHI_PROVIDER=openai_chat
 export PHI_MODEL=gpt-5
 export PHI_KEY=your_api_key
-export PHI_SYSTEM=""
 ```
 
 Or use `~/.phi/config.yml` with the typed YAML schema:
@@ -241,6 +240,8 @@ provider:
   kind: openai_chat
   api_key: your_api_key
 runtime:
+  # Omit this field to use Phi's built-in prompt.
+  # Set it to "" to disable the system message.
   system: ""
 ```
 
