@@ -254,7 +254,7 @@ provider:
   api_key: your_api_key
 runtime:
   # Omit this field to use Phi's built-in prompt.
-  # Set it to "" to disable the system message.
+  # Set it to "" to commit an explicitly empty system message.
   system: ""
 ```
 

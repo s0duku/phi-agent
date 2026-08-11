@@ -177,7 +177,7 @@ async fn built_in_system_prompt_is_committed_when_session_is_created() {
 }
 
 #[tokio::test]
-async fn empty_phi_system_disables_system_prompt() {
+async fn empty_phi_system_commits_an_empty_system_prompt() {
     let _lock = env_lock();
     let previous = std::env::var_os("PHI_SYSTEM");
     unsafe {
@@ -185,8 +185,8 @@ async fn empty_phi_system_disables_system_prompt() {
     }
 
     let session = crate::new_session(&LocalPhiHome::new(crate::tests::support::unique_test_home()))
-        .expect("session should initialize without a system prompt");
-    assert!(session.history().is_empty());
+        .expect("session should initialize with an empty system prompt");
+    assert_eq!(session.history(), &[PhiMessage::system("")]);
 
     unsafe {
         restore_env("PHI_SYSTEM", previous);
@@ -194,7 +194,7 @@ async fn empty_phi_system_disables_system_prompt() {
 }
 
 #[tokio::test]
-async fn empty_yaml_system_disables_system_prompt() {
+async fn empty_yaml_system_commits_an_empty_system_prompt() {
     let _lock = env_lock();
     let root = crate::tests::support::unique_test_home();
     std::fs::create_dir_all(&root).expect("test home should be creatable");
@@ -206,8 +206,8 @@ async fn empty_yaml_system_disables_system_prompt() {
     }
 
     let session = crate::new_session(&LocalPhiHome::new(root.clone()))
-        .expect("session should initialize without a system prompt");
-    assert!(session.history().is_empty());
+        .expect("session should initialize with an empty system prompt");
+    assert_eq!(session.history(), &[PhiMessage::system("")]);
 
     unsafe {
         restore_env("PHI_SYSTEM", previous);

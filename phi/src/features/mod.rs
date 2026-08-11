@@ -88,11 +88,8 @@ pub(crate) fn configured_system_prompt_from_config(
     settings: &crate::config::PhiConfig,
 ) -> Option<String> {
     match settings.runtime().system.as_deref() {
-        // An explicitly configured empty prompt disables the system message.
-        Some(system) => {
-            let system = system.trim();
-            (!system.is_empty()).then(|| system.to_string())
-        }
+        // An explicitly configured empty prompt remains a real system message.
+        Some(system) => Some(system.trim().to_string()),
         None => {
             let prompt = DEFAULT_SYSTEM_PROMPT.trim();
             (!prompt.is_empty()).then(|| prompt.to_string())

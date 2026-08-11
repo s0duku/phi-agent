@@ -21,7 +21,8 @@ provider:
   api_base: https://api.openai.com/v1
   api_key: your_api_key
 runtime:
-  # Omit system to use Phi's built-in prompt; set it to "" to disable it.
+  # Omit system to use Phi's built-in prompt; set it to "" to commit an empty
+  # system message explicitly.
   system: ""
   max_steps: 1000000
   context_tokens: 262144
