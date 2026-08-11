@@ -28,12 +28,23 @@ jobs:
   linux-x64-static:
     name: Linux x64 Static
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rustup
+          key: ${{ runner.os }}-rustup-1.88.0-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-rustup-1.88.0-
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -48,6 +59,8 @@ jobs:
 
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
 
       - name: Run tests
         run: cargo test-linux-x64-static
@@ -76,12 +89,23 @@ jobs:
   windows-x64-static:
     name: Windows x64 Static
     runs-on: windows-latest
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rustup
+          key: ${{ runner.os }}-rustup-1.88.0-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-rustup-1.88.0-
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -91,6 +115,8 @@ jobs:
 
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
 
       - name: Run tests
         run: cargo test-windows-x64-static
@@ -119,12 +145,23 @@ jobs:
   macos-arm64-release:
     name: macOS arm64 Release
     runs-on: macos-14
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rustup
+          key: ${{ runner.os }}-rustup-1.88.0-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-rustup-1.88.0-
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -134,6 +171,8 @@ jobs:
 
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
 
       - name: Run tests
         run: cargo test-macos-arm64-release
