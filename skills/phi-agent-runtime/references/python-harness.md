@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 
 class PhiCommandError(RuntimeError):
     pass
@@ -28,6 +29,8 @@ def phi(*args: str, state: dict | None = None) -> dict:
         input=None if state is None else json.dumps(state),
         text=True, capture_output=True, check=False,
     )
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
     if proc.returncode:
         raise PhiCommandError(f"phi {' '.join(args)}: {proc.stderr.strip()}")
     try:
@@ -36,16 +39,20 @@ def phi(*args: str, state: dict | None = None) -> dict:
         raise PhiCommandError(f"Phi returned invalid JSON: {exc}") from exc
 ```
 
-Pass argument lists, never shell strings. Capture stderr for an audit log and
-keep stdout exclusively for Session JSON. For file-backed mode, create a path
-with `phi session new PATH`, then pass `PATH` to commands so Phi persists state.
+Pass argument lists, never shell strings. Forward stderr as above or write it to
+an audit log, including for successful commands, and keep stdout exclusively for
+Session JSON. For file-backed mode, create a path with `phi session new PATH`,
+then pass `PATH` to commands so Phi persists every committed checkpoint. Prefer
+that mode when a debugging workflow must remain inspectable after interruption.
+Do not add `--quiet` unless the user explicitly asks for quiet execution or the
+harness deliberately replaces Phi's diagnostic stream.
 
 ## Default `run` controller
 
 ```python
 def drive(state: dict, *, max_runs: int = 20) -> dict:
     for _ in range(max_runs):
-        state = phi("run", "--quiet", state=state)
+        state = phi("run", state=state)
         probe = phi("session", "peek", state=state)
         kind = probe["step"]["kind"]
         # Failed is terminal too, but recoverable failures must be handled first.

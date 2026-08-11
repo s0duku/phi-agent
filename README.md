@@ -43,8 +43,10 @@ checkout.
 
 ### 2. Install the Phi skill
 
-Clone this repository or download it, then copy the skill directory into the
-skill location supported by your coding agent:
+The release archive already contains the skill at
+`phi/skills/phi-agent-runtime/`. After extracting the archive, copy that
+directory into the skill location supported by your coding agent. You can also
+clone this repository when using a development checkout:
 
 ```bash
 git clone --depth 1 https://github.com/s0duku/phi-agent.git
@@ -423,6 +425,7 @@ Current packaged release archives are named after the repository, while their co
 - the `phi` binary
 - the workspace `README.md`
 - `assets/phi-logo.svg`
+- `skills/phi-agent-runtime/`
 - bundled `.phi/` content when present in the repository
 
 Archives are published as:

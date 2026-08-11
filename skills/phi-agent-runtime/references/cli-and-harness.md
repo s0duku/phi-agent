@@ -12,7 +12,7 @@ Examples:
 
 ```bash
 phi step --user 'one boundary'
-printf '%s\n' "$session_json" | phi run --quiet > updated.json
+printf '%s\n' "$session_json" | phi run > updated.json
 phi session new work.session
 phi run work.session --user 'continue'
 phi session peek work.session
@@ -35,6 +35,11 @@ An independently distributed harness should not assume a repository checkout,
 Cargo, or a particular Phi version. Probe capabilities at startup and report
 the exact command and stderr when a required subcommand is unavailable.
 
+During harness development and debugging, preserve Phi's stderr as an audit
+log, or use a persistent Session file so each checkpoint remains inspectable.
+Do not make `--quiet` the default. Add it only when the user explicitly requests
+quiet output or the harness provides an intentional replacement log stream.
+
 ## Session operations
 
 `append` adds a user or assistant message to the outer delta. `next --provider` creates a provider request frame. `replace --provider` replaces the outer step while retaining its composed delta. `rollback` removes one frame. `tool-result --text TEXT`, `--json JSON`, `--text-file FILE`, or `--json-file FILE` supplies the first pending executor result without invoking an executor. Prefer file input when the result may exceed command-line argument limits.
@@ -55,7 +60,8 @@ outer frame for the first pending call, then pass exactly one result through
 ## Robust shell conventions
 
 - Use `set -euo pipefail`; keep a temporary Session path under a trap.
-- Reserve stdout for machine-readable Session JSON. Send progress, `peek`, and debug data to stderr.
+- Reserve stdout for machine-readable Session JSON. Send progress, `peek`, and
+  debug data to stderr, and preserve stderr from successful Phi commands.
 - Bound loops with an iteration counter or `--max-steps`; stop on explicit turn-end/failure state.
 - Quote Session paths and user text. Treat tool output as data, not shell syntax.
 - For external tools, inspect the pending call, execute it in the harness's policy boundary, then pass the result through `session tool-result`.

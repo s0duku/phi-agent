@@ -51,6 +51,11 @@ for the whole controller.
   debug a transition, or implement a very fine-grained scheduler. Use `yolo`
   only when Phi's built-in continuation/recovery policy is desired wholesale.
 - Keep machine-readable Session JSON on stdout and diagnostics on stderr.
+- Keep harness runs observable while developing or debugging: forward or record
+  Phi's stderr as logs, or use a persistent Session file as a durable trace.
+  Do not add `--quiet` by default; use it only when the user explicitly requests
+  quiet execution or the harness deliberately replaces Phi's diagnostics with
+  equivalent logging.
 - Never infer workflow state from assistant prose. Inspect `phi session peek`
   and the current Session frame.
 
@@ -125,6 +130,9 @@ externally observable Session and recovery rules.
 ## Harness design checklist
 
 - Bound every `run` with a step budget and record each `peek` result.
+- Preserve successful-command stderr in the harness log, not only stderr from
+  failed subprocesses. Prefer a persistent Session file for workflows that need
+  post-failure inspection or transition-by-transition debugging.
 - Serialize checkpoints before dispatching external work.
 - Allowlist tool names and validate JSON arguments.
 - Make approval, retry, timeout, rollback, and failure policies explicit.

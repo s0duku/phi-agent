@@ -68,10 +68,11 @@ jobs:
       - name: Package archive
         shell: bash
         run: |
-          mkdir -p dist/phi/assets
+          mkdir -p dist/phi/assets dist/phi/skills
           cp target/x86_64-unknown-linux-musl/release/phi dist/phi/phi
           cp README.md dist/phi/README.md
           cp assets/phi-logo.svg dist/phi/assets/phi-logo.svg
+          cp -R skills/phi-agent-runtime dist/phi/skills/phi-agent-runtime
           if [[ -d .phi ]]; then
             cp -R .phi dist/phi/.phi
           fi
@@ -122,9 +123,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "dist/phi/assets" | Out-Null
+          New-Item -ItemType Directory -Force -Path "dist/phi/skills" | Out-Null
           Copy-Item "target/x86_64-pc-windows-msvc/release/phi.exe" "dist/phi/phi.exe"
           Copy-Item "README.md" "dist/phi/README.md"
           Copy-Item "assets/phi-logo.svg" "dist/phi/assets/phi-logo.svg"
+          Copy-Item "skills/phi-agent-runtime" "dist/phi/skills/phi-agent-runtime" -Recurse
           if (Test-Path ".phi") {
             Copy-Item ".phi" "dist/phi/.phi" -Recurse -Force
           }
@@ -174,10 +177,11 @@ jobs:
       - name: Package archive
         shell: bash
         run: |
-          mkdir -p dist/phi/assets
+          mkdir -p dist/phi/assets dist/phi/skills
           cp target/aarch64-apple-darwin/release/phi dist/phi/phi
           cp README.md dist/phi/README.md
           cp assets/phi-logo.svg dist/phi/assets/phi-logo.svg
+          cp -R skills/phi-agent-runtime dist/phi/skills/phi-agent-runtime
           if [[ -d .phi ]]; then
             cp -R .phi dist/phi/.phi
           fi
