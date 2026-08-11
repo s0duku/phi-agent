@@ -28,9 +28,6 @@ jobs:
   linux-x64-static:
     name: Linux x64 Static
     runs-on: ubuntu-latest
-    env:
-      RUSTUP_HOME: ${{ runner.temp }}/rustup
-      CARGO_HOME: ${{ runner.temp }}/cargo
 
     steps:
       - name: Checkout
@@ -41,7 +38,7 @@ jobs:
       - name: Cache Rust toolchain
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/rustup
+          path: ~/.rustup
           key: ${{ runner.os }}-rustup-1.88.0-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-rustup-1.88.0-
@@ -89,9 +86,6 @@ jobs:
   windows-x64-static:
     name: Windows x64 Static
     runs-on: windows-latest
-    env:
-      RUSTUP_HOME: ${{ runner.temp }}/rustup
-      CARGO_HOME: ${{ runner.temp }}/cargo
 
     steps:
       - name: Checkout
@@ -102,7 +96,7 @@ jobs:
       - name: Cache Rust toolchain
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/rustup
+          path: ~/.rustup
           key: ${{ runner.os }}-rustup-1.88.0-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-rustup-1.88.0-
@@ -145,9 +139,6 @@ jobs:
   macos-arm64-release:
     name: macOS arm64 Release
     runs-on: macos-14
-    env:
-      RUSTUP_HOME: ${{ runner.temp }}/rustup
-      CARGO_HOME: ${{ runner.temp }}/cargo
 
     steps:
       - name: Checkout
@@ -158,7 +149,7 @@ jobs:
       - name: Cache Rust toolchain
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/rustup
+          path: ~/.rustup
           key: ${{ runner.os }}-rustup-1.88.0-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-rustup-1.88.0-
