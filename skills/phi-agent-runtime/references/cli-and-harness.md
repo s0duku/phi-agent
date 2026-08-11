@@ -18,7 +18,14 @@ phi run work.session --user 'continue'
 phi session peek work.session
 ```
 
-Use `--null-executor` to test model-only behavior. Use `--container NAME` when the executor should target an already-running container. Run `phi doctor` to inspect resolved home/configuration.
+Use `--null-executor` to test model-only behavior. Use `--container NAME` when
+the executor should target an already-running container. Use `--runner PROGRAM`
+with repeated `--runner-arg ARG` values for a custom command carrier; Phi appends
+the complete shell command as one final argument. For example,
+`--runner bash --runner-arg=-c` produces `bash -c COMMAND`. Runner and container
+selection are mutually exclusive, and Agent commands apply the selected target
+to the built-in `bash_job` tool. Run `phi doctor` to inspect resolved
+home/configuration.
 
 Configuration can be selected with `--home` or `--config`; `PHI_*` environment
 variables override YAML configuration. Use `phi --help` and subcommand help as
@@ -30,7 +37,10 @@ the exact command and stderr when a required subcommand is unavailable.
 
 ## Session operations
 
-`append` adds a user or assistant message to the outer delta. `next --provider` creates a provider request frame. `replace --provider` replaces the outer step while retaining its composed delta. `rollback` removes one frame. `tool-result --text TEXT` or `--json JSON` supplies the first pending executor result without invoking an executor.
+`append` adds a user or assistant message to the outer delta. `next --provider` creates a provider request frame. `replace --provider` replaces the outer step while retaining its composed delta. `rollback` removes one frame. `tool-result --text TEXT`, `--json JSON`, `--text-file FILE`, or `--json-file FILE` supplies the first pending executor result without invoking an executor. Prefer file input when the result may exceed command-line argument limits.
+
+`session history` emits the committed `PhiHistory` as JSON by default. Use
+`session history SESSION --view` for the echo-style transcript view.
 
 Create a file-backed session explicitly with `phi session new PATH`; Phi will
 refuse to treat a missing path as an existing session. In pipeline mode, a

@@ -180,6 +180,7 @@ async fn run_step_with_input(
     emit_existing_session_notice(&session_input, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
     let session = session.append_messages(input_messages);
+    let checkpoint_path = session_input.existing_session_path().map(Path::to_path_buf);
 
     let (session, exit) = run_cli_agent(
         session,
@@ -188,6 +189,7 @@ async fn run_step_with_input(
         })?,
         home,
         config,
+        |session| persist_file_checkpoint(session, checkpoint_path.as_deref()),
     )
     .await?;
     persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
@@ -250,6 +252,7 @@ async fn run_with_input(
     emit_input_messages(&input_messages, args.base.quiet);
     let session = session.append_messages(input_messages);
     let max_steps = forced_max_steps.or(args.max_steps);
+    let checkpoint_path = session_input.existing_session_path().map(Path::to_path_buf);
 
     let (session, exit) = run_cli_agent(
         session,
@@ -259,6 +262,7 @@ async fn run_with_input(
         })?,
         home,
         config,
+        |session| persist_file_checkpoint(session, checkpoint_path.as_deref()),
     )
     .await?;
     persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
@@ -321,6 +325,7 @@ async fn yolo_with_input(
     emit_input_messages(&input_messages, args.base.quiet);
     let session = session.append_messages(input_messages);
     let max_steps = forced_max_steps.or(args.max_steps);
+    let checkpoint_path = session_input.existing_session_path().map(Path::to_path_buf);
 
     let (session, exit) = run_cli_agent(
         session,
@@ -330,6 +335,7 @@ async fn yolo_with_input(
         })?,
         home,
         config,
+        |session| persist_file_checkpoint(session, checkpoint_path.as_deref()),
     )
     .await?;
     persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
@@ -340,16 +346,28 @@ async fn run_cli_agent(
     command: PhiAgentCommand,
     home: std::sync::Arc<dyn home::PhiHome>,
     config: PhiConfig,
+    persist_checkpoint: impl FnMut(&Session) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(Session, CliAgentExit), Box<dyn std::error::Error>> {
     let step_once = matches!(&command, PhiAgentCommand::Step(_));
     let yolo = matches!(&command, PhiAgentCommand::Yolo(_));
-    let mut agent = build_agent_with_config(session, command, home, config)?;
+    let agent = build_agent_with_config(session, command, home, config)?;
+    run_built_cli_agent(agent, step_once, yolo, persist_checkpoint).await
+}
+
+async fn run_built_cli_agent(
+    mut agent: PhiAgent,
+    step_once: bool,
+    yolo: bool,
+    mut persist_checkpoint: impl FnMut(&Session) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(Session, CliAgentExit), Box<dyn std::error::Error>> {
+    persist_checkpoint(&agent.session())?;
     let mut previous_was_failed = false;
     loop {
         let checkpoint = agent.session();
         match step_or_ctrl_c(&mut agent).await? {
-            CliAgentExit::Completed => {}
+            CliAgentExit::Completed => persist_checkpoint(&agent.session())?,
             CliAgentExit::InterruptedAfterStep => {
+                persist_checkpoint(&agent.session())?;
                 return Ok((agent.into_session(), CliAgentExit::InterruptedAfterStep));
             }
             exit => return Ok((checkpoint, exit)),
@@ -685,6 +703,16 @@ fn persist_outcome_session(
     }
 }
 
+fn persist_file_checkpoint(
+    session: &Session,
+    path: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match path {
+        Some(path) => session.save(path),
+        None => Ok(()),
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "phi",
@@ -764,6 +792,8 @@ struct AgentCliArgs {
     null_executor: bool,
     max_model_request_retries: Option<usize>,
     container: Option<String>,
+    runner: Option<String>,
+    runner_args: Vec<String>,
     messages: cli::MessageArgs,
 }
 
@@ -794,6 +824,8 @@ impl From<&AgentCliArgs> for agent::AgentCommandArgs {
             null_executor: value.null_executor,
             max_model_request_retries: value.max_model_request_retries,
             container: value.container.clone(),
+            runner: value.runner.clone(),
+            runner_args: value.runner_args.clone(),
         }
     }
 }
@@ -883,6 +915,11 @@ fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
         null_executor: matches.get_flag("null_executor"),
         max_model_request_retries: matches.remove_one::<usize>("max_model_request_retries"),
         container: matches.remove_one::<String>("container"),
+        runner: matches.remove_one::<String>("runner"),
+        runner_args: matches
+            .remove_many::<String>("runner_arg")
+            .map(Iterator::collect)
+            .unwrap_or_default(),
         messages: cli::MessageArgs::parse(matches),
     }
 }
@@ -904,6 +941,15 @@ fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
     if let Some(container) = matches.remove_one::<String>("container") {
         target.container = Some(container);
     }
+    if let Some(runner) = matches.remove_one::<String>("runner") {
+        target.runner = Some(runner);
+    }
+    target.runner_args.extend(
+        matches
+            .remove_many::<String>("runner_arg")
+            .map(Iterator::collect::<Vec<_>>)
+            .unwrap_or_default(),
+    );
     target.messages.extend_from_matches(matches);
 }
 
@@ -939,6 +985,28 @@ fn add_agent_cli_args(cmd: ClapCommand) -> ClapCommand {
                 .value_name("N")
                 .value_parser(clap::value_parser!(usize)),
         )
-        .arg(Arg::new("container").long("container").value_name("NAME")),
+        .arg(
+            Arg::new("container")
+                .long("container")
+                .value_name("NAME")
+                .conflicts_with("runner")
+                .help("Execute shell jobs inside an already-running Docker container"),
+        )
+        .arg(
+            Arg::new("runner")
+                .long("runner")
+                .value_name("PROGRAM")
+                .conflicts_with("container")
+                .help("Pass shell job commands to a custom runner program"),
+        )
+        .arg(
+            Arg::new("runner_arg")
+                .long("runner-arg")
+                .value_name("ARG")
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true)
+                .requires("runner")
+                .help("Append a fixed runner argument before each shell command"),
+        ),
     )
 }

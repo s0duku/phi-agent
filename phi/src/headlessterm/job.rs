@@ -106,6 +106,11 @@ pub enum TerminalCommand {
         command: String,
         shell: String,
     },
+    CustomRunner {
+        program: String,
+        args: Vec<String>,
+        command: String,
+    },
 }
 
 fn default_container_shell() -> String {
@@ -243,6 +248,18 @@ impl TerminalCommand {
             container: container.into(),
             command: command.into(),
             shell: default_container_shell(),
+        }
+    }
+
+    pub fn custom_runner(
+        program: impl Into<String>,
+        args: Vec<String>,
+        command: impl Into<String>,
+    ) -> Self {
+        Self::CustomRunner {
+            program: program.into(),
+            args,
+            command: command.into(),
         }
     }
 }

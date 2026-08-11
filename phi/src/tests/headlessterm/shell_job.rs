@@ -41,6 +41,22 @@ fn shell_job_definition_is_platform_specific() {
     assert_eq!(tool.parameters()["required"], serde_json::json!(["cmd"]));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn custom_runner_executes_the_command_as_one_argument() {
+    let (_, info) = HeadlessTerminal::new()
+        .exec_job(
+            TerminalCommand::custom_runner("/bin/sh", vec!["-c".into()], "printf runner-ready"),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(info.status(), JobStatus::Exited(0)));
+    assert_eq!(info.outputs(), "runner-ready");
+}
+
 #[test]
 fn interact_defaults_to_read_with_a_sixty_second_wait() {
     let args: InteractArgs = serde_json::from_value(serde_json::json!({

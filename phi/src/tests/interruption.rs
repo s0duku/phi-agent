@@ -1,7 +1,10 @@
 use std::{
     future,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -13,7 +16,7 @@ use crate::{
     headlessterm::{HeadlessTerminal, JobHandle, ReturnWhen},
     message::{PhiHistory, PhiMessage, PhiToolMessage},
     module::{PhiAgentStepEvent, PhiModule},
-    render::{PhiModelResponse, PhiProviderCall, TestClient},
+    render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, PhiReActStep, Session},
     tests::support::{step_agent_builder, test_model_defaults},
 };
@@ -161,6 +164,91 @@ async fn interrupted_job_interact_commits_a_structured_tool_result_before_exit()
 }
 
 struct PanickingProvider;
+
+struct ContinuingProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl TestClient for ContinuingProvider {
+    async fn complete(
+        &self,
+        _request: &PhiProviderCall,
+        _messages: &PhiHistory,
+    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(PhiModelResponse::new(
+            vec![PhiMessage::assistant("continue")],
+            PhiModelTurnState::Continue,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn cli_run_publishes_initial_and_committed_step_checkpoints() {
+    let session = Session::from_root(
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
+        vec![PhiMessage::user("hello")],
+    );
+    let agent = step_agent_builder(session)
+        .with_client(super::support::stub_client(vec![PhiMessage::assistant(
+            "world",
+        )]))
+        .build()
+        .unwrap();
+    let checkpoints = Arc::new(Mutex::new(Vec::<Session>::new()));
+    let captured = Arc::clone(&checkpoints);
+
+    let (session, exit) = crate::run_built_cli_agent(agent, false, false, move |session| {
+        captured.lock().unwrap().push(session.clone());
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(exit, crate::CliAgentExit::Completed));
+    let checkpoints = checkpoints.lock().unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    assert_eq!(checkpoints[0].history(), &[PhiMessage::user("hello")]);
+    assert_eq!(checkpoints[1].history(), session.history());
+    assert!(matches!(
+        checkpoints[1].step(),
+        PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })
+    ));
+}
+
+#[tokio::test]
+async fn checkpoint_failure_stops_before_the_next_step() {
+    let session = Session::from_root(
+        PhiAgentStep::request_provider("ready", &test_model_defaults()),
+        vec![PhiMessage::user("hello")],
+    );
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let agent = step_agent_builder(session)
+        .with_client(Arc::new(ContinuingProvider {
+            calls: Arc::clone(&provider_calls),
+        }))
+        .build()
+        .unwrap();
+    let mut checkpoints = 0;
+
+    let result = crate::run_built_cli_agent(agent, false, false, |_session| {
+        checkpoints += 1;
+        if checkpoints == 2 {
+            Err("checkpoint storage failed".into())
+        } else {
+            Ok(())
+        }
+    })
+    .await;
+    let Err(error) = result else {
+        panic!("checkpoint failure should stop the run")
+    };
+
+    assert!(error.to_string().contains("checkpoint storage failed"));
+    assert_eq!(checkpoints, 2);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+}
 
 #[async_trait]
 impl TestClient for PanickingProvider {

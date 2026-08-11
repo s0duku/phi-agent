@@ -100,6 +100,49 @@ fn agent_commands_accept_null_executor() {
 }
 
 #[test]
+fn agent_and_headlessterm_commands_accept_structured_runners() {
+    for command in ["run", "yolo", "step"] {
+        Cli::try_parse_from([
+            "phi",
+            command,
+            "--runner",
+            "bash",
+            "--runner-arg=-c",
+            "--user",
+            "hello",
+        ])
+        .unwrap_or_else(|error| panic!("{command} should accept a runner: {error}"));
+    }
+
+    Cli::try_parse_from([
+        "phi",
+        "headlessterm",
+        "exec",
+        "--runner",
+        "bash",
+        "--runner-arg=-c",
+        "--",
+        "printf ready",
+    ])
+    .expect("headlessterm exec should accept a runner");
+
+    assert!(
+        Cli::try_parse_from([
+            "phi",
+            "step",
+            "--container",
+            "dev",
+            "--runner",
+            "bash",
+            "--user",
+            "hello",
+        ])
+        .is_err()
+    );
+    assert!(Cli::try_parse_from(["phi", "step", "--runner-arg=-c", "--user", "hello",]).is_err());
+}
+
+#[test]
 fn cli_model_retry_matches_library_command_defaults_and_explicit_values() {
     let default_cli = Cli::try_parse_from(["phi", "step", "--user", "hello"])
         .expect("step should parse without a retry option");
@@ -194,6 +237,8 @@ fn headlessterm_help_exposes_launch_local() {
         .render_help()
         .to_string();
     assert!(exec_help.contains("--container"));
+    assert!(exec_help.contains("--runner <PROGRAM>"));
+    assert!(exec_help.contains("--runner-arg <ARG>"));
     let headlessterm = command
         .find_subcommand_mut("headlessterm")
         .expect("headlessterm subcommand should exist");
@@ -247,4 +292,6 @@ fn session_help_exposes_session_transform_commands() {
         .to_string();
     assert!(tool_result_help.contains("--json <JSON>"));
     assert!(tool_result_help.contains("--text <TEXT>"));
+    assert!(tool_result_help.contains("--json-file <FILE>"));
+    assert!(tool_result_help.contains("--text-file <FILE>"));
 }

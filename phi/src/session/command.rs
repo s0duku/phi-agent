@@ -63,7 +63,7 @@ pub enum SessionCommand {
     )]
     Rollback(SessionRollbackArgs),
     #[command(
-        about = "Print a session's committed history as an echo-style transcript",
+        about = "Print a session's committed history as JSON or an echo-style transcript",
         before_help = banner::startup_banner()
     )]
     History(SessionHistoryArgs),
@@ -84,6 +84,11 @@ pub struct SessionNewArgs {
 
 #[derive(Args)]
 pub struct SessionHistoryArgs {
+    #[arg(
+        long,
+        help = "Render history as an echo-style transcript instead of JSON"
+    )]
+    pub view: bool,
     pub file: PathBuf,
 }
 
@@ -114,7 +119,7 @@ pub struct SessionStepTransformArgs {
     clap::ArgGroup::new("result")
         .required(true)
         .multiple(false)
-        .args(["json", "text"])
+        .args(["json", "text", "json_file", "text_file"])
 ))]
 pub struct SessionToolResultArgs {
     #[command(flatten)]
@@ -125,6 +130,10 @@ pub struct SessionToolResultArgs {
     pub json: Option<String>,
     #[arg(long, value_name = "TEXT")]
     pub text: Option<String>,
+    #[arg(long = "json-file", value_name = "FILE")]
+    pub json_file: Option<PathBuf>,
+    #[arg(long = "text-file", value_name = "FILE")]
+    pub text_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -222,10 +231,24 @@ fn tool_result(
     args: SessionToolResultArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = args.config.config.as_deref();
-    let result = match (args.json, args.text) {
-        (Some(json), None) => serde_json::from_str(&json)
+    let result = match (args.json, args.text, args.json_file, args.text_file) {
+        (Some(json), None, None, None) => serde_json::from_str(&json)
             .map_err(|error| format!("invalid --json tool result: {error}"))?,
-        (None, Some(text)) => serde_json::Value::String(text),
+        (None, Some(text), None, None) => serde_json::Value::String(text),
+        (None, None, Some(path), None) => {
+            let bytes = std::fs::read(&path).map_err(|error| {
+                format!("failed to read --json-file {}: {error}", path.display())
+            })?;
+            serde_json::from_slice(&bytes).map_err(|error| {
+                format!("invalid JSON in --json-file {}: {error}", path.display())
+            })?
+        }
+        (None, None, None, Some(path)) => {
+            let text = std::fs::read_to_string(&path).map_err(|error| {
+                format!("failed to read --text-file {}: {error}", path.display())
+            })?;
+            serde_json::Value::String(text)
+        }
         _ => unreachable!("clap requires exactly one tool result input"),
     };
     let resume_call = provider_call(home_spec, config_path)?;
@@ -332,14 +355,18 @@ fn new(home_spec: Option<&str>, args: SessionNewArgs) -> Result<(), Box<dyn std:
 
 fn history(args: SessionHistoryArgs) -> Result<(), Box<dyn std::error::Error>> {
     let session = Session::load(&args.file)?;
-    let history = render_history(&session);
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     use std::io::Write;
-    if !history.is_empty() {
-        handle.write_all(history.as_bytes())?;
-        handle.write_all(b"\n")?;
+    if args.view {
+        let history = render_history(&session);
+        if !history.is_empty() {
+            handle.write_all(history.as_bytes())?;
+        }
+    } else {
+        serde_json::to_writer(&mut handle, &session.history())?;
     }
+    handle.write_all(b"\n")?;
     Ok(())
 }
 
@@ -467,5 +494,17 @@ mod tests {
         assert!(!rendered.is_empty());
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn history_serializes_the_committed_phi_history() {
+        let session = Session::from_root(
+            PhiAgentStep::turn_end("done"),
+            vec![PhiMessage::user("hello")],
+        );
+        assert_eq!(
+            serde_json::to_value(session.history()).unwrap(),
+            serde_json::json!([{ "role": "user", "content": "hello" }])
+        );
     }
 }

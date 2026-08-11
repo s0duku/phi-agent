@@ -1,6 +1,6 @@
 [package]
 name = "phi"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 include = [
     "Cargo.toml",
@@ -33,4 +33,4 @@ vt100 = "0.16"
 vte = "0.15"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }

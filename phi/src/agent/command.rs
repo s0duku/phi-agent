@@ -1,3 +1,5 @@
+use crate::headlessterm::TerminalCommand;
+
 #[derive(Clone)]
 pub enum PhiAgentCommand {
     Run(RunCommand),
@@ -28,8 +30,15 @@ struct AgentCommandOptions {
 
 #[derive(Clone)]
 enum ExecutorOptions {
-    Enabled { container: Option<String> },
+    Enabled { target: ExecutionTarget },
     Null,
+}
+
+#[derive(Clone)]
+enum ExecutionTarget {
+    LocalShell,
+    Container(String),
+    CustomRunner { program: String, args: Vec<String> },
 }
 
 #[derive(Clone)]
@@ -54,6 +63,8 @@ pub struct AgentCommandArgs {
     pub null_executor: bool,
     pub max_model_request_retries: Option<usize>,
     pub container: Option<String>,
+    pub runner: Option<String>,
+    pub runner_args: Vec<String>,
 }
 
 pub type StepCommandArgs = AgentCommandArgs;
@@ -75,13 +86,13 @@ impl PhiAgentCommand {
     pub fn run() -> RunCommand {
         RunCommand {
             max_steps: None,
-            options: AgentCommandArgs::default().into(),
+            options: AgentCommandOptions::enabled_local(),
         }
     }
 
     pub fn step() -> StepCommand {
         StepCommand {
-            options: AgentCommandArgs::default().into(),
+            options: AgentCommandOptions::enabled_local(),
         }
     }
 
@@ -113,7 +124,7 @@ impl PhiAgentCommand {
         let args = args.into();
         Ok(Self::Run(RunCommand {
             max_steps: max_steps.or(args.max_steps),
-            options: AgentCommandOptions::from(args.options),
+            options: AgentCommandOptions::try_from(args.options)?,
         }))
     }
 
@@ -127,7 +138,7 @@ impl PhiAgentCommand {
         let args = args.into();
         Ok(Self::Yolo(RunCommand {
             max_steps: max_steps.or(args.max_steps),
-            options: AgentCommandOptions::from(args.options),
+            options: AgentCommandOptions::try_from(args.options)?,
         }))
     }
 
@@ -137,7 +148,7 @@ impl PhiAgentCommand {
     {
         let args = args.into();
         Ok(Self::Step(StepCommand {
-            options: AgentCommandOptions::from(args),
+            options: AgentCommandOptions::try_from(args)?,
         }))
     }
 
@@ -153,6 +164,11 @@ impl PhiAgentCommand {
 
     pub fn container(&self) -> Option<&str> {
         self.options().and_then(AgentCommandOptions::container)
+    }
+
+    pub(crate) fn terminal_command(&self, command: String) -> Option<TerminalCommand> {
+        self.options()
+            .and_then(|options| options.terminal_command(command))
     }
 
     pub(crate) fn null_executor(&self) -> bool {
@@ -189,25 +205,82 @@ impl PhiAgentCommand {
     }
 }
 
-impl From<AgentCommandArgs> for AgentCommandOptions {
-    fn from(args: AgentCommandArgs) -> Self {
+impl TryFrom<AgentCommandArgs> for AgentCommandOptions {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(args: AgentCommandArgs) -> Result<Self, Self::Error> {
+        if args.null_executor {
+            return Ok(Self {
+                max_model_request_retries: args.max_model_request_retries,
+                quiet: args.quiet,
+                executor: ExecutorOptions::Null,
+            });
+        }
         let container = args.container.filter(|value| !value.trim().is_empty());
-        Self {
+        let runner = match args.runner {
+            Some(program) if program.trim().is_empty() => {
+                return Err("--runner requires a non-empty program".into());
+            }
+            runner => runner,
+        };
+        if container.is_some() && runner.is_some() {
+            return Err("--container and --runner are mutually exclusive".into());
+        }
+        if runner.is_none() && !args.runner_args.is_empty() {
+            return Err("runner arguments require a runner program".into());
+        }
+        let target = match (container, runner) {
+            (Some(container), None) => ExecutionTarget::Container(container),
+            (None, Some(program)) => ExecutionTarget::CustomRunner {
+                program,
+                args: args.runner_args,
+            },
+            (None, None) => ExecutionTarget::LocalShell,
+            (Some(_), Some(_)) => unreachable!("conflicting execution targets were rejected"),
+        };
+        Ok(Self {
             max_model_request_retries: args.max_model_request_retries,
             quiet: args.quiet,
-            executor: if args.null_executor {
-                ExecutorOptions::Null
-            } else {
-                ExecutorOptions::Enabled { container }
-            },
-        }
+            executor: ExecutorOptions::Enabled { target },
+        })
     }
 }
 
 impl AgentCommandOptions {
+    fn enabled_local() -> Self {
+        Self {
+            max_model_request_retries: None,
+            quiet: false,
+            executor: ExecutorOptions::Enabled {
+                target: ExecutionTarget::LocalShell,
+            },
+        }
+    }
+
     fn container(&self) -> Option<&str> {
         match &self.executor {
-            ExecutorOptions::Enabled { container } => container.as_deref(),
+            ExecutorOptions::Enabled {
+                target: ExecutionTarget::Container(container),
+            } => Some(container),
+            ExecutorOptions::Enabled { .. } | ExecutorOptions::Null => None,
+        }
+    }
+
+    fn terminal_command(&self, command: String) -> Option<TerminalCommand> {
+        match &self.executor {
+            ExecutorOptions::Enabled {
+                target: ExecutionTarget::LocalShell,
+            } => Some(TerminalCommand::shell(command)),
+            ExecutorOptions::Enabled {
+                target: ExecutionTarget::Container(container),
+            } => Some(TerminalCommand::docker_exec(container.clone(), command)),
+            ExecutorOptions::Enabled {
+                target: ExecutionTarget::CustomRunner { program, args },
+            } => Some(TerminalCommand::custom_runner(
+                program.clone(),
+                args.clone(),
+                command,
+            )),
             ExecutorOptions::Null => None,
         }
     }
@@ -246,14 +319,19 @@ impl RunCommand {
         if null_executor {
             self.options.executor = ExecutorOptions::Null;
         } else if matches!(self.options.executor, ExecutorOptions::Null) {
-            self.options.executor = ExecutorOptions::Enabled { container: None };
+            self.options.executor = ExecutorOptions::Enabled {
+                target: ExecutionTarget::LocalShell,
+            };
         }
         self
     }
 
     pub fn with_container(mut self, container: Option<String>) -> Self {
         self.options.executor = ExecutorOptions::Enabled {
-            container: container.filter(|value| !value.trim().is_empty()),
+            target: container
+                .filter(|value| !value.trim().is_empty())
+                .map(ExecutionTarget::Container)
+                .unwrap_or(ExecutionTarget::LocalShell),
         };
         self
     }
@@ -277,14 +355,19 @@ impl StepCommand {
         if null_executor {
             self.options.executor = ExecutorOptions::Null;
         } else if matches!(self.options.executor, ExecutorOptions::Null) {
-            self.options.executor = ExecutorOptions::Enabled { container: None };
+            self.options.executor = ExecutorOptions::Enabled {
+                target: ExecutionTarget::LocalShell,
+            };
         }
         self
     }
 
     pub fn with_container(mut self, container: Option<String>) -> Self {
         self.options.executor = ExecutorOptions::Enabled {
-            container: container.filter(|value| !value.trim().is_empty()),
+            target: container
+                .filter(|value| !value.trim().is_empty())
+                .map(ExecutionTarget::Container)
+                .unwrap_or(ExecutionTarget::LocalShell),
         };
         self
     }
@@ -362,10 +445,54 @@ mod tests {
             null_executor: true,
             max_model_request_retries: Some(3),
             container: Some("unused-container".to_string()),
+            ..AgentCommandArgs::default()
         })
         .expect("step command should build");
 
         assert!(command.null_executor());
         assert_eq!(command.container(), None);
+    }
+
+    #[test]
+    fn runner_builds_a_custom_terminal_command() {
+        let command = PhiAgentCommand::from_step_args(AgentCommandArgs {
+            runner: Some("bash".to_owned()),
+            runner_args: vec!["-c".to_owned()],
+            ..AgentCommandArgs::default()
+        })
+        .expect("step command should accept a custom runner");
+
+        assert!(matches!(
+            command.terminal_command("printf ready".to_owned()),
+            Some(crate::headlessterm::TerminalCommand::CustomRunner {
+                program,
+                args,
+                command,
+            }) if program == "bash" && args == ["-c"] && command == "printf ready"
+        ));
+    }
+
+    #[test]
+    fn runner_arguments_require_a_runner_program() {
+        let result = PhiAgentCommand::from_step_args(AgentCommandArgs {
+            runner_args: vec!["-c".to_owned()],
+            ..AgentCommandArgs::default()
+        });
+        let Err(error) = result else {
+            panic!("runner arguments without a runner should fail")
+        };
+        assert!(error.to_string().contains("require a runner program"));
+    }
+
+    #[test]
+    fn runner_program_cannot_be_empty() {
+        let result = PhiAgentCommand::from_step_args(AgentCommandArgs {
+            runner: Some("  ".to_owned()),
+            ..AgentCommandArgs::default()
+        });
+        let Err(error) = result else {
+            panic!("an empty runner program should fail")
+        };
+        assert!(error.to_string().contains("non-empty program"));
     }
 }

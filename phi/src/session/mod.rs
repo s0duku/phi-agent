@@ -525,10 +525,11 @@ impl Session {
         path: impl AsRef<std::path::Path>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let path = path.as_ref();
-        if let Some(parent) = path
+        let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-        {
+            .unwrap_or_else(|| std::path::Path::new("."));
+        if parent != std::path::Path::new(".") {
             std::fs::create_dir_all(parent).map_err(|error| {
                 format!(
                     "failed to create session directory {}: {error}",
@@ -536,12 +537,7 @@ impl Session {
                 )
             })?;
         }
-        let mut file = std::fs::File::create(path).map_err(|error| {
-            format!("failed to create session file {}: {error}", path.display())
-        })?;
-        self.write_json(&mut file).map_err(|error| {
-            format!("failed to write session file {}: {error}", path.display()).into()
-        })
+        serialization::save_atomic(self, path, parent)
     }
 
     pub fn create(

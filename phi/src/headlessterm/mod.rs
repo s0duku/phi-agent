@@ -60,6 +60,22 @@ enum HeadlessTerminalCommand {
             help = "Execute the command inside an already-running Docker container"
         )]
         container: Option<String>,
+        #[arg(
+            long,
+            value_name = "PROGRAM",
+            conflicts_with = "container",
+            help = "Pass the command to a custom runner program"
+        )]
+        runner: Option<String>,
+        #[arg(
+            long = "runner-arg",
+            value_name = "ARG",
+            action = clap::ArgAction::Append,
+            allow_hyphen_values = true,
+            requires = "runner",
+            help = "Append a fixed runner argument before the command"
+        )]
+        runner_args: Vec<String>,
         #[arg(long, default_value_t = 60_000)]
         wait_ms: u64,
         #[arg(long, default_value_t = 300_000)]
@@ -102,17 +118,25 @@ pub async fn run(args: HeadlessTerminalArgs) -> Result<(), String> {
     match args.command {
         HeadlessTerminalCommand::Exec {
             container,
+            runner,
+            runner_args,
             wait_ms,
             expiration_ms,
             command,
         } => {
             let info = terminal
                 .exec_job(
-                    match container {
-                        Some(container) => {
+                    match (container, runner) {
+                        (Some(container), None) => {
                             TerminalCommand::docker_exec(container, command.join(" "))
                         }
-                        None => TerminalCommand::shell(command.join(" ")),
+                        (None, Some(program)) => {
+                            TerminalCommand::custom_runner(program, runner_args, command.join(" "))
+                        }
+                        (None, None) => TerminalCommand::shell(command.join(" ")),
+                        (Some(_), Some(_)) => {
+                            unreachable!("clap rejects conflicting execution targets")
+                        }
                     },
                     ReturnWhen::output_settled(Duration::from_millis(wait_ms)),
                     Duration::from_millis(expiration_ms),

@@ -9,7 +9,7 @@ use crate::{
     executor::{PhiTool, PhiToolResult, ToolCallRequest, ToolCallResponse},
     headlessterm::{
         DEFAULT_TRY_WAIT, HeadlessTerminal, JobAccess, JobAccessResult, JobHandle, JobInfo,
-        JobStatus, ReturnWhen, TerminalCommand,
+        JobStatus, ReturnWhen,
     },
 };
 
@@ -96,9 +96,8 @@ impl PhiTool for ShellJobExecTool {
         let command = runtime
             .setup()
             .command()
-            .container()
-            .map(|container| TerminalCommand::docker_exec(container, args.cmd.clone()))
-            .unwrap_or_else(|| TerminalCommand::shell(args.cmd.clone()));
+            .terminal_command(args.cmd.clone())
+            .expect("shell job tool is unavailable with a null executor");
         let result = terminal
             .exec_job(
                 command,

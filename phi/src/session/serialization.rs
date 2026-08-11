@@ -1,6 +1,8 @@
 use std::{
+    fs::OpenOptions,
     io::{self, Write},
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use serde::Serialize;
@@ -44,6 +46,103 @@ pub fn write_stdout(session: &Session) -> Result<(), Box<dyn std::error::Error>>
     write_ascii_json(&mut stdout, session)?;
     stdout.write_all(b"\n")?;
     stdout.flush()?;
+    Ok(())
+}
+
+pub(super) fn save_atomic(
+    session: &Session,
+    path: &Path,
+    parent: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("session path has no file name: {}", path.display()))?;
+    let (temp_path, mut file) = loop {
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let temp_name = format!(
+            ".{}.{}.{}.tmp",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            id
+        );
+        let temp_path = parent.join(temp_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => break (temp_path, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create temporary session file for {}: {error}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+    };
+
+    let write_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        write_json(session, &mut file)?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temp_path, path)?;
+        sync_parent(parent)?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("failed to save session file {}: {error}", path.display()).into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent(parent: &Path) -> io::Result<()> {
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -98,6 +197,7 @@ mod tests {
     use crate::expr::{PhiStepExpr, PhiVariable};
     use crate::message::{PhiHistory, PhiMessage};
     use crate::session::PhiAgentStep;
+    use crate::tests::support::test_model_defaults;
 
     const COUNT: PhiVariable<i32> = PhiVariable::new("count");
     const CLEARED: PhiVariable<bool> = PhiVariable::new("cleared");
@@ -140,6 +240,37 @@ mod tests {
         std::fs::remove_file(path).unwrap();
 
         assert_eq!(loaded.history(), session.history());
+    }
+
+    #[test]
+    fn save_atomically_replaces_a_valid_session_without_temp_files() {
+        let root = std::env::temp_dir().join(format!(
+            "phi-session-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("work.session");
+        let initial = Session::from_root(
+            PhiAgentStep::request_provider("initial", &test_model_defaults()),
+            vec![PhiMessage::user("initial")],
+        );
+        let updated = Session::from_root(
+            PhiAgentStep::request_provider("updated", &test_model_defaults()),
+            vec![PhiMessage::user("updated")],
+        );
+
+        initial.save(&path).unwrap();
+        updated.save(&path).unwrap();
+
+        let restored = Session::load(&path).unwrap();
+        assert_eq!(restored.history(), updated.history());
+        assert_eq!(restored.step(), updated.step());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

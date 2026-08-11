@@ -208,8 +208,8 @@ standalone CLI integration and harness guide.
   the higher-level schedulers.
 - **Persistent terminals:** jobs can survive individual tool calls and support
   GDB, shells, and other interactive processes.
-- **Host or container execution:** Phi can operate in the host environment or
-  enter an already-running container without placing the Phi runtime inside it.
+- **Selectable command execution:** Phi can use the host shell, enter an
+  already-running container, or pass commands through a custom runner program.
 - **Structural rollback:** the S-expression-style step structure makes rollback
   an explicit Session transformation.
 
@@ -219,6 +219,17 @@ For example, an existing container can be used as the command environment:
 docker run -dit --name phi-test-run docker.io/library/alpine /bin/sh
 phi yolo --user "list files" --container phi-test-run
 ```
+
+A custom runner receives its fixed arguments followed by the complete command
+as one final argument. Agent commands apply the same runner to the built-in
+`bash_job` tool:
+
+```bash
+phi yolo --runner bash --runner-arg=-c --user "list files"
+```
+
+`--runner` and `--container` are mutually exclusive. Repeat `--runner-arg` for
+programs that need more than one fixed argument.
 
 
 ## Config
@@ -276,7 +287,8 @@ echo "follow up" | phi run work.session
 In file-backed mode:
 
 - the file must already exist; create it explicitly with `phi session new SESSION`
-- the updated session is written back to the same file
+- appended input and every committed Agent step are atomically written back to the same file
+- readers see either the previous complete Session or the new complete Session
 - stdin is treated as plain user text, not session JSON
 
 ## Commands
@@ -289,13 +301,13 @@ Main commands:
 - `phi session peek [SESSION]`
 - `phi session next [SESSION] --provider`
 - `phi session replace [SESSION] --provider`
-- `phi session tool-result [SESSION] (--json JSON|--text TEXT)`
+- `phi session tool-result [SESSION] (--json JSON|--text TEXT|--json-file FILE|--text-file FILE)`
 - `phi session rollback [SESSION]`
 - `phi session append [SESSION] (--user TEXT|--assistant TEXT)`
 - `phi headlessterm exec|access|close`
 - `phi doctor`
 - `phi session new SESSION`
-- `phi session history [SESSION]`
+- `phi session history [SESSION] [--view]`
 - `phi home new|pack|unpack`
 
 Examples:
@@ -309,16 +321,20 @@ phi session next work.session --provider
 phi session replace work.session --provider
 # When peek reports RequestExecutor, resolve its first pending call externally:
 phi session tool-result work.session --text "external tool output"
+phi session tool-result work.session --json-file large-result.json
 phi session rollback work.session
 phi doctor
 phi session new work.session
 phi session history work.session
+# Human-readable echo-style transcript:
+phi session history work.session --view
 ```
 
 HeadlessTerminal commands expose the library job API as JSON:
 
 ```bash
 phi headlessterm exec --wait-ms 1000 -- sh -lc 'printf ready'
+phi headlessterm exec --runner bash --runner-arg=-c -- 'printf runner-ready'
 phi headlessterm access JOB_HANDLE --wait-ms 1000
 phi headlessterm access JOB_HANDLE --data 'continue' --write-only
 phi headlessterm close JOB_HANDLE

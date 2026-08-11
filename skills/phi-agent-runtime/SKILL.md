@@ -98,15 +98,21 @@ call `tool-result` directly.
 ## CLI capability map
 
 1. Use `phi session new|append|peek|history|rollback` for durable state edits.
+   `session history` emits the committed `PhiHistory` as JSON by default; add
+   `--view` only when an echo-style human-readable transcript is needed.
    Add `next --provider` or `replace --provider` when a workflow must create or
    replace a provider boundary without evaluating it.
 2. Use `phi run [SESSION]` for the main workflow scheduler. Set `--max-steps`
    as the per-run budget and inspect the returned Session before continuing.
 3. Use `phi step [SESSION]` for per-transition inspection or custom scheduling.
 4. Use `phi session tool-result [SESSION] --json JSON|--text TEXT` to resolve
-   exactly one pending tool call without invoking Phi's executor.
+   exactly one pending tool call without invoking Phi's executor. Use
+   `--json-file FILE` or `--text-file FILE` when the result may exceed command-line
+   argument limits.
 5. Use `phi headlessterm exec|access|close` for persistent shell, REPL,
-   debugger, or server jobs. Keep its handle outside Session and close it.
+   debugger, or server jobs. Keep its handle outside Session and close it. Use
+   `--runner PROGRAM` with repeated `--runner-arg ARG` values when commands must
+   pass through a custom carrier.
 6. Use `phi doctor` to inspect resolved home, configuration, system prompt, and
    exposed tools. Use `--null-executor` for model-only deterministic tests.
 

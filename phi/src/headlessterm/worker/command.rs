@@ -31,6 +31,19 @@ pub(crate) fn build(command: TerminalCommand) -> Result<CommandBuilder, String> 
             builder.arg(command);
             return Ok(builder);
         }
+        TerminalCommand::CustomRunner {
+            program,
+            args,
+            command,
+        } => {
+            if program.trim().is_empty() {
+                return Err("custom runner program cannot be empty".to_owned());
+            }
+            let mut builder = CommandBuilder::new(program);
+            builder.args(args);
+            builder.arg(command);
+            return Ok(builder);
+        }
     }
 }
 

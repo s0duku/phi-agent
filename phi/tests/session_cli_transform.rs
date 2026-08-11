@@ -126,6 +126,38 @@ fn peek_reports_the_current_session_state_as_json() {
 }
 
 #[test]
+fn history_defaults_to_json_and_view_keeps_transcript_output() {
+    let path = unique_session_path("history");
+    std::fs::write(&path, root_session_json()).unwrap();
+
+    let json_output = Command::new(PHI)
+        .args(["session", "history", path.to_string_lossy().as_ref()])
+        .output()
+        .unwrap();
+    assert!(json_output.status.success());
+    let history: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    assert_eq!(
+        history,
+        serde_json::json!([{ "role": "system", "content": "system" }])
+    );
+
+    let view_output = Command::new(PHI)
+        .args([
+            "session",
+            "history",
+            "--view",
+            path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(view_output.status.success());
+    let view = String::from_utf8(view_output.stdout).unwrap();
+    assert!(view.contains("system"));
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn next_provider_adds_an_empty_outer_frame() {
     let path = unique_session_path("next-provider");
     std::fs::write(&path, root_session_json()).unwrap();
@@ -273,6 +305,74 @@ fn tool_result_text_consumes_only_the_first_of_multiple_calls() {
 }
 
 #[test]
+fn tool_result_json_file_resolves_the_current_executor_step() {
+    let path = unique_session_path("tool-result-json-file");
+    let result_path = unique_session_path("tool-result-json-input");
+    std::fs::write(&path, request_executor_session_json(false)).unwrap();
+    std::fs::write(&result_path, br#"{"value":42,"items":[1,2,3]}"#).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--json-file",
+            result_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.history().iter().last(),
+        Some(phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { result, .. }))
+            if result == &serde_json::json!({"value": 42, "items": [1, 2, 3]})
+    ));
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(result_path).unwrap();
+}
+
+#[test]
+fn tool_result_text_file_preserves_the_complete_text() {
+    let path = unique_session_path("tool-result-text-file");
+    let result_path = unique_session_path("tool-result-text-input");
+    std::fs::write(&path, request_executor_session_json(false)).unwrap();
+    std::fs::write(&result_path, "first line\nsecond line\n").unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--text-file",
+            result_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.history().iter().last(),
+        Some(phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { result, .. }))
+            if result == &serde_json::Value::String("first line\nsecond line\n".to_string())
+    ));
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(result_path).unwrap();
+}
+
+#[test]
 fn tool_result_rejects_invalid_state_and_json_without_modifying_the_file() {
     let path = unique_session_path("tool-result-invalid");
     let original = root_session_json().as_bytes().to_vec();
@@ -304,7 +404,26 @@ fn tool_result_rejects_invalid_state_and_json_without_modifying_the_file() {
     assert!(!invalid_json.status.success());
     assert_eq!(std::fs::read(&path).unwrap(), original);
 
+    let pending = request_executor_session_json(false).into_bytes();
+    let invalid_json_path = unique_session_path("invalid-tool-result-json");
+    std::fs::write(&path, &pending).unwrap();
+    std::fs::write(&invalid_json_path, "not-json").unwrap();
+    let invalid_json_file = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--json-file",
+            invalid_json_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid_json_file.status.success());
+    assert!(String::from_utf8_lossy(&invalid_json_file.stderr).contains("invalid JSON"));
+    assert_eq!(std::fs::read(&path).unwrap(), pending);
+
     std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(invalid_json_path).unwrap();
 }
 
 fn root_session_json() -> &'static str {
