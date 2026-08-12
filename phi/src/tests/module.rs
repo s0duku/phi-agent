@@ -35,8 +35,6 @@ enum EffectBounce {
 struct StoreEffectInterveneModule(EffectBounce);
 
 impl PhiModule for StoreEffectInterveneModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         mut runtime: PhiAgentRuntime,
@@ -76,8 +74,6 @@ fn session_with_stored_state(value: &'static str) -> Session {
 }
 
 impl PhiModule for RewriteInterveneModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         runtime: PhiAgentRuntime,
@@ -94,8 +90,6 @@ impl PhiModule for RewriteInterveneModule {
 }
 
 impl PhiModule for StopInterveneModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         runtime: PhiAgentRuntime,
@@ -110,8 +104,6 @@ impl PhiModule for StopInterveneModule {
 }
 
 impl PhiModule for AppendAndRewriteInterveneModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         mut runtime: PhiAgentRuntime,
@@ -127,8 +119,6 @@ impl PhiModule for AppendAndRewriteInterveneModule {
 }
 
 impl PhiModule for AppendThenFailInterveneModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         mut runtime: PhiAgentRuntime,
@@ -144,8 +134,6 @@ impl PhiModule for AppendThenFailInterveneModule {
 }
 
 impl PhiModule for CountingInterveneModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         runtime: PhiAgentRuntime,

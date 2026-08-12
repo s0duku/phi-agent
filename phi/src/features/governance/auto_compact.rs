@@ -28,8 +28,6 @@ impl AutoCompactPolicy {
 }
 
 impl PhiModule for AutoCompactPolicy {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         runtime: PhiAgentRuntime,

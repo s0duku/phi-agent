@@ -17,8 +17,6 @@ impl ChannelModule {
 }
 
 impl PhiModule for ChannelModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let _ = event;
         Ok(())

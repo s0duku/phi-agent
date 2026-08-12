@@ -51,7 +51,7 @@ fn append_updates_a_file_and_preserves_cli_message_order() {
 #[test]
 fn append_and_rollback_compose_through_stdio() {
     let mut append = Command::new(PHI)
-        .args(["session", "append", "--user", "piped"])
+        .args(["session", "append", "-", "--user", "piped"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -70,7 +70,7 @@ fn append_and_rollback_compose_through_stdio() {
     );
 
     let mut rollback = Command::new(PHI)
-        .args(["session", "rollback"])
+        .args(["session", "rollback", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -101,12 +101,59 @@ fn append_and_rollback_compose_through_stdio() {
 }
 
 #[test]
-fn peek_reports_the_current_session_state_as_json() {
-    let path = unique_session_path("peek");
+fn session_commands_require_an_explicit_session_target() {
+    for command in ["state", "rollback"] {
+        let output = Command::new(PHI)
+            .args(["session", command])
+            .stdin(Stdio::piped())
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success(), "{command} unexpectedly succeeded");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("required arguments were not provided"));
+        assert!(stderr.contains("<SESSION>"));
+    }
+}
+
+#[test]
+fn state_and_history_read_session_json_from_explicit_stdio() {
+    for command in ["state", "history"] {
+        let mut child = Command::new(PHI)
+            .args(["session", command, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(root_session_json().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        if command == "state" {
+            assert_eq!(json["state"], "turn_end");
+        } else {
+            assert_eq!(json[0]["role"], "system");
+        }
+    }
+}
+
+#[test]
+fn state_reports_the_current_session_state_as_json() {
+    let path = unique_session_path("state");
     std::fs::write(&path, root_session_json()).unwrap();
 
     let output = Command::new(PHI)
-        .args(["session", "peek", path.to_string_lossy().as_ref()])
+        .args(["session", "state", path.to_string_lossy().as_ref()])
         .output()
         .unwrap();
     assert!(
@@ -116,11 +163,9 @@ fn peek_reports_the_current_session_state_as_json() {
     );
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["step"]["kind"], "turn_end");
-    assert_eq!(report["step"]["detail"], "root");
-    assert_eq!(report["step"]["is_terminal"], true);
+    assert_eq!(report["state"], "turn_end");
+    assert_eq!(report["detail"], "root");
     assert_eq!(report["history_messages"], 1);
-    assert!(report["modules"].is_array());
 
     std::fs::remove_file(path).unwrap();
 }
@@ -239,22 +284,27 @@ fn tool_result_json_resolves_the_current_executor_step() {
     );
 
     let session = phi::session::Session::load(&path).unwrap();
+    let serialized: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let frames = serialized["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0]["step"]["kind"], "request_executor");
+    assert_eq!(frames[1]["step"]["kind"], "request_provider");
+    assert_eq!(frames[1]["delta"]["history"].as_array().unwrap().len(), 2);
     assert!(matches!(
         session.step(),
         phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestProvider { .. })
     ));
-    assert_eq!(
-        session.history()[1],
-        phi::message::PhiMessage::assistant("pending")
+    assert!(
+        matches!(&session.history()[1], phi::message::PhiMessage::Assistant(assistant)
+        if assistant.content.as_deref() == Some("pending")
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call-1")
+            && assistant.tool_calls[0].name == "lookup")
     );
     assert!(matches!(
         &session.history()[2],
-        phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolCall { id, name, .. })
-            if id.as_deref() == Some("call-1") && name == "lookup"
-    ));
-    assert!(matches!(
-        &session.history()[3],
-        phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { id, name, result })
+        phi::message::PhiMessage::ToolResult(phi::message::PhiToolResultMessage { id, name, result })
             if id.as_deref() == Some("call-1")
                 && name.as_deref() == Some("lookup")
                 && result == &serde_json::json!({"value": 42})
@@ -285,21 +335,25 @@ fn tool_result_text_consumes_only_the_first_of_multiple_calls() {
     );
 
     let session = phi::session::Session::load(&path).unwrap();
+    let serialized: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(serialized["frames"].as_array().unwrap().len(), 1);
     assert!(matches!(
         session.step(),
         phi::session::PhiAgentStep::ReAct(phi::session::PhiReActStep::RequestExecutor {
             pending_messages,
-            tool_calls,
+            assistant,
+            pending_results,
             ..
         }) if pending_messages.is_empty()
-            && tool_calls.len() == 1
-            && tool_calls[0].id == "call-2"
+            && assistant.tool_calls.len() == 2
+            && assistant.tool_calls[1].id == "call-2"
+            && pending_results.len() == 1
     ));
-    assert!(matches!(
-        session.history().iter().last(),
-        Some(phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { result, .. }))
-            if result == &serde_json::Value::String("done".to_string())
-    ));
+    assert_eq!(
+        session.history(),
+        &[phi::message::PhiMessage::system("system")]
+    );
 
     std::fs::remove_file(path).unwrap();
 }
@@ -330,7 +384,7 @@ fn tool_result_json_file_resolves_the_current_executor_step() {
     let session = phi::session::Session::load(&path).unwrap();
     assert!(matches!(
         session.history().iter().last(),
-        Some(phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { result, .. }))
+        Some(phi::message::PhiMessage::ToolResult(phi::message::PhiToolResultMessage { result, .. }))
             if result == &serde_json::json!({"value": 42, "items": [1, 2, 3]})
     ));
 
@@ -364,7 +418,7 @@ fn tool_result_text_file_preserves_the_complete_text() {
     let session = phi::session::Session::load(&path).unwrap();
     assert!(matches!(
         session.history().iter().last(),
-        Some(phi::message::PhiMessage::Tool(phi::message::PhiToolMessage::ToolResult { result, .. }))
+        Some(phi::message::PhiMessage::ToolResult(phi::message::PhiToolResultMessage { result, .. }))
             if result == &serde_json::Value::String("first line\nsecond line\n".to_string())
     ));
 
@@ -444,7 +498,7 @@ fn branched_session_json() -> &'static str {
             },
             {
                 "step": {"kind": "turn_end", "detail": "outer"},
-                "delta": {"history": [{"role": "assistant", "content": "outer"}]}
+                "delta": {"history": [{"role": "assistant", "content": {"content": "outer"}}]}
             }
         ]
     }"#
@@ -467,13 +521,15 @@ fn request_executor_session_json(multiple: bool) -> String {
                 "step": {{
                     "kind": "request_executor",
                     "detail": "tool execution is pending",
-                    "pending_messages": [{{"role": "assistant", "content": "pending"}}],
-                    "tool_calls": [{{
-                        "id": "call-1",
-                        "call_id": "call-1",
-                        "name": "lookup",
-                        "arguments": {{"query": "first"}}
-                    }}{second}]
+                    "assistant": {{
+                        "content": "pending",
+                        "tool_calls": [{{
+                            "id": "call-1",
+                            "call_id": "call-1",
+                            "name": "lookup",
+                            "arguments": {{"query": "first"}}
+                        }}{second}]
+                    }}
                 }},
                 "delta": {{"history": [{{"role": "system", "content": "system"}}]}}
             }}]

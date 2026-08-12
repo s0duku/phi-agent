@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent};
+use crate::message::{PhiHistory, PhiMessage, PhiReasoningContent};
 
 use super::{LoopDetection, LoopDetector, similarity::NgramFingerprint};
 
@@ -104,12 +104,14 @@ impl LoopDetector for ReasoningSimilarityDetector {
 }
 
 fn reasoning_text(message: &PhiMessage) -> Option<String> {
-    let PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) = message else {
+    let PhiMessage::Assistant(assistant) = message else {
         return None;
     };
 
-    let reasoning = content
+    let reasoning = assistant
+        .reasoning
         .iter()
+        .flat_map(|block| block.content.iter())
         .filter_map(PhiReasoningContent::display_text)
         .filter(|text: &&str| !text.is_empty())
         .map(str::to_owned)
@@ -123,16 +125,16 @@ fn reasoning_text(message: &PhiMessage) -> Option<String> {
 mod tests {
     use super::*;
     use crate::message::PhiHistory;
-    use crate::message::{PhiAssistantMessage, PhiReasoningContent};
+    use crate::message::PhiReasoningContent;
 
     fn assistant_reasoning(text: &str) -> PhiMessage {
-        PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-            id: None,
-            content: vec![PhiReasoningContent::Text {
+        PhiMessage::reasoning(
+            None,
+            vec![PhiReasoningContent::Text {
                 text: text.to_string(),
                 signature: None,
             }],
-        })
+        )
     }
 
     fn detector() -> ReasoningSimilarityDetector {

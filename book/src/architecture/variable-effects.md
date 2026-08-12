@@ -110,7 +110,7 @@ A bounce handles history and variable effects together by handling the complete
 | --- | --- |
 | `CreateNextStep` | Moves the current delta into a new outer frame. |
 | `ReplaceBaseStep` | Replaces the base using `base.delta.then(current_delta)`. |
-| `RuntimeFailed` | Discards the current delta and creates a failed frame with an empty delta. |
+| `RuntimeFailed` | Discards the current delta and creates an empty-delta failed frame over the unchanged base. |
 | `RollbackStep` | Discards the current delta and removes one base frame. |
 | `KeepBaseStep` | Discards the current delta and preserves the base unchanged. |
 

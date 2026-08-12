@@ -45,6 +45,28 @@ impl ModelRetryPolicy {
     pub const fn new(max_retries: usize) -> Self {
         Self { max_retries }
     }
+
+    fn retry_state(&self, runtime: &PhiAgentRuntime) -> ModelRetryProbe {
+        let ancestor = request_provider_ancestor(runtime.base_expr());
+        let attempt = ancestor
+            .and_then(model_retry_state)
+            .map(|retry| retry.attempt);
+        let boundary_matches =
+            is_model_retry_failed_step(runtime.base_step()) && ancestor.is_some();
+        let next_attempt =
+            boundary_matches.then(|| attempt.map(|attempt| attempt + 1).unwrap_or(1));
+        let exhausted = next_attempt.is_some_and(|attempt| attempt > self.max_retries);
+
+        ModelRetryProbe {
+            active: attempt.is_some(),
+            attempt,
+            max_retries: self.max_retries,
+            boundary_matches,
+            will_intervene: boundary_matches && !exhausted,
+            exhausted,
+            next_attempt,
+        }
+    }
 }
 
 fn request_provider_ancestor(expr: &PhiStepExpr) -> Option<&PhiStepExpr> {
@@ -70,43 +92,13 @@ fn is_model_retry_failed_step(step: &PhiAgentStep) -> bool {
 }
 
 impl PhiModule for ModelRetryPolicy {
-    type ProbInfo = ModelRetryProbe;
-
-    fn probe_name(&self) -> &'static str {
-        "model_retry"
-    }
-
-    fn probe(&self, runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
-        let ancestor = request_provider_ancestor(runtime.base_expr());
-        let attempt = ancestor
-            .and_then(model_retry_state)
-            .map(|retry| retry.attempt);
-        let boundary_matches =
-            is_model_retry_failed_step(runtime.base_step()) && ancestor.is_some();
-        let next_attempt =
-            boundary_matches.then(|| attempt.map(|attempt| attempt + 1).unwrap_or(1));
-        let exhausted = next_attempt.is_some_and(|attempt| attempt > self.max_retries);
-
-        Some(ModelRetryProbe {
-            active: attempt.is_some(),
-            attempt,
-            max_retries: self.max_retries,
-            boundary_matches,
-            will_intervene: boundary_matches && !exhausted,
-            exhausted,
-            next_attempt,
-        })
-    }
-
     fn intervene(
         &mut self,
         mut runtime: PhiAgentRuntime,
         cont: StepCont,
         next: StepInterveneNext,
     ) -> crate::agent::StepInterveneResult {
-        let probe = self
-            .probe(&runtime)
-            .expect("model retry probe should always be available");
+        let probe = self.retry_state(&runtime);
         if !probe.boundary_matches {
             return next.call(runtime, cont);
         }

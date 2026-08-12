@@ -1,16 +1,75 @@
 pub mod command;
 mod serialization;
+pub mod state;
 
 use crate::{
     config::{ModelRequestDefaults, PhiConfig},
     error::PhiAgentRuntimeError,
-    executor::ToolCallRequest,
     expr::{PhiExprDelta, PhiStepExpr},
-    message::{PhiHistory, PhiMessage},
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiToolResultMessage},
     render::PhiProviderCall,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use std::sync::Arc;
+use std::{convert::Infallible, io::Read, path::PathBuf, str::FromStr, sync::Arc};
+
+#[derive(Clone, Debug)]
+pub(crate) enum SessionTarget {
+    Stdio,
+    File(PathBuf),
+}
+
+impl FromStr for SessionTarget {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(if value == "-" {
+            Self::Stdio
+        } else {
+            Self::File(PathBuf::from(value))
+        })
+    }
+}
+
+impl SessionTarget {
+    pub(crate) fn load(&self) -> Result<Session, Box<dyn std::error::Error>> {
+        match self {
+            Self::File(path) => Session::load(path),
+            Self::Stdio => {
+                let mut input = Vec::new();
+                std::io::stdin().read_to_end(&mut input)?;
+                Session::load_bytes(&input)
+            }
+        }
+    }
+
+    pub(crate) fn persist(&self, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::File(path) => session.save(path),
+            Self::Stdio => session.write_stdout(),
+        }
+    }
+
+    pub(crate) fn checkpoint(&self, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::File(path) => session.save(path),
+            Self::Stdio => Ok(()),
+        }
+    }
+
+    pub(crate) fn create(self, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::File(path) => session.create(path),
+            Self::Stdio => session.write_stdout(),
+        }
+    }
+
+    pub(crate) fn file(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::File(path) => Some(path),
+            Self::Stdio => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PhiModelRetryState {
@@ -53,7 +112,9 @@ pub enum PhiReActStep {
         detail: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pending_messages: Vec<PhiMessage>,
-        tool_calls: Vec<ToolCallRequest>,
+        assistant: PhiAssistantMessage,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_results: Vec<PhiToolResultMessage>,
     },
     Compacted,
     TurnEnd {
@@ -77,12 +138,12 @@ impl PhiAgentStep {
     pub fn request_executor(
         detail: impl Into<String>,
         pending_messages: Vec<PhiMessage>,
-        tool_calls: Vec<ToolCallRequest>,
+        assistant: PhiAssistantMessage,
     ) -> Self {
         Self::ReAct(PhiReActStep::request_executor(
             detail,
             pending_messages,
-            tool_calls,
+            assistant,
         ))
     }
 
@@ -164,13 +225,30 @@ impl PhiReActStep {
     pub fn request_executor(
         detail: impl Into<String>,
         pending_messages: Vec<PhiMessage>,
-        tool_calls: Vec<ToolCallRequest>,
+        assistant: PhiAssistantMessage,
     ) -> Self {
         Self::RequestExecutor {
             detail: detail.into(),
             pending_messages,
-            tool_calls,
+            assistant,
+            pending_results: Vec::new(),
         }
+    }
+
+    pub(crate) fn request_executor_turn(
+        detail: impl Into<String>,
+        pending_messages: Vec<PhiMessage>,
+        assistant: PhiAssistantMessage,
+        pending_results: Vec<PhiToolResultMessage>,
+    ) -> Result<Self, PhiAgentRuntimeError> {
+        let step = Self::RequestExecutor {
+            detail: detail.into(),
+            pending_messages,
+            assistant,
+            pending_results,
+        };
+        validate_react_step(&step)?;
+        Ok(step)
     }
 
     pub fn turn_end(detail: impl Into<String>) -> Self {
@@ -212,7 +290,9 @@ enum PhiAgentStepWire {
         detail: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pending_messages: Vec<PhiMessage>,
-        tool_calls: Vec<ToolCallRequest>,
+        assistant: PhiAssistantMessage,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_results: Vec<PhiToolResultMessage>,
     },
     Compacted,
     TurnEnd {
@@ -235,11 +315,13 @@ impl From<PhiAgentStepWire> for PhiAgentStep {
             PhiAgentStepWire::RequestExecutor {
                 detail,
                 pending_messages,
-                tool_calls,
+                assistant,
+                pending_results,
             } => Self::ReAct(PhiReActStep::RequestExecutor {
                 detail,
                 pending_messages,
-                tool_calls,
+                assistant,
+                pending_results,
             }),
             PhiAgentStepWire::Compacted => Self::ReAct(PhiReActStep::Compacted),
             PhiAgentStepWire::TurnEnd { detail } => Self::ReAct(PhiReActStep::TurnEnd { detail }),
@@ -265,11 +347,13 @@ impl From<&PhiAgentStep> for PhiAgentStepWire {
             PhiAgentStep::ReAct(PhiReActStep::RequestExecutor {
                 detail,
                 pending_messages,
-                tool_calls,
+                assistant,
+                pending_results,
             }) => Self::RequestExecutor {
                 detail: detail.clone(),
                 pending_messages: pending_messages.clone(),
-                tool_calls: tool_calls.clone(),
+                assistant: assistant.clone(),
+                pending_results: pending_results.clone(),
             },
             PhiAgentStep::ReAct(PhiReActStep::Compacted) => Self::Compacted,
             PhiAgentStep::ReAct(PhiReActStep::TurnEnd { detail }) => Self::TurnEnd {
@@ -384,20 +468,24 @@ impl Session {
 
     /// Adds a new outer frame with an empty delta.
     #[must_use]
-    pub fn next(self, step: PhiReActStep) -> Self {
-        Self(
+    pub fn next(self, step: PhiReActStep) -> Result<Self, PhiAgentRuntimeError> {
+        let session = Self(
             self.0
                 .create_next_step(PhiAgentStep::ReAct(step), PhiExprDelta::default()),
-        )
+        );
+        session.validate()?;
+        Ok(session)
     }
 
     /// Replaces the outermost step while preserving its parent and delta.
     #[must_use]
-    pub fn replace(self, step: PhiReActStep) -> Self {
-        Self(
+    pub fn replace(self, step: PhiReActStep) -> Result<Self, PhiAgentRuntimeError> {
+        let session = Self(
             self.0
                 .replace_base_step(PhiAgentStep::ReAct(step), PhiExprDelta::default()),
-        )
+        );
+        session.validate()?;
+        Ok(session)
     }
 
     /// Resolves the first call in the outer RequestExecutor step without invoking an executor.
@@ -409,7 +497,8 @@ impl Session {
     ) -> Result<Self, PhiAgentRuntimeError> {
         let PhiAgentStep::ReAct(PhiReActStep::RequestExecutor {
             pending_messages,
-            tool_calls,
+            assistant,
+            mut pending_results,
             ..
         }) = self.step().clone()
         else {
@@ -417,27 +506,30 @@ impl Session {
                 "tool-result requires the current step to be request_executor",
             ));
         };
-        let mut tool_calls = tool_calls.into_iter();
-        let Some(request) = tool_calls.next() else {
+        let Some(request) = assistant.tool_calls.get(pending_results.len()).cloned() else {
             return Err(PhiAgentRuntimeError::session(
                 "request_executor step has no pending tool call",
             ));
         };
         let result_id = request.call_id.clone().or(Some(request.id.clone()));
         let result_name = request.name.clone();
-        let (messages, next_step) = resolve_tool_result(
-            pending_messages,
-            request,
-            tool_calls.collect(),
-            result_id,
-            result_name,
+        pending_results.push(PhiToolResultMessage {
+            id: result_id,
+            name: Some(result_name),
             result,
-            resume_call,
-        );
-        Ok(Self(self.0.create_next_step(
-            PhiAgentStep::ReAct(next_step),
-            messages.into(),
-        )))
+        });
+        Ok(
+            match resolve_tool_result(pending_messages, assistant, pending_results, resume_call)? {
+                ToolResultResolution::Pending(step) => Self(
+                    self.0
+                        .replace_base_step(PhiAgentStep::ReAct(step), PhiExprDelta::default()),
+                ),
+                ToolResultResolution::Complete { messages, step } => Self(
+                    self.0
+                        .create_next_step(PhiAgentStep::ReAct(step), messages.into()),
+                ),
+            },
+        )
     }
 
     /// Removes the outermost frame while preserving a root session unchanged.
@@ -456,6 +548,7 @@ impl Session {
 
     pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {
         fn validate_expr(expr: &PhiStepExpr) -> Result<(), PhiAgentRuntimeError> {
+            validate_agent_step(expr.step())?;
             match expr.step() {
                 PhiAgentStep::ReAct(PhiReActStep::RequestCompact { retain_rate })
                     if !(0.0..=0.5).contains(retain_rate) || *retain_rate == 0.0 =>
@@ -513,10 +606,12 @@ impl Session {
     where
         W: std::io::Write,
     {
+        self.validate()?;
         serialization::write_json(self, writer)
     }
 
     pub fn write_stdout(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.validate()?;
         serialization::write_stdout(self)
     }
 
@@ -524,6 +619,7 @@ impl Session {
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.validate()?;
         let path = path.as_ref();
         let parent = path
             .parent()
@@ -544,6 +640,7 @@ impl Session {
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.validate()?;
         let path = path.as_ref();
         if let Some(parent) = path
             .parent()
@@ -577,38 +674,85 @@ impl Session {
     }
 }
 
+pub(crate) enum ToolResultResolution {
+    Pending(PhiReActStep),
+    Complete {
+        messages: Vec<PhiMessage>,
+        step: PhiReActStep,
+    },
+}
+
 pub(crate) fn resolve_tool_result(
     mut pending_messages: Vec<PhiMessage>,
-    request: ToolCallRequest,
-    remaining_tool_calls: Vec<ToolCallRequest>,
-    result_id: Option<String>,
-    result_name: String,
-    result: serde_json::Value,
+    assistant: PhiAssistantMessage,
+    pending_results: Vec<PhiToolResultMessage>,
     resume_call: PhiProviderCall,
-) -> (Vec<PhiMessage>, PhiReActStep) {
-    pending_messages.push(PhiMessage::tool_call(
-        request.call_id.or(Some(request.id)),
-        request.name,
-        request.arguments,
-    ));
-    pending_messages.push(PhiMessage::tool_result(
-        result_id,
-        Some(result_name),
-        result,
-    ));
-    let next_step = if remaining_tool_calls.is_empty() {
-        PhiReActStep::request_provider_with_call(
-            "tool result committed; model response is pending",
-            resume_call,
-        )
-    } else {
-        PhiReActStep::request_executor(
+) -> Result<ToolResultResolution, PhiAgentRuntimeError> {
+    if pending_results.len() >= assistant.tool_calls.len() {
+        pending_messages.push(PhiMessage::Assistant(assistant));
+        pending_messages.extend(pending_results.into_iter().map(PhiMessage::ToolResult));
+        return Ok(ToolResultResolution::Complete {
+            messages: pending_messages,
+            step: PhiReActStep::request_provider_with_call(
+                "tool result committed; model response is pending",
+                resume_call,
+            ),
+        });
+    }
+    Ok(ToolResultResolution::Pending(
+        PhiReActStep::request_executor_turn(
             "additional tool execution is pending",
-            Vec::new(),
-            remaining_tool_calls,
-        )
-    };
-    (pending_messages, next_step)
+            pending_messages,
+            assistant,
+            pending_results,
+        )?,
+    ))
+}
+
+pub(crate) fn validate_react_step(step: &PhiReActStep) -> Result<(), PhiAgentRuntimeError> {
+    if let PhiReActStep::RequestCompact { retain_rate } = step
+        && (!(0.0..=0.5).contains(retain_rate) || *retain_rate == 0.0)
+    {
+        return Err(PhiAgentRuntimeError::session(format!(
+            "request_compact retain_rate must be greater than 0 and at most 0.5, got {retain_rate}"
+        )));
+    }
+    if let PhiReActStep::RequestExecutor {
+        assistant,
+        pending_results,
+        ..
+    } = step
+    {
+        if assistant.tool_calls.is_empty() {
+            return Err(PhiAgentRuntimeError::session(
+                "request_executor must contain at least one tool call",
+            ));
+        }
+        if pending_results.len() >= assistant.tool_calls.len() {
+            return Err(PhiAgentRuntimeError::session(format!(
+                "request_executor has {} completed results for {} tool calls",
+                pending_results.len(),
+                assistant.tool_calls.len()
+            )));
+        }
+        crate::error::validate_completed_tool_results(
+            assistant,
+            pending_results,
+            "request_executor",
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_agent_step(step: &PhiAgentStep) -> Result<(), PhiAgentRuntimeError> {
+    match step {
+        PhiAgentStep::ReAct(step) => validate_react_step(step),
+        PhiAgentStep::Failed(failed) => match failed.error() {
+            PhiAgentRuntimeError::ToolError { turn, .. }
+            | PhiAgentRuntimeError::ToolNotFound { turn, .. } => turn.validate(),
+            _ => Ok(()),
+        },
+    }
 }
 
 impl Serialize for Session {

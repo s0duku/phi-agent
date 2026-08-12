@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::{
     config::ProviderConfig,
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
-    message::{PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage},
+    message::{PhiAssistantMessage, PhiMessage, PhiReasoningBlock, PhiReasoningContent},
 };
 
 use super::{DynProvider, PhiModelResponse, PhiProviderCall};
@@ -46,20 +46,24 @@ impl FakeClient {
         &self,
         _request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> Vec<PhiMessage> {
-        vec![PhiMessage::assistant(format!(
+    ) -> PhiAssistantMessage {
+        PhiAssistantMessage::text(format!(
             "fake assistant reply to: {}",
             last_user_text(messages).unwrap_or(""),
-        ))]
+        ))
     }
 
     fn reasoning_text(
         &self,
         _request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> Vec<PhiMessage> {
-        vec![
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
+    ) -> PhiAssistantMessage {
+        PhiAssistantMessage::from_parts(
+            Some(format!(
+                "fake assistant reply to: {}",
+                last_user_text(messages).unwrap_or(""),
+            )),
+            vec![PhiReasoningBlock {
                 id: Some("fake-reasoning-1".to_string()),
                 content: vec![PhiReasoningContent::Text {
                     text: format!(
@@ -68,26 +72,23 @@ impl FakeClient {
                     ),
                     signature: None,
                 }],
-            }),
-            PhiMessage::assistant(format!(
-                "fake assistant reply to: {}",
-                last_user_text(messages).unwrap_or(""),
-            )),
-        ]
+            }],
+            Vec::new(),
+        )
     }
 
     fn tool_call(
         &self,
         request: &PhiProviderCall,
         messages: &PhiRenderedMessages,
-    ) -> PhiAgentRuntimeResult<Vec<PhiMessage>> {
+    ) -> PhiAgentRuntimeResult<PhiAssistantMessage> {
         if messages
             .iter()
-            .any(|message| matches!(message, PhiMessage::Tool(PhiToolMessage::ToolResult { .. })))
+            .any(|message| matches!(message, PhiMessage::ToolResult(_)))
         {
-            return Ok(vec![PhiMessage::assistant(
+            return Ok(PhiAssistantMessage::text(
                 "fake tool flow completed successfully",
-            )]);
+            ));
         }
 
         let Some(tool) = request.tools.first() else {
@@ -102,11 +103,14 @@ impl FakeClient {
             serde_json::json!({})
         };
 
-        Ok(vec![PhiMessage::tool_call(
-            Some("fake-call-1".to_string()),
-            tool.name.clone(),
-            arguments,
-        )])
+        Ok(PhiAssistantMessage::tool_calls(vec![
+            crate::executor::ToolCallRequest {
+                id: "fake-call-1".to_string(),
+                call_id: Some("fake-call-1".to_string()),
+                name: tool.name.clone(),
+                arguments,
+            },
+        ]))
     }
 }
 
@@ -117,7 +121,7 @@ impl DynProvider for FakeClient {
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
     ) -> PhiAgentRuntimeResult<PhiModelResponse> {
-        let messages = match self.profile {
+        let assistant = match self.profile {
             FakeProfile::AssistantText => Ok(self.assistant_text(request, &messages)),
             FakeProfile::ReasoningText => Ok(self.reasoning_text(request, &messages)),
             FakeProfile::ToolCall => self.tool_call(request, &messages),
@@ -125,7 +129,7 @@ impl DynProvider for FakeClient {
                 "fake provider generated a configured request error",
             )),
         }?;
-        Ok(PhiModelResponse::unspecified(messages))
+        Ok(PhiModelResponse::from(assistant))
     }
 }
 

@@ -2,9 +2,8 @@ mod command;
 mod step;
 
 pub use command::{
-    AgentCommandArgs, DoctorCommand, HistoryCommand, PhiAgentCommand, ProbeCommand,
-    ProbeCommandArgs, RunCommand, RunCommandArgs, RunCommandInput, StepCommand, StepCommandArgs,
-    StepCommandInput, YoloCommandInput,
+    AgentCommandArgs, DoctorCommand, HistoryCommand, PhiAgentCommand, RunCommand, RunCommandArgs,
+    RunCommandInput, StepCommand, StepCommandArgs, StepCommandInput, YoloCommandInput,
 };
 #[allow(unused_imports)]
 pub(crate) use step::{
@@ -241,8 +240,10 @@ impl PreparedPhiAgentBuilder {
         //
         // The prepared builder exists so any module derivation uses the
         // exact same build context that final build() will consume.
+        self.context.session.validate()?;
         let mut modules = self.modules.into_modules();
         crate::module::init_context_modules(&mut modules, &mut self.context)?;
+        self.context.session.validate()?;
 
         let mut tools = Vec::new();
         if !self.context.command.null_executor() {
@@ -317,15 +318,6 @@ impl PhiAgent {
                 .base
                 .clone(),
         )
-    }
-
-    pub fn probe_report(&self) -> crate::probe::PhiSessionProbe {
-        let runtime = self
-            .runtime
-            .as_ref()
-            .expect("PhiAgent runtime should exist while probing");
-        let modules = runtime.modules.probe_json(runtime);
-        crate::probe::probe_session(&self.session(), modules)
     }
 
     pub fn doctor_report(&self) -> DoctorReport {
@@ -438,6 +430,11 @@ impl PhiAgentRuntime {
         self.base.step()
     }
 
+    #[cfg(test)]
+    pub(crate) fn module_count(&self) -> usize {
+        self.modules.len()
+    }
+
     pub(crate) fn history(&self) -> PhiHistory {
         let mut messages = self.base.history().into_messages();
         messages.extend(self.delta.history().clone().into_messages());
@@ -517,9 +514,18 @@ impl PhiAgentRuntime {
         self.modules.observe(&event);
     }
 
+    pub(crate) fn commit_model_response(&mut self, assistant: crate::message::PhiAssistantMessage) {
+        let message = PhiMessage::Assistant(assistant);
+        self.delta.push_message(message.clone());
+        self.modules
+            .observe(&PhiAgentCommitEvent::MessageCommitted { message: &message });
+        self.modules
+            .observe(&PhiAgentCommitEvent::ModelResponseCommitted { message: &message });
+    }
+
     // Display rendering belongs to the step events before this point.
     pub(crate) fn commit_tool_result(&mut self, message: PhiMessage) {
-        self.delta.push_message(message);
+        self.commit_message(message);
     }
 
     pub(crate) fn emit_warning(&mut self, message: &str) {

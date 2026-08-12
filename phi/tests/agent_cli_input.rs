@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const PHI: &str = env!("CARGO_BIN_EXE_phi");
 
 #[test]
-fn agent_commands_show_help_when_stdin_is_empty() {
+fn agent_commands_require_an_explicit_session_target() {
     for name in ["step", "run", "yolo"] {
         let output = Command::new(PHI)
             .arg(name)
@@ -13,18 +13,17 @@ fn agent_commands_show_help_when_stdin_is_empty() {
             .expect("phi agent command should execute");
 
         assert!(
-            output.status.success(),
-            "phi {name} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            !output.status.success(),
+            "phi {name} unexpectedly succeeded"
         );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains(&format!("Usage: phi {name} ")), "{stdout}");
-        assert!(stdout.contains("--user <TEXT>"), "{stdout}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("required arguments were not provided"));
+        assert!(stderr.contains("<SESSION>"));
     }
 }
 
 #[test]
-fn missing_session_path_shows_help_without_creating_a_file() {
+fn missing_session_path_fails_without_creating_a_file() {
     for name in ["step", "run", "yolo"] {
         let session_path = unique_session_path(&format!("missing-{name}"));
         let output = Command::new(PHI)
@@ -39,13 +38,50 @@ fn missing_session_path_shows_help_without_creating_a_file() {
             .expect("phi agent command should execute");
 
         assert!(
-            output.status.success(),
-            "phi {name} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            !output.status.success(),
+            "phi {name} unexpectedly succeeded"
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("Usage: phi {name} ")));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("failed to read session file"));
         assert!(!session_path.exists());
     }
+}
+
+#[test]
+fn session_new_and_step_compose_through_explicit_stdio() {
+    let new_session = Command::new(PHI)
+        .args(["session", "new", "-"])
+        .output()
+        .expect("phi session new - should execute");
+    assert!(
+        new_session.status.success(),
+        "{}",
+        String::from_utf8_lossy(&new_session.stderr)
+    );
+
+    let mut step = Command::new(PHI)
+        .args(["step", "-", "--user", "hello", "--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("phi step - should execute");
+    use std::io::Write;
+    step.stdin
+        .take()
+        .unwrap()
+        .write_all(&new_session.stdout)
+        .unwrap();
+    let output = step.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let session = phi::session::Session::load_bytes(&output.stdout).unwrap();
+    assert!(session.history().iter().any(|message| matches!(
+        message,
+        phi::message::PhiMessage::User(phi::message::PhiUserMessage::Text(text))
+            if text == "hello"
+    )));
 }
 
 #[test]
@@ -233,7 +269,7 @@ fn cli_messages_append_to_the_outer_session_delta_before_step_evaluation() {
                 {
                     "step": {"kind": "turn_end", "detail": "done"},
                     "delta": {
-                        "history": [{"role": "assistant", "content": "previous"}]
+                        "history": [{"role": "assistant", "content": {"content": "previous"}}]
                     }
                 }
             ]
@@ -267,7 +303,10 @@ fn cli_messages_append_to_the_outer_session_delta_before_step_evaluation() {
         .expect("session should have frames");
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0]["step"]["kind"], "turn_end");
-    assert_eq!(frames[0]["delta"]["history"][0]["content"], "previous");
+    assert_eq!(
+        frames[0]["delta"]["history"][0]["content"]["content"],
+        "previous"
+    );
     assert_eq!(frames[0]["delta"]["history"][1]["role"], "user");
     assert_eq!(frames[0]["delta"]["history"][1]["content"], "next");
     assert_eq!(frames[1]["step"]["kind"], "request_provider");

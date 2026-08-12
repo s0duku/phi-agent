@@ -2,9 +2,8 @@ use std::{future::Future, pin::Pin};
 
 use crate::{
     agent::PhiAgentRuntime,
-    executor::ToolCallRequest,
     expr::{PhiExprDelta, PhiStepExpr},
-    message::{PhiHistory, PhiMessage, PhiToolMessage},
+    message::{PhiHistory, PhiMessage, PhiToolResultMessage},
     module::PhiAgentStepEvent,
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall},
     session::{PhiAgentStep, PhiReActStep},
@@ -123,7 +122,7 @@ fn appended_history_tail(base: &PhiHistory, updated: &PhiHistory) -> Vec<PhiMess
 impl PhiAgentRuntime {
     fn handle_bounce_transition(
         &mut self,
-        step: &mut PhiReActStep,
+        step: &PhiReActStep,
         delta: &mut PhiExprDelta,
         replace_base: bool,
     ) -> crate::error::PhiAgentRuntimeResult<()> {
@@ -170,14 +169,18 @@ impl PhiAgentRuntime {
         loop {
             match bounce {
                 StepBounce::ContEval(runtime, cont) => bounce = cont.call(runtime).await,
-                StepBounce::CreateNextStep(mut runtime, mut step) => {
+                StepBounce::CreateNextStep(mut runtime, step) => {
                     let base_expr = runtime.base.clone();
                     let mut event = PhiAgentStepEvent::BeforeCreateNextStep {
                         base_expr: &base_expr,
-                        step: &mut step,
+                        step: &step,
                         delta: &mut runtime.delta,
                     };
                     if let Err(error) = runtime.modules.handle(&mut event) {
+                        bounce = runtime.continue_failed(error);
+                        continue;
+                    }
+                    if let Err(error) = crate::session::validate_react_step(&step) {
                         bounce = runtime.continue_failed(error);
                         continue;
                     }
@@ -190,16 +193,25 @@ impl PhiAgentRuntime {
                     }
                     return runtime;
                 }
-                StepBounce::ReplaceBaseStep(mut runtime, mut step) => {
+                StepBounce::ReplaceBaseStep(mut runtime, step) => {
                     let current_delta = std::mem::take(&mut runtime.delta);
-                    let base = std::mem::replace(&mut runtime.base, PhiStepExpr::empty_root());
-                    let mut delta = base.delta().clone().then(current_delta);
-                    if let Err(error) =
-                        runtime.handle_bounce_transition(&mut step, &mut delta, true)
-                    {
+                    let mut delta = runtime.base.delta().clone().then(current_delta);
+                    if let Err(error) = runtime.handle_bounce_transition(&step, &mut delta, true) {
                         bounce = runtime.continue_failed(error);
                         continue;
                     }
+                    if let Err(error) = crate::session::validate_react_step(&step) {
+                        bounce = runtime.continue_failed(error);
+                        continue;
+                    }
+                    if matches!(step, PhiReActStep::Compacted) && runtime.base.expr().is_none() {
+                        bounce =
+                            runtime.continue_failed(crate::error::PhiAgentRuntimeError::session(
+                                "compacted frame must preserve a parent expr",
+                            ));
+                        continue;
+                    }
+                    let base = std::mem::replace(&mut runtime.base, PhiStepExpr::empty_root());
                     runtime.base =
                         base.replace_base_step_with_delta(PhiAgentStep::ReAct(step), delta);
                     if let Some(error) = runtime.base.step().error() {
@@ -252,9 +264,10 @@ impl PhiAgentRuntime {
                 }
                 PhiAgentStep::ReAct(PhiReActStep::RequestExecutor {
                     pending_messages,
-                    tool_calls,
+                    assistant,
+                    pending_results,
                     ..
-                }) => self.step_tool(pending_messages, tool_calls, cont),
+                }) => self.step_tool(pending_messages, assistant, pending_results, cont),
                 // TurnEnd is a pure step-level transition: once a turn has
                 // finished cleanly, the next explicit step should mechanically
                 // resume from a fresh completion request.
@@ -371,7 +384,7 @@ impl PhiAgentRuntime {
             StepCont::new(move |mut runtime| {
                 Box::pin(async move {
                     let PhiModelResponse {
-                        messages: mut response_messages,
+                        mut assistant,
                         turn_state,
                     } = match runtime.render.complete(&request, &request_history).await {
                         Ok(response_messages) => response_messages,
@@ -380,75 +393,45 @@ impl PhiAgentRuntime {
                         }
                     };
 
-                    for assistant in response_messages
-                        .iter_mut()
-                        .filter(|message| matches!(message, PhiMessage::Assistant(_)))
-                    {
-                        let mut after_event =
-                            PhiAgentStepEvent::AfterModelResponse { message: assistant };
+                    if let Some(assistant) = &mut assistant {
+                        let mut after_event = PhiAgentStepEvent::AfterModelResponse { assistant };
                         if let Err(failure) = runtime.modules.handle(&mut after_event) {
                             return runtime.continue_failed(failure);
                         }
                     }
 
-                    let mut tool_calls = Vec::new();
-                    let mut committed_assistants = Vec::new();
-                    let mut response_messages_without_tool_call = Vec::new();
-                    for message in response_messages {
-                        match message {
-                            PhiMessage::Tool(PhiToolMessage::ToolCall {
-                                id,
-                                name,
-                                arguments,
-                            }) => {
-                                tool_calls.push(ToolCallRequest {
-                                    id: id.clone().unwrap_or_else(|| name.clone()),
-                                    call_id: id,
-                                    name,
-                                    arguments,
-                                });
-                            }
-                            other => {
-                                if matches!(other, PhiMessage::Assistant(_)) {
-                                    committed_assistants.push(other.clone());
-                                }
-                                response_messages_without_tool_call.push(other);
-                            }
-                        }
+                    let mut parsed_messages = Vec::new();
+                    if let Some(assistant) = &assistant {
+                        parsed_messages.push(PhiMessage::Assistant(assistant.clone()));
                     }
-
                     let mut after_response_event = PhiAgentStepEvent::AfterModelResponseParsed {
-                        messages: &response_messages_without_tool_call,
+                        messages: &parsed_messages,
                     };
                     if let Err(failure) = runtime.modules.handle(&mut after_response_event) {
                         return runtime.continue_failed(failure);
                     }
 
-                    if !tool_calls.is_empty() {
-                        let mut pending_messages = request_history_tail.clone();
-                        pending_messages.extend(response_messages_without_tool_call);
-                        return StepBounce::CreateNextStep(
-                            runtime,
-                            PhiReActStep::request_executor(
-                                "tool execution is pending",
-                                pending_messages,
-                                tool_calls,
-                            ),
-                        );
+                    if assistant
+                        .as_ref()
+                        .is_some_and(|message| !message.tool_calls.is_empty())
+                    {
+                        let step = match PhiReActStep::request_executor_turn(
+                            "tool execution is pending",
+                            request_history_tail.clone(),
+                            assistant.expect("tool calls require an assistant response"),
+                            Vec::new(),
+                        ) {
+                            Ok(step) => step,
+                            Err(error) => return runtime.continue_failed(error),
+                        };
+                        return StepBounce::CreateNextStep(runtime, step);
                     }
 
                     for message in request_history_tail.clone() {
                         runtime.commit_message(message);
                     }
-                    for message in response_messages_without_tool_call {
-                        runtime.commit_message(message);
-                    }
-                    for assistant in &committed_assistants {
-                        let committed_event =
-                            crate::module::PhiAgentCommitEvent::ModelResponseCommitted {
-                                message: assistant,
-                            };
-                        runtime.modules.observe(&committed_event);
+                    if let Some(assistant) = assistant {
+                        runtime.commit_model_response(assistant);
                     }
                     if turn_state == PhiModelTurnState::Continue {
                         let step = runtime.request_provider_step(
@@ -470,15 +453,14 @@ impl PhiAgentRuntime {
     fn step_tool(
         mut self,
         pending_messages: Vec<PhiMessage>,
-        tool_calls: Vec<ToolCallRequest>,
+        mut assistant: crate::message::PhiAssistantMessage,
+        mut pending_results: Vec<PhiToolResultMessage>,
         _cont: StepCont,
     ) -> StepBounce {
-        let mut tool_calls = tool_calls.into_iter();
-        let Some(mut request) = tool_calls.next() else {
+        let Some(mut request) = assistant.tool_calls.get(pending_results.len()).cloned() else {
             let step = self.request_provider_step("no tool execution is pending");
             return StepBounce::ReplaceBaseStep(self, step);
         };
-        let remaining_tool_calls = tool_calls.collect::<Vec<_>>();
         let step = self.base_step().clone();
         let expr = self.base_expr().clone();
         let mut before_event = PhiAgentStepEvent::BeforeToolCall {
@@ -498,12 +480,42 @@ impl PhiAgentRuntime {
                         match runtime.executor.call_tool(request.clone(), &runtime).await {
                             Ok(outcome) => outcome,
                             Err(failure) => {
-                                let failure = if failure.tool_request().is_some() {
-                                    failure
-                                        .with_pending_messages(pending_messages.clone())
-                                        .with_remaining_tool_requests(remaining_tool_calls.clone())
+                                let (detail, request, not_found) = match failure {
+                                    crate::executor::PhiToolExecutionError::NotFound {
+                                        detail,
+                                        request,
+                                    } => (serde_json::Value::String(detail), request, true),
+                                    crate::executor::PhiToolExecutionError::Failed {
+                                        detail,
+                                        request,
+                                    } => (detail, request, false),
+                                };
+                                let mut failed_assistant = assistant.clone();
+                                let Some(failed_request) =
+                                    failed_assistant.tool_calls.get_mut(pending_results.len())
+                                else {
+                                    return runtime.continue_failed(
+                                        crate::error::PhiAgentRuntimeError::session(
+                                            "failed tool turn has no current request",
+                                        ),
+                                    );
+                                };
+                                *failed_request = request;
+                                let turn = match crate::error::PhiFailedToolTurn::new(
+                                    pending_messages.clone(),
+                                    failed_assistant,
+                                    pending_results.clone(),
+                                ) {
+                                    Ok(turn) => turn,
+                                    Err(error) => return runtime.continue_failed(error),
+                                };
+                                let failure = if not_found {
+                                    crate::error::PhiAgentRuntimeError::tool_not_found(
+                                        detail.as_str().unwrap_or("unknown tool"),
+                                        turn,
+                                    )
                                 } else {
-                                    failure
+                                    crate::error::PhiAgentRuntimeError::tool_error(detail, turn)
                                 };
                                 return runtime.continue_failed(failure);
                             }
@@ -518,40 +530,49 @@ impl PhiAgentRuntime {
                     }
 
                     let resume_call = runtime.request_provider_call();
-                    let (mut messages, next_step) = crate::session::resolve_tool_result(
-                        pending_messages,
-                        request,
-                        remaining_tool_calls,
-                        response.call_id.clone().or(Some(response.id.clone())),
-                        response.name.clone(),
-                        serde_json::to_value(&response.output)
+                    let Some(current_request) = assistant.tool_calls.get_mut(pending_results.len())
+                    else {
+                        return runtime.continue_failed(
+                            crate::error::PhiAgentRuntimeError::session(
+                                "completed tool turn has no current request",
+                            ),
+                        );
+                    };
+                    *current_request = request.clone();
+                    pending_results.push(PhiToolResultMessage {
+                        id: request.call_id.clone().or(Some(request.id.clone())),
+                        name: Some(request.name.clone()),
+                        result: serde_json::to_value(&response.output)
                             .expect("tool output should serialize into history"),
+                    });
+                    let resolution = match crate::session::resolve_tool_result(
+                        pending_messages,
+                        assistant,
+                        pending_results,
                         resume_call,
-                    );
-                    let committed_assistants = messages
-                        .iter()
-                        .filter(|message| matches!(message, PhiMessage::Assistant(_)))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let tool_result_message = messages
-                        .pop()
-                        .expect("resolved tool messages must end with a tool result");
-                    let tool_call_message = messages
-                        .pop()
-                        .expect("resolved tool messages must contain a tool call");
-                    for message in messages {
-                        runtime.commit_message(message);
+                    ) {
+                        Ok(resolved) => resolved,
+                        Err(error) => return runtime.continue_failed(error),
+                    };
+                    match resolution {
+                        crate::session::ToolResultResolution::Pending(step) => {
+                            StepBounce::ReplaceBaseStep(runtime, step)
+                        }
+                        crate::session::ToolResultResolution::Complete { messages, step } => {
+                            for message in messages {
+                                match message {
+                                    PhiMessage::Assistant(assistant) => {
+                                        runtime.commit_model_response(assistant)
+                                    }
+                                    PhiMessage::ToolResult(_) => {
+                                        runtime.commit_tool_result(message)
+                                    }
+                                    _ => runtime.commit_message(message),
+                                }
+                            }
+                            StepBounce::CreateNextStep(runtime, step)
+                        }
                     }
-                    for assistant in &committed_assistants {
-                        let committed_event =
-                            crate::module::PhiAgentCommitEvent::ModelResponseCommitted {
-                                message: assistant,
-                            };
-                        runtime.modules.observe(&committed_event);
-                    }
-                    runtime.commit_message(tool_call_message);
-                    runtime.commit_tool_result(tool_result_message);
-                    StepBounce::CreateNextStep(runtime, next_step)
                 })
             }),
         )

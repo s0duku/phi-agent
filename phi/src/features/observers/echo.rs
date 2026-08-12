@@ -6,7 +6,7 @@ use crate::{
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallOutput,
     message::{
-        PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolMessage,
+        PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolResultMessage,
         PhiUserMessage,
     },
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
@@ -32,12 +32,20 @@ impl EchoModule {
 
 fn is_display_empty(message: &PhiMessage) -> bool {
     match message {
-        PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => text.trim().is_empty(),
-        PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => {
-            content.iter().all(|part| {
-                part.display_text()
-                    .is_none_or(|text| text.trim().is_empty())
-            })
+        PhiMessage::Assistant(assistant) => {
+            assistant
+                .content
+                .as_deref()
+                .is_none_or(|text| text.trim().is_empty())
+                && assistant
+                    .reasoning
+                    .iter()
+                    .flat_map(|block| block.content.iter())
+                    .all(|part| {
+                        part.display_text()
+                            .is_none_or(|text| text.trim().is_empty())
+                    })
+                && assistant.tool_calls.is_empty()
         }
         _ => false,
     }
@@ -53,13 +61,16 @@ impl Drop for EchoModule {
 }
 
 impl PhiModule for EchoModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         match event {
             PhiAgentStepEvent::AfterModelResponseParsed { messages } => {
                 for message in messages.iter() {
-                    self.echo_message(message);
+                    let rendered = pretty_model_response_message(message);
+                    if rendered.is_empty() {
+                        continue;
+                    }
+                    self.printed_any = true;
+                    eprintln!("{rendered}");
                 }
             }
             PhiAgentStepEvent::BeforeToolCall { request, .. } => {
@@ -135,12 +146,22 @@ pub fn pretty_message(message: &PhiMessage) -> String {
     pretty_message_for_stream(message, Stream::Stderr)
 }
 
+fn pretty_model_response_message(message: &PhiMessage) -> String {
+    match message {
+        PhiMessage::Assistant(assistant) => {
+            pretty_assistant_message(assistant, Stream::Stderr, false)
+        }
+        _ if is_display_empty(message) => String::new(),
+        _ => pretty_message(message),
+    }
+}
+
 fn pretty_message_for_stream(message: &PhiMessage, stream: Stream) -> String {
     match message {
         PhiMessage::System(content) => format_message("system", content, stream),
         PhiMessage::User(content) => format_message("user", &pretty_user_content(content), stream),
-        PhiMessage::Tool(content) => pretty_tool_message(content, stream),
-        PhiMessage::Assistant(content) => pretty_assistant_message(content, stream),
+        PhiMessage::ToolResult(content) => pretty_tool_message(content, stream),
+        PhiMessage::Assistant(content) => pretty_assistant_message(content, stream, true),
     }
 }
 
@@ -158,56 +179,66 @@ fn pretty_user_content(content: &PhiUserMessage) -> String {
     }
 }
 
-fn pretty_assistant_content(content: &PhiAssistantMessage) -> String {
-    match content {
-        PhiAssistantMessage::Text(text) => text.clone(),
-        PhiAssistantMessage::Reasoning { content, .. } => content
-            .iter()
-            .filter_map(PhiReasoningContent::display_text)
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
+fn pretty_assistant_reasoning(content: &PhiAssistantMessage) -> String {
+    content
+        .reasoning
+        .iter()
+        .flat_map(|block| block.content.iter())
+        .filter_map(PhiReasoningContent::display_text)
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn pretty_assistant_message(content: &PhiAssistantMessage, stream: Stream) -> String {
-    match content {
-        PhiAssistantMessage::Text(text) => format_message("assistant", text, stream),
-        PhiAssistantMessage::Reasoning { .. } => format_message(
-            "assistant:reasoning",
-            &pretty_assistant_content(content),
-            stream,
-        ),
+fn pretty_assistant_message(
+    content: &PhiAssistantMessage,
+    stream: Stream,
+    include_tool_calls: bool,
+) -> String {
+    let mut blocks = Vec::new();
+    let reasoning = pretty_assistant_reasoning(content);
+    if !reasoning.is_empty() {
+        blocks.push(format_message("assistant:reasoning", &reasoning, stream));
     }
-}
-
-fn pretty_tool_message(content: &PhiToolMessage, stream: Stream) -> String {
-    match content {
-        PhiToolMessage::ToolCall {
-            id,
-            name,
-            arguments,
-        } => format_message(
-            "tool:call",
-            &pretty_tool_call(name, id.as_deref(), arguments),
-            stream,
-        ),
-        PhiToolMessage::ToolResult { id, name, result } => {
-            let label = id.clone().unwrap_or_else(|| "unknown".to_string());
-            if let Ok(output) = serde_json::from_value::<ToolCallOutput>(result.clone()) {
-                let tool_name = name.as_deref().unwrap_or("unknown");
-                return format_message(
-                    "tool:result",
-                    &format!("{tool_name} {label}\n{}", pretty_tool_output(&output)),
-                    stream,
-                );
-            }
+    if let Some(text) = content
+        .content
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        blocks.push(format_message("assistant", text, stream));
+    }
+    if include_tool_calls {
+        blocks.extend(content.tool_calls.iter().map(|request| {
             format_message(
-                "tool:result",
-                &format!("{label}\n{}", pretty_json_value(result)),
+                "tool:call",
+                &pretty_tool_call(
+                    &request.name,
+                    request.call_id.as_deref().or(Some(request.id.as_str())),
+                    &request.arguments,
+                ),
                 stream,
             )
-        }
+        }));
     }
+    blocks.join("\n")
+}
+
+fn pretty_tool_message(content: &PhiToolResultMessage, stream: Stream) -> String {
+    let PhiToolResultMessage { id, name, result } = content;
+    let label = id.clone().unwrap_or_else(|| "unknown".to_string());
+    if let Ok(output) = serde_json::from_value::<ToolCallOutput>(result.clone()) {
+        let tool_name = name.as_deref().unwrap_or("unknown");
+        return format_message(
+            "tool:result",
+            &format!("{tool_name} {label}\n{}", pretty_tool_output(&output)),
+            stream,
+        );
+    }
+    format_message(
+        "tool:result",
+        &format!("{label}\n{}", pretty_json_value(result)),
+        stream,
+    )
 }
 
 fn pretty_tool_result_event(tool_name: &str, tool_id: &str, result: &ToolCallOutput) -> String {
@@ -430,6 +461,63 @@ mod tests {
     }
 
     #[test]
+    fn model_response_echo_omits_tool_calls() {
+        let message = PhiMessage::Assistant(PhiAssistantMessage::from_parts(
+            Some("running bash now".to_string()),
+            vec![crate::message::PhiReasoningBlock {
+                id: None,
+                content: vec![PhiReasoningContent::Summary("planning".to_string())],
+            }],
+            vec![crate::executor::ToolCallRequest {
+                id: "call_123".to_string(),
+                call_id: None,
+                name: "bash".to_string(),
+                arguments: serde_json::json!({ "command": "pwd" }),
+            }],
+        ));
+
+        assert_eq!(
+            strip_ansi(&pretty_model_response_message(&message)),
+            "\n[assistant:reasoning]\nplanning\n\n[assistant]\nrunning bash now"
+        );
+    }
+
+    #[test]
+    fn model_response_echo_ignores_whitespace_content_and_tool_only_response() {
+        let message = PhiMessage::Assistant(PhiAssistantMessage::from_parts(
+            Some(" \n ".to_string()),
+            Vec::new(),
+            vec![crate::executor::ToolCallRequest {
+                id: "call_123".to_string(),
+                call_id: None,
+                name: "bash".to_string(),
+                arguments: serde_json::json!({ "command": "pwd" }),
+            }],
+        ));
+
+        assert!(pretty_model_response_message(&message).is_empty());
+    }
+
+    #[test]
+    fn history_tool_call_falls_back_to_request_id() {
+        let rendered = pretty_message(&PhiMessage::Assistant(PhiAssistantMessage::from_parts(
+            None,
+            Vec::new(),
+            vec![crate::executor::ToolCallRequest {
+                id: "call_123".to_string(),
+                call_id: None,
+                name: "bash".to_string(),
+                arguments: serde_json::json!({ "command": "pwd" }),
+            }],
+        )));
+
+        assert_eq!(
+            strip_ansi(&rendered),
+            "\n[tool:call]\nbash #call_123\ncommand: pwd"
+        );
+    }
+
+    #[test]
     fn job_close_call_arguments_are_not_misread_as_a_job_result() {
         let rendered = pretty_message(&PhiMessage::tool_call(
             Some("call_123".to_string()),
@@ -446,20 +534,20 @@ mod tests {
 
     #[test]
     fn formats_reasoning_separately_from_assistant_text() {
-        let rendered = pretty_message(&PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-            id: None,
-            content: vec![PhiReasoningContent::Summary("thinking".to_string())],
-        }));
+        let rendered = pretty_message(&PhiMessage::reasoning(
+            None,
+            vec![PhiReasoningContent::Summary("thinking".to_string())],
+        ));
 
         assert_eq!(strip_ansi(&rendered), "\n[assistant:reasoning]\nthinking");
     }
 
     #[test]
     fn encrypted_only_reasoning_has_no_visible_echo() {
-        let message = PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-            id: Some("r1".to_string()),
-            content: vec![PhiReasoningContent::Encrypted("opaque".to_string())],
-        });
+        let message = PhiMessage::reasoning(
+            Some("r1".to_string()),
+            vec![PhiReasoningContent::Encrypted("opaque".to_string())],
+        );
 
         assert!(is_display_empty(&message));
     }
@@ -534,12 +622,17 @@ mod tests {
     fn formats_runtime_error_as_red_transcript_block_without_color_codes() {
         let rendered = pretty_runtime_error(&PhiAgentRuntimeError::tool_not_found(
             "assistant requested unknown tool: no_exist",
-            crate::executor::ToolCallRequest {
-                id: "call_missing".to_string(),
-                call_id: Some("call_missing".to_string()),
-                name: "no_exist".to_string(),
-                arguments: serde_json::json!({ "name": "phi" }),
-            },
+            crate::error::PhiFailedToolTurn::new(
+                Vec::new(),
+                PhiAssistantMessage::tool_calls(vec![crate::executor::ToolCallRequest {
+                    id: "call_missing".to_string(),
+                    call_id: Some("call_missing".to_string()),
+                    name: "no_exist".to_string(),
+                    arguments: serde_json::json!({ "name": "phi" }),
+                }]),
+                Vec::new(),
+            )
+            .expect("failed tool turn fixture must be valid"),
         ));
         assert!(rendered.contains("[error]"));
         assert!(rendered.contains("assistant requested unknown tool: no_exist"));

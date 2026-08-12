@@ -1,6 +1,6 @@
 use crate::{
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
-    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiToolMessage},
+    message::{PhiHistory, PhiMessage},
 };
 
 use super::{
@@ -52,14 +52,9 @@ pub(super) async fn compact_history(
     let summary = render
         .complete_rendered(&summary_request, render.render_messages(&summary_input))
         .await?
-        .messages
-        .into_iter()
-        .filter_map(|message| match message {
-            PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => Some(text),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .assistant
+        .and_then(|assistant| assistant.content)
+        .unwrap_or_default()
         .trim()
         .to_string();
 
@@ -94,16 +89,19 @@ fn retained_suffix_start(history: &PhiHistory, system_end: usize, token_budget: 
     loop {
         let mut paired_call_start = start;
         for message in &messages[start..] {
-            let PhiMessage::Tool(PhiToolMessage::ToolResult { id: Some(id), .. }) = message else {
+            let PhiMessage::ToolResult(result) = message else {
+                continue;
+            };
+            let Some(id) = result.id.as_ref() else {
                 continue;
             };
             if let Some(call_index) = messages[..start].iter().rposition(|candidate| {
                 matches!(
                     candidate,
-                    PhiMessage::Tool(PhiToolMessage::ToolCall {
-                        id: Some(call_id),
-                        ..
-                    }) if call_id == id
+                    PhiMessage::Assistant(assistant)
+                        if assistant.tool_calls.iter().any(|call| {
+                            call.call_id.as_ref().unwrap_or(&call.id) == id
+                        })
                 )
             }) {
                 paired_call_start = paired_call_start.min(call_index);

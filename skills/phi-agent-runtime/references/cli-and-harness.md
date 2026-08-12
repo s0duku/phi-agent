@@ -4,18 +4,18 @@
 
 | Mode | Input | Output | Use |
 | --- | --- | --- | --- |
-| Pipeline | Session JSON on stdin, or no stdin plus `--user/--assistant` | Updated Session JSON on stdout | CI, pipes, subprocess harnesses |
+| Pipeline | `-` target plus Session JSON on stdin | Updated Session JSON on stdout | CI, pipes, subprocess harnesses |
 | File | Existing Session path argument | Same file rewritten | Long-running or inspectable workflows |
-| Session subcommand | Session path (or configured transport) | Transformed Session/diagnostic JSON | External orchestration and intervention |
+| Session subcommand | Session path or explicit `-` | Transformed Session/diagnostic JSON | External orchestration and intervention |
 
 Examples:
 
 ```bash
-phi step --user 'one boundary'
-printf '%s\n' "$session_json" | phi run > updated.json
+phi session new - | phi step - --user 'one boundary'
+printf '%s\n' "$session_json" | phi run - > updated.json
 phi session new work.session
 phi run work.session --user 'continue'
-phi session peek work.session
+phi session state work.session
 ```
 
 Use `--null-executor` to test model-only behavior. Use `--container NAME` when
@@ -48,19 +48,25 @@ quiet output or the harness provides an intentional replacement log stream.
 `session history SESSION --view` for the echo-style transcript view.
 
 Create a file-backed session explicitly with `phi session new PATH`; Phi will
-refuse to treat a missing path as an existing session. In pipeline mode, a
-non-empty stdin is Session JSON. A new pipeline Session requires `--user` or
-`--assistant`.
+refuse to treat a missing path as an existing session. In pipeline mode, `-`
+explicitly selects stdin/stdout and stdin is Session JSON. Start a new pipeline
+Session with `phi session new -`. Empty stdin and empty files are errors, and
+stdin is never inferred to be a user message.
 
-Check `peek` before intervention. It is a state summary and does not expose tool
-call bodies. When it reports `request_executor`, inspect the complete Session's
-outer frame for the first pending call, then pass exactly one result through
-`tool-result`.
+Check `state` before intervention. It explains the current step as structured
+JSON, including the next pending tool call when the state is
+`request_executor`; then pass exactly one result through `tool-result`.
+
+For multiple calls, inspect `completed_results`, `next_tool_call`, and
+`remaining_tool_calls`. A non-final result updates the same executor state. The
+final result creates a provider frame and commits the pending assistant and all
+results together. If execution failed, record the failure state, rollback once
+to restore that executor progress, and then inject the external result.
 
 ## Robust shell conventions
 
 - Use `set -euo pipefail`; keep a temporary Session path under a trap.
-- Reserve stdout for machine-readable Session JSON. Send progress, `peek`, and
+- Reserve stdout for machine-readable Session JSON. Send progress, `state`, and
   debug data to stderr, and preserve stderr from successful Phi commands.
 - Bound loops with an iteration counter or `--max-steps`; stop on explicit turn-end/failure state.
 - Quote Session paths and user text. Treat tool output as data, not shell syntax.

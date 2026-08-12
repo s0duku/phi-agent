@@ -27,7 +27,7 @@ if `phi` is missing from `PATH`.
 For a new task, initialize state with either:
 
 ```bash
-phi step --user "the user's task"
+phi session new - | phi step - --user "the user's task"
 ```
 
 or a durable file:
@@ -38,7 +38,9 @@ phi session append task.session --user "the user's task"
 ```
 
 The Python harness may use pipeline JSON or a file path; choose one transport
-for the whole controller.
+for the whole controller. Every Session-consuming command requires that target:
+use a path for file-backed state or `-` for stdin/stdout. Never omit it, and
+never treat empty stdin or a missing/empty file as a new Session.
 
 ## The operating contract
 
@@ -56,7 +58,7 @@ for the whole controller.
   Do not add `--quiet` by default; use it only when the user explicitly requests
   quiet execution or the harness deliberately replaces Phi's diagnostics with
   equivalent logging.
-- Never infer workflow state from assistant prose. Inspect `phi session peek`
+- Never infer workflow state from assistant prose. Inspect `phi session state`
   and the current Session frame.
 
 ## Normal run-and-inspect loop
@@ -65,18 +67,19 @@ for the whole controller.
 create or load Session
   -> append user/workflow input
   -> run (bounded by max steps)
-  -> peek the resulting state
+  -> inspect the resulting state
   -> terminal: finish
   -> request_executor: execute/approve a pending call, then tool-result
   -> failed: classify and recover, rollback, or stop
   -> repeat run
 ```
 
-`peek` is a summary containing `step.kind`, `detail`, `is_terminal`, history
-count, and module probes. When it reports `request_executor`, read the complete
-Session JSON's outer frame (`frames[-1].step.tool_calls[0]`) to obtain the first
-pending call. `tool-result` consumes one call; multiple calls are handled one at
-a time across subsequent inspections.
+`state` explains the current step as structured JSON. When it reports
+`request_executor`, `completed_results`, `next_tool_call`, and
+`remaining_tool_calls` expose the current batch progress. `tool-result` consumes
+one call. A non-final result updates the same executor; the final result creates
+the next provider step and atomically commits the assistant turn plus every
+result to history.
 
 ## Recover `tool_not_found` with a custom tool
 
@@ -86,10 +89,10 @@ The failed step is not itself a `request_executor`, so do not call
 this sequence:
 
 ```text
-run -> peek sees step.kind == failed
-  -> inspect Session frames[-1].step.error.kind == tool_not_found
+run -> state reports a failed tool_not_found state
+  -> record failure.tool and its current completed_results
   -> execute the call in the harness (or route it to a custom service)
-  -> session rollback       # restore the original pending executor request
+  -> session rollback       # restore the executor and its prior results
   -> session tool-result    # inject the custom JSON/text result
   -> run again               # let Phi continue with the result in history
 ```
@@ -100,17 +103,22 @@ If the call cannot be fulfilled, stop or inject a structured error result; do
 not retry forever. For ordinary `request_executor` states, skip rollback and
 call `tool-result` directly.
 
+Runtime failures are structural children of the step that failed and carry no
+committed delta. One rollback therefore restores the exact parent executor,
+including results from earlier calls in the same batch. Inspect and log `state`
+before rollback because the failed child is removed by that operation.
+
 ## CLI capability map
 
-1. Use `phi session new|append|peek|history|rollback` for durable state edits.
+1. Use `phi session new|append|state|history|rollback` for durable state edits.
    `session history` emits the committed `PhiHistory` as JSON by default; add
    `--view` only when an echo-style human-readable transcript is needed.
    Add `next --provider` or `replace --provider` when a workflow must create or
    replace a provider boundary without evaluating it.
-2. Use `phi run [SESSION]` for the main workflow scheduler. Set `--max-steps`
+2. Use `phi run SESSION` for the main workflow scheduler. Set `--max-steps`
    as the per-run budget and inspect the returned Session before continuing.
-3. Use `phi step [SESSION]` for per-transition inspection or custom scheduling.
-4. Use `phi session tool-result [SESSION] --json JSON|--text TEXT` to resolve
+3. Use `phi step SESSION` for per-transition inspection or custom scheduling.
+4. Use `phi session tool-result SESSION --json JSON|--text TEXT` to resolve
    exactly one pending tool call without invoking Phi's executor. Use
    `--json-file FILE` or `--text-file FILE` when the result may exceed command-line
    argument limits.
@@ -129,7 +137,7 @@ externally observable Session and recovery rules.
 
 ## Harness design checklist
 
-- Bound every `run` with a step budget and record each `peek` result.
+- Bound every `run` with a step budget and record each `state` result.
 - Preserve successful-command stderr in the harness log, not only stderr from
   failed subprocesses. Prefer a persistent Session file for workflows that need
   post-failure inspection or transition-by-transition debugging.
@@ -140,4 +148,6 @@ externally observable Session and recovery rules.
 - Return non-zero from CI when Phi exits unsuccessfully, JSON is malformed, a
   failed state is unrecoverable, or an expected terminal condition is absent.
 - Test the process (state kinds, pending calls, history, recovery ordering), not
-  only final assistant text.
+  only final assistant text. For multi-tool batches, assert prior completed
+  results survive failure and rollback, and that history changes only when the
+  complete batch advances to the provider step.

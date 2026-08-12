@@ -4,13 +4,15 @@ use std::sync::Arc;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize};
 
+use crate::executor::ToolCallRequest;
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(tag = "role", content = "content", rename_all = "lowercase")]
 pub enum PhiMessage {
     System(String),
     User(PhiUserMessage),
-    Tool(PhiToolMessage),
     Assistant(PhiAssistantMessage),
+    ToolResult(PhiToolResultMessage),
 }
 
 impl PhiMessage {
@@ -23,7 +25,15 @@ impl PhiMessage {
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self::Assistant(PhiAssistantMessage::Text(content.into()))
+        Self::Assistant(PhiAssistantMessage::text(content))
+    }
+
+    pub fn reasoning(id: Option<String>, content: Vec<PhiReasoningContent>) -> Self {
+        Self::Assistant(PhiAssistantMessage::from_parts(
+            None,
+            vec![PhiReasoningBlock { id, content }],
+            Vec::new(),
+        ))
     }
 
     pub fn tool_call(
@@ -31,11 +41,13 @@ impl PhiMessage {
         name: impl Into<String>,
         arguments: serde_json::Value,
     ) -> Self {
-        Self::Tool(PhiToolMessage::ToolCall {
-            id,
-            name: name.into(),
+        let name = name.into();
+        Self::Assistant(PhiAssistantMessage::tool_calls(vec![ToolCallRequest {
+            id: id.clone().unwrap_or_else(|| name.clone()),
+            call_id: id,
+            name,
             arguments,
-        })
+        }]))
     }
 
     pub fn tool_result(
@@ -43,24 +55,17 @@ impl PhiMessage {
         name: Option<String>,
         result: serde_json::Value,
     ) -> Self {
-        Self::Tool(PhiToolMessage::ToolResult { id, name, result })
+        Self::ToolResult(PhiToolResultMessage { id, name, result })
     }
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub enum PhiToolMessage {
-    ToolCall {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        name: String,
-        arguments: serde_json::Value,
-    },
-    ToolResult {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        result: serde_json::Value,
-    },
+pub struct PhiToolResultMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub result: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -70,20 +75,70 @@ pub enum PhiUserMessage {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum PhiAssistantMessage {
-    Text(String),
-    Reasoning {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        content: Vec<PhiReasoningContent>,
-    },
+pub struct PhiAssistantMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning: Vec<PhiReasoningBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_context: Option<serde_json::Value>,
 }
 
 impl PhiAssistantMessage {
-    pub fn text(content: impl Into<String>) -> Self {
-        Self::Text(content.into())
+    pub fn from_parts(
+        content: Option<String>,
+        reasoning: Vec<PhiReasoningBlock>,
+        tool_calls: Vec<ToolCallRequest>,
+    ) -> Self {
+        Self {
+            content,
+            reasoning,
+            tool_calls,
+            provider_context: None,
+        }
     }
+
+    pub fn text(content: impl Into<String>) -> Self {
+        Self::from_parts(Some(content.into()), Vec::new(), Vec::new())
+    }
+
+    pub fn tool_calls(tool_calls: Vec<ToolCallRequest>) -> Self {
+        Self::from_parts(None, Vec::new(), tool_calls)
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCallRequest>) -> Self {
+        self.tool_calls = tool_calls;
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.content.as_deref().is_none_or(str::is_empty)
+            && self.reasoning.is_empty()
+            && self.tool_calls.is_empty()
+    }
+
+    pub(crate) fn from_provider_parts(
+        content: Option<String>,
+        reasoning: Vec<PhiReasoningBlock>,
+        tool_calls: Vec<ToolCallRequest>,
+        provider_context: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            content,
+            reasoning,
+            tool_calls,
+            provider_context,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PhiReasoningBlock {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub content: Vec<PhiReasoningContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -136,6 +191,13 @@ impl PhiHistory {
 
     pub(crate) fn into_arcs(self) -> Vec<Arc<PhiMessage>> {
         self.0
+    }
+
+    pub(crate) fn latest_provider_context(&self) -> Option<serde_json::Value> {
+        self.iter_rev().find_map(|message| match message {
+            PhiMessage::Assistant(assistant) => assistant.provider_context.clone(),
+            _ => None,
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &PhiMessage> {

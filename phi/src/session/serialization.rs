@@ -21,10 +21,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<Session, Box<dyn std::error::Error
 pub fn load_bytes(input: &[u8]) -> Result<Session, Box<dyn std::error::Error>> {
     let decoded = std::str::from_utf8(input)?;
     if decoded.trim().is_empty() {
-        return Ok(Session::empty());
+        return Err("session input is empty; create one explicitly with `phi session new`".into());
     }
     let session: Session =
-        serde_json::from_str(&decoded).map_err(|error| format!("invalid session JSON: {error}"))?;
+        serde_json::from_str(decoded).map_err(|error| format!("invalid session JSON: {error}"))?;
     session
         .validate()
         .map_err(|error| format!("invalid session JSON: {}", error.detail()))?;
@@ -274,11 +274,9 @@ mod tests {
     }
 
     #[test]
-    fn load_bytes_treats_whitespace_as_empty_session() {
-        let loaded = load_bytes(b"   \n\t  ").unwrap();
-
-        assert_eq!(loaded.step(), Session::empty().step());
-        assert_eq!(loaded.history(), Session::empty().history());
+    fn load_bytes_rejects_empty_input() {
+        let error = load_bytes(b"   \n\t  ").unwrap_err();
+        assert!(error.to_string().contains("session input is empty"));
     }
 
     #[test]
@@ -288,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_empty_session_file_as_new_session() {
+    fn rejects_empty_session_file() {
         let path = std::env::temp_dir().join(format!(
             "phi-session-empty-{}-{}.json",
             std::process::id(),
@@ -299,11 +297,9 @@ mod tests {
         ));
         std::fs::write(&path, b"").unwrap();
 
-        let loaded = Session::load(&path).unwrap();
+        let error = Session::load(&path).unwrap_err();
         std::fs::remove_file(path).unwrap();
-
-        assert_eq!(loaded.step(), Session::empty().step());
-        assert_eq!(loaded.history(), Session::empty().history());
+        assert!(error.to_string().contains("session input is empty"));
     }
 
     #[test]
@@ -346,6 +342,44 @@ mod tests {
         let loaded: Session = serde_json::from_value(json).unwrap();
         assert_eq!(loaded.history(), session.history());
         assert_eq!(loaded.step(), session.step());
+    }
+
+    #[test]
+    fn pending_tool_result_without_call_id_round_trips() {
+        let assistant = crate::message::PhiAssistantMessage::tool_calls(vec![
+            crate::executor::ToolCallRequest {
+                id: "call-1".to_string(),
+                call_id: None,
+                name: "lookup".to_string(),
+                arguments: serde_json::json!({}),
+            },
+            crate::executor::ToolCallRequest {
+                id: "call-2".to_string(),
+                call_id: None,
+                name: "lookup".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        ]);
+        let session = Session::from_root(
+            PhiAgentStep::ReAct(
+                crate::session::PhiReActStep::request_executor_turn(
+                    "pending",
+                    Vec::new(),
+                    assistant,
+                    vec![crate::message::PhiToolResultMessage {
+                        id: Some("call-1".to_string()),
+                        name: Some("lookup".to_string()),
+                        result: serde_json::json!({"ok": true}),
+                    }],
+                )
+                .expect("serialized request executor fixture must be valid"),
+            ),
+            vec![PhiMessage::user("lookup twice")],
+        );
+
+        let serialized = serde_json::to_vec(&session).unwrap();
+        let restored = load_bytes(&serialized).unwrap();
+        assert_eq!(restored.step(), session.step());
     }
 
     #[test]
@@ -471,7 +505,7 @@ mod tests {
                             "error": {"kind": "module", "detail": "bad"}
                         },
                         "delta": {
-                            "history": [{"role": "assistant", "content": "oops"}]
+                            "history": [{"role": "assistant", "content": {"content": "oops"}}]
                         }
                     }
                 ]

@@ -1,18 +1,15 @@
-use std::{
-    sync::{Mutex, OnceLock},
-    vec,
-};
+use std::vec;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned};
 
-use super::{PhiModelResponse, PhiProvider, PhiProviderCall};
+use super::{DynProvider, PhiModelResponse, PhiModelTurnState, PhiProviderCall};
 use crate::{
     config::ProviderConfig,
     error::{PhiAgentResult, PhiAgentRuntimeError},
     executor::PhiToolDefinition,
     message::{
-        PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage, PhiUserMessage,
+        PhiAssistantMessage, PhiMessage, PhiReasoningBlock, PhiReasoningContent, PhiUserMessage,
     },
     render::PhiRenderedMessages,
 };
@@ -21,7 +18,6 @@ use crate::{
 pub struct OpenAiCompatClient {
     http: reqwest::Client,
     config: ProviderConfig,
-    reasoning_format: &'static OnceLock<Mutex<ReasoningFormat>>,
 }
 
 impl OpenAiCompatClient {
@@ -29,88 +25,52 @@ impl OpenAiCompatClient {
         Self {
             http: reqwest::Client::new(),
             config,
-            reasoning_format: reasoning_format_state(),
         }
     }
-
-    fn current_reasoning_format(&self) -> PhiAgentResult<ReasoningFormat> {
-        let guard = self
-            .reasoning_format
-            .get_or_init(|| Mutex::new(ReasoningFormat::PhiReasoningContent))
-            .lock()
-            .expect("reasoning format mutex was poisoned");
-        Ok(*guard)
-    }
-
-    fn observe_reasoning_format(&self, message: &ProviderAssistantMessage) -> PhiAgentResult<()> {
-        let next = if message
-            .reasoning_content
-            .as_deref()
-            .is_some_and(|value| !value.is_empty())
-        {
-            Some(ReasoningFormat::PhiReasoningContent)
-        } else if message
-            .reasoning
-            .as_deref()
-            .is_some_and(|value| !value.is_empty())
-        {
-            Some(ReasoningFormat::Reasoning)
-        } else {
-            None
-        };
-
-        let Some(next) = next else {
-            return Ok(());
-        };
-
-        let mut guard = self
-            .reasoning_format
-            .get_or_init(|| Mutex::new(ReasoningFormat::PhiReasoningContent))
-            .lock()
-            .expect("reasoning format mutex was poisoned");
-        *guard = next;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl PhiProvider for OpenAiCompatClient {
-    type ProviderMessage = ProviderMessage;
-    type ProviderTool = ProviderToolDefinition;
 
     fn provider_messages(
         &self,
         messages: &PhiRenderedMessages,
-    ) -> PhiAgentResult<Vec<Self::ProviderMessage>> {
-        ProviderMessage::from_phi_messages(messages, self.current_reasoning_format()?)
+    ) -> PhiAgentResult<Vec<ProviderMessage>> {
+        let reasoning_format = ReasoningFormat::from_provider_context(messages.provider_context());
+        ProviderMessage::from_phi_messages(messages, reasoning_format)
     }
 
-    fn phi_messages(
+    fn phi_assistant(
         &self,
-        response: Vec<Self::ProviderMessage>,
-    ) -> PhiAgentResult<Vec<PhiMessage>> {
-        response
-            .into_iter()
-            .map(|message| match message {
-                ProviderMessage::System { .. }
-                | ProviderMessage::User { .. }
-                | ProviderMessage::Tool { .. } => Ok(vec![]),
-                ProviderMessage::Assistant(message) => message.into_phi_messages(),
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(|messages| messages.into_iter().flatten().collect())
+        response: Vec<ProviderMessage>,
+    ) -> PhiAgentResult<Option<PhiAssistantMessage>> {
+        let mut response = response.into_iter();
+        let assistant = match response.next() {
+            Some(ProviderMessage::Assistant(message)) => message.into_phi_assistant()?,
+            Some(_) => {
+                return Err(PhiAgentRuntimeError::provider_response(
+                    "openai_chat response was not an assistant message",
+                ));
+            }
+            None => None,
+        };
+        if response.next().is_some() {
+            return Err(PhiAgentRuntimeError::provider_response(
+                "openai_chat returned multiple response messages",
+            ));
+        }
+        Ok(assistant)
     }
 
-    fn provider_tool(&self, tool: &PhiToolDefinition) -> Self::ProviderTool {
+    fn provider_tool(&self, tool: &PhiToolDefinition) -> ProviderToolDefinition {
         ProviderToolDefinition::from_tool_definition(tool.clone())
     }
+}
 
+#[async_trait]
+impl DynProvider for OpenAiCompatClient {
     async fn complete(
         &self,
         request: &PhiProviderCall,
-        messages: &PhiRenderedMessages,
+        messages: PhiRenderedMessages,
     ) -> PhiAgentResult<PhiModelResponse> {
-        let provider_messages = self.provider_messages(messages)?;
+        let provider_messages = self.provider_messages(&messages)?;
         let provider_tools = request
             .tools
             .iter()
@@ -180,16 +140,17 @@ impl PhiProvider for OpenAiCompatClient {
         let choice = response.choices.into_iter().next().ok_or_else(|| {
             PhiAgentRuntimeError::provider_response("openai_chat provider returned no choices")
         })?;
-        self.observe_reasoning_format(&choice.message)?;
-
-        let messages = self.phi_messages(
+        let assistant = self.phi_assistant(
             if choice.message.has_content() || !choice.message.tool_calls.is_empty() {
                 vec![ProviderMessage::Assistant(choice.message)]
             } else {
                 vec![]
             },
         )?;
-        Ok(PhiModelResponse::unspecified(messages))
+        Ok(PhiModelResponse::from_assistant(
+            assistant,
+            PhiModelTurnState::Unspecified,
+        ))
     }
 }
 
@@ -234,23 +195,30 @@ impl ProviderMessage {
             PhiMessage::User(PhiUserMessage::Text(text)) => vec![Self::User {
                 content: text.clone(),
             }],
-            PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => {
-                vec![Self::Assistant(ProviderAssistantMessage {
-                    content: Some(text.clone()),
-                    tool_calls: Vec::new(),
-                    reasoning_content: None,
-                    reasoning: None,
-                })]
-            }
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => {
-                let parts = content
+            PhiMessage::Assistant(assistant) => {
+                let parts = assistant
+                    .reasoning
                     .iter()
+                    .flat_map(|block| block.content.iter())
                     .filter_map(PhiReasoningContent::display_text)
                     .map(str::to_owned)
                     .collect::<Vec<_>>();
                 vec![Self::Assistant(ProviderAssistantMessage {
-                    content: None,
-                    tool_calls: Vec::new(),
+                    content: assistant.content.clone(),
+                    tool_calls: assistant
+                        .tool_calls
+                        .iter()
+                        .map(|call| ProviderToolCall {
+                            id: call.id.clone(),
+                            call_id: call.call_id.clone(),
+                            kind: "function".to_string(),
+                            function: ProviderToolFunction {
+                                name: call.name.clone(),
+                                arguments: serde_json::to_string(&call.arguments)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                            },
+                        })
+                        .collect(),
                     reasoning_content: reasoning_value(
                         &parts,
                         reasoning_format,
@@ -263,28 +231,9 @@ impl ProviderMessage {
                     ),
                 })]
             }
-            PhiMessage::Tool(PhiToolMessage::ToolCall {
-                id,
-                name,
-                arguments,
-            }) => vec![Self::Assistant(ProviderAssistantMessage {
-                content: None,
-                tool_calls: vec![ProviderToolCall {
-                    id: id.clone().unwrap_or_else(|| name.clone()),
-                    call_id: id.clone(),
-                    kind: "function".to_string(),
-                    function: ProviderToolFunction {
-                        name: name.clone(),
-                        arguments: serde_json::to_string(arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    },
-                }],
-                reasoning_content: None,
-                reasoning: None,
-            })],
-            PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. }) => vec![Self::Tool {
-                content: result.to_string(),
-                tool_call_id: id.clone().unwrap_or_default(),
+            PhiMessage::ToolResult(result) => vec![Self::Tool {
+                content: super::tool_result_text(&result.result),
+                tool_call_id: result.id.clone().unwrap_or_default(),
             }],
         }
     }
@@ -293,62 +242,18 @@ impl ProviderMessage {
         messages: &PhiRenderedMessages,
         reasoning_format: ReasoningFormat,
     ) -> PhiAgentResult<Vec<Self>> {
-        let mut provider_messages = Vec::new();
-        let mut assistant = ProviderAssistantMessage::default();
-
-        for message in messages.iter() {
-            match message {
-                PhiMessage::System(_)
-                | PhiMessage::User(_)
-                | PhiMessage::Tool(PhiToolMessage::ToolResult { .. }) => {
-                    if assistant.has_content() || !assistant.tool_calls.is_empty() {
-                        provider_messages.push(Self::Assistant(std::mem::take(&mut assistant)));
-                    }
-                    provider_messages
-                        .extend(Self::from_single_phi_message(message, reasoning_format));
-                }
-                PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => {
-                    assistant.push_text(text);
-                }
-                PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => {
-                    assistant.push_reasoning(content, reasoning_format);
-                }
-                PhiMessage::Tool(PhiToolMessage::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                }) => {
-                    assistant.tool_calls.push(ProviderToolCall {
-                        id: id.clone().unwrap_or_else(|| name.clone()),
-                        call_id: id.clone(),
-                        kind: "function".to_string(),
-                        function: ProviderToolFunction {
-                            name: name.clone(),
-                            arguments: serde_json::to_string(arguments)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                        },
-                    });
-                }
-            }
-        }
-
-        if assistant.has_content() || !assistant.tool_calls.is_empty() {
-            provider_messages.push(Self::Assistant(assistant));
-        }
-
-        Ok(provider_messages)
+        Ok(messages
+            .iter()
+            .flat_map(|message| Self::from_single_phi_message(message, reasoning_format))
+            .collect())
     }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ProviderAssistantMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "serialize_optional_content")]
     pub content: Option<String>,
-    #[serde(
-        skip_serializing_if = "Vec::is_empty",
-        default,
-        deserialize_with = "deserialize_null_default"
-    )]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub tool_calls: Vec<ProviderToolCall>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "reasoning_content")]
     pub reasoning_content: Option<String>,
@@ -362,6 +267,13 @@ where
     T: DeserializeOwned + Default,
 {
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn serialize_optional_content<S>(content: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(content.as_deref().unwrap_or_default())
 }
 
 impl ProviderAssistantMessage {
@@ -379,73 +291,23 @@ impl ProviderAssistantMessage {
                 .is_some_and(|value| !value.is_empty())
     }
 
-    fn push_text(&mut self, text: &str) {
-        match &mut self.content {
-            Some(existing) if !existing.is_empty() => {
-                existing.push('\n');
-                existing.push_str(text);
-            }
-            Some(existing) => existing.push_str(text),
-            None => self.content = Some(text.to_string()),
-        }
-    }
-
-    fn push_reasoning(
-        &mut self,
-        content: &[PhiReasoningContent],
-        reasoning_format: ReasoningFormat,
-    ) {
-        let parts = content
-            .iter()
-            .filter_map(PhiReasoningContent::display_text)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if parts.is_empty() {
-            return;
-        }
-        let joined = parts.join("\n");
-        match reasoning_format {
-            ReasoningFormat::PhiReasoningContent => match &mut self.reasoning_content {
-                Some(existing) if !existing.is_empty() => {
-                    existing.push('\n');
-                    existing.push_str(&joined);
-                }
-                Some(existing) => existing.push_str(&joined),
-                None => self.reasoning_content = Some(joined),
-            },
-            ReasoningFormat::Reasoning => match &mut self.reasoning {
-                Some(existing) if !existing.is_empty() => {
-                    existing.push('\n');
-                    existing.push_str(&joined);
-                }
-                Some(existing) => existing.push_str(&joined),
-                None => self.reasoning = Some(joined),
-            },
-        }
-    }
-
-    fn into_phi_messages(self) -> PhiAgentResult<Vec<PhiMessage>> {
-        let mut messages = Vec::new();
-
-        let reasoning = self
+    fn into_phi_assistant(self) -> PhiAgentResult<Option<PhiAssistantMessage>> {
+        let provider_context = ReasoningFormat::from_response(&self).map(ReasoningFormat::context);
+        let reasoning_text = self
             .reasoning_content
             .or(self.reasoning)
             .filter(|value| !value.is_empty());
-
-        if let Some(reasoning) = reasoning {
-            messages.push(PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
+        let mut reasoning = Vec::new();
+        if let Some(reasoning_text) = reasoning_text {
+            reasoning.push(PhiReasoningBlock {
                 id: None,
                 content: vec![PhiReasoningContent::Text {
-                    text: reasoning,
+                    text: reasoning_text,
                     signature: None,
                 }],
-            }));
+            });
         }
-
-        if let Some(text) = self.content.filter(|value| !value.is_empty()) {
-            messages.push(PhiMessage::Assistant(PhiAssistantMessage::Text(text)));
-        }
-
+        let mut tool_calls = Vec::new();
         for tool_call in self.tool_calls {
             let raw_arguments = tool_call.function.arguments.clone();
             let parsed_arguments = serde_json::from_str(&raw_arguments).map_err(|error| {
@@ -454,14 +316,29 @@ impl ProviderAssistantMessage {
                     error, raw_arguments
                 ))
             })?;
-            messages.push(PhiMessage::tool_call(
-                tool_call.call_id.or(Some(tool_call.id)),
-                tool_call.function.name,
-                parsed_arguments,
-            ));
+            tool_calls.push(crate::executor::ToolCallRequest {
+                id: tool_call.id,
+                call_id: tool_call.call_id,
+                name: tool_call.function.name,
+                arguments: parsed_arguments,
+            });
         }
+        let assistant = PhiRenderedMessages::provider_assistant(
+            self.content.filter(|value| !value.is_empty()),
+            reasoning,
+            tool_calls,
+            provider_context,
+        );
+        Ok((!assistant.is_empty()).then_some(assistant))
+    }
 
-        Ok(messages)
+    #[cfg(test)]
+    fn into_phi_messages(self) -> PhiAgentResult<Vec<PhiMessage>> {
+        Ok(self
+            .into_phi_assistant()?
+            .map(PhiMessage::Assistant)
+            .into_iter()
+            .collect())
     }
 }
 
@@ -514,9 +391,47 @@ enum ReasoningFormat {
     Reasoning,
 }
 
-fn reasoning_format_state() -> &'static OnceLock<Mutex<ReasoningFormat>> {
-    static STATE: OnceLock<Mutex<ReasoningFormat>> = OnceLock::new();
-    &STATE
+impl ReasoningFormat {
+    fn from_response(message: &ProviderAssistantMessage) -> Option<Self> {
+        if message
+            .reasoning_content
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            Some(Self::PhiReasoningContent)
+        } else if message
+            .reasoning
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            Some(Self::Reasoning)
+        } else {
+            None
+        }
+    }
+
+    fn from_provider_context(context: Option<&serde_json::Value>) -> Self {
+        match context.and_then(|value| {
+            value
+                .pointer("/openai_chat/reasoning_key")
+                .and_then(serde_json::Value::as_str)
+        }) {
+            Some("reasoning") => Self::Reasoning,
+            _ => Self::PhiReasoningContent,
+        }
+    }
+
+    fn context(self) -> serde_json::Value {
+        let reasoning_key = match self {
+            Self::PhiReasoningContent => "reasoning_content",
+            Self::Reasoning => "reasoning",
+        };
+        serde_json::json!({
+            "openai_chat": {
+                "reasoning_key": reasoning_key,
+            }
+        })
+    }
 }
 
 fn reasoning_value(
@@ -534,8 +449,8 @@ fn reasoning_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::ToolCallRequest;
     use crate::{config::ProviderConfig, error::PhiAgentRuntimeError, executor::PhiToolDefinition};
-    use std::sync::MutexGuard;
 
     fn test_config() -> ProviderConfig {
         ProviderConfig {
@@ -546,26 +461,8 @@ mod tests {
         }
     }
 
-    fn set_reasoning_format(format: ReasoningFormat) {
-        let mut guard = reasoning_format_state()
-            .get_or_init(|| Mutex::new(ReasoningFormat::PhiReasoningContent))
-            .lock()
-            .expect("reasoning format mutex should not be poisoned");
-        *guard = format;
-    }
-
-    fn lock_reasoning_state() -> MutexGuard<'static, ()> {
-        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock should not be poisoned")
-    }
-
     #[test]
     fn phi_messages_map_to_openai_chat_roles_as_expected() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
         let client = OpenAiCompatClient::new(test_config());
         let tool = PhiToolDefinition {
             name: "bash".to_string(),
@@ -582,42 +479,32 @@ mod tests {
         let mapped = vec![
             ProviderMessage::from_single_phi_message(
                 &PhiMessage::system("sys"),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ReasoningFormat::PhiReasoningContent,
             ),
             ProviderMessage::from_single_phi_message(
                 &PhiMessage::user("hello"),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ReasoningFormat::PhiReasoningContent,
             ),
             ProviderMessage::from_single_phi_message(
                 &PhiMessage::user("compressed hello"),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ReasoningFormat::PhiReasoningContent,
             ),
             ProviderMessage::from_single_phi_message(
-                &PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                    id: None,
-                    content: vec![
+                &PhiMessage::reasoning(
+                    None,
+                    vec![
                         PhiReasoningContent::Summary("plan".to_string()),
                         PhiReasoningContent::Text {
                             text: "detail".to_string(),
                             signature: None,
                         },
                     ],
-                }),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ),
+                ReasoningFormat::PhiReasoningContent,
             ),
             ProviderMessage::from_single_phi_message(
                 &PhiMessage::assistant("answer"),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ReasoningFormat::PhiReasoningContent,
             ),
             ProviderMessage::from_single_phi_message(
                 &PhiMessage::tool_call(
@@ -625,9 +512,7 @@ mod tests {
                     "bash",
                     serde_json::json!({ "command": "pwd" }),
                 ),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ReasoningFormat::PhiReasoningContent,
             ),
             ProviderMessage::from_single_phi_message(
                 &PhiMessage::tool_result(
@@ -635,9 +520,7 @@ mod tests {
                     Some("bash".to_string()),
                     serde_json::json!({"stdout": "ok"}),
                 ),
-                client
-                    .current_reasoning_format()
-                    .expect("reasoning format should load"),
+                ReasoningFormat::PhiReasoningContent,
             ),
         ];
 
@@ -695,24 +578,25 @@ mod tests {
 
     #[test]
     fn phi_message_sequence_groups_into_single_assistant_provider_message() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
         let client = OpenAiCompatClient::new(test_config());
 
         let mapped = client
             .provider_messages(&crate::render::test_rendered_messages(vec![
                 PhiMessage::user("hello"),
                 PhiMessage::user("compressed"),
-                PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                    id: None,
-                    content: vec![PhiReasoningContent::Summary("plan".to_string())],
-                }),
-                PhiMessage::assistant("answer"),
-                PhiMessage::tool_call(
-                    Some("call_1".to_string()),
-                    "bash",
-                    serde_json::json!({ "command": "pwd" }),
-                ),
+                PhiMessage::Assistant(PhiAssistantMessage::from_parts(
+                    Some("answer".to_string()),
+                    vec![PhiReasoningBlock {
+                        id: None,
+                        content: vec![PhiReasoningContent::Summary("plan".to_string())],
+                    }],
+                    vec![ToolCallRequest {
+                        id: "call_1".to_string(),
+                        call_id: Some("call_1".to_string()),
+                        name: "bash".to_string(),
+                        arguments: serde_json::json!({ "command": "pwd" }),
+                    }],
+                )),
             ]))
             .expect("phi message sequence should group");
 
@@ -745,8 +629,6 @@ mod tests {
 
     #[test]
     fn provider_assistant_message_preserves_reasoning_text_and_tool_call_order() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
         let messages = ProviderAssistantMessage {
             content: Some("final answer".to_string()),
             tool_calls: vec![
@@ -777,47 +659,55 @@ mod tests {
 
         assert_eq!(
             messages,
-            vec![
-                PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                    id: None,
-                    content: vec![PhiReasoningContent::Text {
-                        text: "think first".to_string(),
-                        signature: None,
+            vec![PhiMessage::Assistant(
+                PhiRenderedMessages::provider_assistant(
+                    Some("final answer".to_string()),
+                    vec![PhiReasoningBlock {
+                        id: None,
+                        content: vec![PhiReasoningContent::Text {
+                            text: "think first".to_string(),
+                            signature: None,
+                        }],
                     }],
-                }),
-                PhiMessage::Assistant(PhiAssistantMessage::Text("final answer".to_string())),
-                PhiMessage::tool_call(
-                    Some("call_1".to_string()),
-                    "bash",
-                    serde_json::json!({ "command": "pwd" }),
-                ),
-                PhiMessage::tool_call(
-                    Some("call_2".to_string()),
-                    "bash",
-                    serde_json::json!({ "command": "ls" }),
-                ),
-            ]
+                    vec![
+                        ToolCallRequest {
+                            id: "call_1".to_string(),
+                            call_id: Some("call_1".to_string()),
+                            name: "bash".to_string(),
+                            arguments: serde_json::json!({ "command": "pwd" }),
+                        },
+                        ToolCallRequest {
+                            id: "call_2".to_string(),
+                            call_id: Some("call_2".to_string()),
+                            name: "bash".to_string(),
+                            arguments: serde_json::json!({ "command": "ls" }),
+                        },
+                    ],
+                    Some(ReasoningFormat::PhiReasoningContent.context()),
+                )
+            )]
         );
     }
 
     #[test]
     fn grouped_openai_chat_assistant_round_trips_back_to_phi_sequence() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
         let client = OpenAiCompatClient::new(test_config());
 
         let source = vec![
             PhiMessage::user("hello"),
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                id: None,
-                content: vec![PhiReasoningContent::Summary("plan".to_string())],
-            }),
-            PhiMessage::assistant("answer"),
-            PhiMessage::tool_call(
-                Some("call_1".to_string()),
-                "bash",
-                serde_json::json!({ "command": "pwd" }),
-            ),
+            PhiMessage::Assistant(PhiAssistantMessage::from_parts(
+                Some("answer".to_string()),
+                vec![PhiReasoningBlock {
+                    id: None,
+                    content: vec![PhiReasoningContent::Summary("plan".to_string())],
+                }],
+                vec![ToolCallRequest {
+                    id: "call_1".to_string(),
+                    call_id: Some("call_1".to_string()),
+                    name: "bash".to_string(),
+                    arguments: serde_json::json!({ "command": "pwd" }),
+                }],
+            )),
             PhiMessage::tool_result(
                 Some("call_1".to_string()),
                 Some("bash".to_string()),
@@ -828,35 +718,44 @@ mod tests {
         let provider_messages = client
             .provider_messages(&crate::render::test_rendered_messages(source.clone()))
             .expect("phi sequence should convert");
+        let response = provider_messages
+            .into_iter()
+            .find(|message| matches!(message, ProviderMessage::Assistant(_)))
+            .expect("provider history should contain an assistant turn");
         let round_tripped = client
-            .phi_messages(provider_messages)
-            .expect("provider messages should convert back");
+            .phi_assistant(vec![response])
+            .expect("provider assistant should convert back")
+            .map(PhiMessage::Assistant)
+            .into_iter()
+            .collect::<Vec<_>>();
 
         assert_eq!(
             round_tripped,
-            vec![
-                PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                    id: None,
-                    content: vec![PhiReasoningContent::Text {
-                        text: "plan".to_string(),
-                        signature: None,
+            vec![PhiMessage::Assistant(
+                PhiRenderedMessages::provider_assistant(
+                    Some("answer".to_string()),
+                    vec![PhiReasoningBlock {
+                        id: None,
+                        content: vec![PhiReasoningContent::Text {
+                            text: "plan".to_string(),
+                            signature: None,
+                        }],
                     }],
-                }),
-                PhiMessage::assistant("answer"),
-                PhiMessage::tool_call(
-                    Some("call_1".to_string()),
-                    "bash",
-                    serde_json::json!({ "command": "pwd" }),
-                ),
-            ],
+                    vec![ToolCallRequest {
+                        id: "call_1".to_string(),
+                        call_id: Some("call_1".to_string()),
+                        name: "bash".to_string(),
+                        arguments: serde_json::json!({ "command": "pwd" }),
+                    }],
+                    Some(ReasoningFormat::PhiReasoningContent.context()),
+                )
+            )],
             "openai_chat grouping should preserve assistant reasoning/content/tool-call order",
         );
     }
 
     #[test]
     fn provider_assistant_message_accepts_reasoning_fallback_field() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
         let messages = ProviderAssistantMessage {
             content: None,
             tool_calls: Vec::new(),
@@ -868,20 +767,25 @@ mod tests {
 
         assert_eq!(
             messages,
-            vec![PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                id: None,
-                content: vec![PhiReasoningContent::Text {
-                    text: "legacy reasoning".to_string(),
-                    signature: None,
-                }],
-            })]
+            vec![PhiMessage::Assistant(
+                PhiRenderedMessages::provider_assistant(
+                    None,
+                    vec![PhiReasoningBlock {
+                        id: None,
+                        content: vec![PhiReasoningContent::Text {
+                            text: "legacy reasoning".to_string(),
+                            signature: None,
+                        }],
+                    }],
+                    Vec::new(),
+                    Some(ReasoningFormat::Reasoning.context()),
+                )
+            )]
         );
     }
 
     #[test]
     fn provider_assistant_message_rejects_invalid_tool_call_json() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
         let error = ProviderAssistantMessage {
             content: None,
             tool_calls: vec![ProviderToolCall {
@@ -926,37 +830,173 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_format_observation_switches_outbound_field_name() {
-        let _guard = lock_reasoning_state();
-        set_reasoning_format(ReasoningFormat::PhiReasoningContent);
-        let client = OpenAiCompatClient::new(test_config());
+    fn tool_results_use_plain_text_for_strings_and_json_for_structures() {
+        let mapped = [
+            PhiMessage::tool_result(
+                Some("call_text".to_string()),
+                Some("tool".to_string()),
+                serde_json::Value::String("done".to_string()),
+            ),
+            PhiMessage::tool_result(
+                Some("call_json".to_string()),
+                Some("tool".to_string()),
+                serde_json::json!({"status": "done"}),
+            ),
+        ]
+        .iter()
+        .flat_map(|message| {
+            ProviderMessage::from_single_phi_message(message, ReasoningFormat::PhiReasoningContent)
+        })
+        .collect::<Vec<_>>();
 
-        client
-            .observe_reasoning_format(&ProviderAssistantMessage {
-                content: None,
-                tool_calls: Vec::new(),
-                reasoning_content: None,
-                reasoning: Some("server uses reasoning".to_string()),
-            })
-            .expect("reasoning format observation should succeed");
+        assert_eq!(
+            mapped,
+            vec![
+                ProviderMessage::Tool {
+                    content: "done".to_string(),
+                    tool_call_id: "call_text".to_string(),
+                },
+                ProviderMessage::Tool {
+                    content: serde_json::json!({"status": "done"}).to_string(),
+                    tool_call_id: "call_json".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn latest_provider_context_switches_outbound_field_name() {
+        let client = OpenAiCompatClient::new(test_config());
+        let prior = ProviderAssistantMessage {
+            content: None,
+            tool_calls: Vec::new(),
+            reasoning_content: None,
+            reasoning: Some("server uses reasoning".to_string()),
+        }
+        .into_phi_assistant()
+        .expect("provider assistant should convert")
+        .expect("provider assistant should not be empty");
 
         let mapped = client
             .provider_messages(&crate::render::test_rendered_messages(vec![
-                PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                    id: None,
-                    content: vec![PhiReasoningContent::Summary("mirror back".to_string())],
-                }),
+                PhiMessage::Assistant(prior),
+                PhiMessage::user("continue"),
+                PhiMessage::reasoning(
+                    None,
+                    vec![PhiReasoningContent::Summary("mirror back".to_string())],
+                ),
             ]))
             .expect("reasoning message should map");
 
         assert_eq!(
             mapped,
-            vec![ProviderMessage::Assistant(ProviderAssistantMessage {
-                content: None,
-                tool_calls: Vec::new(),
-                reasoning_content: None,
-                reasoning: Some("mirror back".to_string()),
-            })]
+            vec![
+                ProviderMessage::Assistant(ProviderAssistantMessage {
+                    content: None,
+                    tool_calls: Vec::new(),
+                    reasoning_content: None,
+                    reasoning: Some("server uses reasoning".to_string()),
+                }),
+                ProviderMessage::User {
+                    content: "continue".to_string(),
+                },
+                ProviderMessage::Assistant(ProviderAssistantMessage {
+                    content: None,
+                    tool_calls: Vec::new(),
+                    reasoning_content: None,
+                    reasoning: Some("mirror back".to_string()),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_context_survives_serialization_and_skips_messages_without_context() {
+        let prior = ProviderAssistantMessage {
+            content: None,
+            tool_calls: Vec::new(),
+            reasoning_content: None,
+            reasoning: Some("server uses reasoning".to_string()),
+        }
+        .into_phi_assistant()
+        .expect("provider assistant should convert")
+        .expect("provider assistant should not be empty");
+        let serialized = serde_json::to_string(&PhiMessage::Assistant(prior))
+            .expect("Phi assistant should serialize");
+        let restored: PhiMessage =
+            serde_json::from_str(&serialized).expect("Phi assistant should deserialize");
+        let messages = crate::render::test_rendered_messages(vec![
+            restored,
+            PhiMessage::assistant("later response without provider context"),
+            PhiMessage::reasoning(
+                None,
+                vec![PhiReasoningContent::Summary(
+                    "continue reasoning".to_string(),
+                )],
+            ),
+        ]);
+
+        let mapped = OpenAiCompatClient::new(test_config())
+            .provider_messages(&messages)
+            .expect("restored history should map");
+
+        assert!(mapped.iter().all(|message| match message {
+            ProviderMessage::Assistant(message) => message.reasoning_content.is_none(),
+            _ => true,
+        }));
+        assert!(mapped.iter().any(|message| matches!(
+            message,
+            ProviderMessage::Assistant(ProviderAssistantMessage {
+                reasoning: Some(reasoning),
+                ..
+            }) if reasoning == "continue reasoning"
+        )));
+    }
+
+    #[test]
+    fn assistant_without_content_serializes_empty_string() {
+        let json = serde_json::to_value(ProviderMessage::Assistant(ProviderAssistantMessage {
+            content: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some("plan".to_string()),
+            reasoning: None,
+        }))
+        .expect("assistant should serialize");
+
+        assert_eq!(json["content"], "");
+        assert_eq!(json["tool_calls"], serde_json::json!([]));
+        assert!(json.get("reasoning").is_none());
+        assert!(
+            !json
+                .as_object()
+                .expect("assistant should serialize as an object")
+                .values()
+                .any(serde_json::Value::is_null)
+        );
+    }
+
+    #[test]
+    fn missing_provider_context_defaults_to_reasoning_content() {
+        let mapped = OpenAiCompatClient::new(test_config())
+            .provider_messages(&crate::render::test_rendered_messages(vec![
+                PhiMessage::reasoning(
+                    None,
+                    vec![PhiReasoningContent::Summary("default format".to_string())],
+                ),
+            ]))
+            .expect("history without provider context should map");
+
+        let json = serde_json::to_value(mapped).expect("provider messages should serialize");
+        assert_eq!(json[0]["content"], "");
+        assert_eq!(json[0]["tool_calls"], serde_json::json!([]));
+        assert_eq!(json[0]["reasoning_content"], "default format");
+        assert!(json[0].get("reasoning").is_none());
+        assert!(
+            !json[0]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(serde_json::Value::is_null)
         );
     }
 }

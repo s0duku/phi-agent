@@ -10,7 +10,7 @@ use crate::{
     },
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallOutput,
-    message::PhiMessage,
+    message::{PhiMessage, PhiToolResultMessage},
     module::{PhiModule, PhiModuleLayout},
     session::{PhiAgentStep, PhiReActStep},
 };
@@ -101,8 +101,6 @@ struct EmptySessionGuardModule;
 struct DefaultFailedRecoveryModule;
 
 impl PhiModule for EmptySessionGuardModule {
-    type ProbInfo = ();
-
     fn init_context(&mut self, _context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
         Err(crate::error::PhiAgentRuntimeError::session(
             "session is empty; provide --user/--assistant",
@@ -111,8 +109,6 @@ impl PhiModule for EmptySessionGuardModule {
 }
 
 impl PhiModule for DefaultFailedRecoveryModule {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         mut runtime: PhiAgentRuntime,
@@ -183,23 +179,34 @@ impl PhiModule for DefaultFailedRecoveryModule {
             for message in pending_messages {
                 runtime.commit_message(message);
             }
-            runtime.commit_message(PhiMessage::tool_call(
-                tool_request
+            let mut assistant = error
+                .assistant()
+                .cloned()
+                .expect("persisted tool failures must carry their assistant turn");
+            let completed = error
+                .pending_results()
+                .expect("persisted tool failures must carry completed results")
+                .to_vec();
+            let keep_calls = completed.len().saturating_add(1);
+            assistant.tool_calls.truncate(keep_calls);
+            if assistant.tool_calls.len() <= completed.len() {
+                assistant.tool_calls.push(tool_request.clone());
+            } else {
+                assistant.tool_calls[completed.len()] = tool_request.clone();
+            }
+            runtime.commit_model_response(assistant);
+            for result in completed {
+                runtime.commit_tool_result(PhiMessage::ToolResult(result));
+            }
+            let message = PhiMessage::ToolResult(PhiToolResultMessage {
+                id: tool_request
                     .call_id
                     .clone()
                     .or(Some(tool_request.id.clone())),
-                tool_request.name.clone(),
-                tool_request.arguments.clone(),
-            ));
-            let message = PhiMessage::tool_result(
-                tool_request
-                    .call_id
-                    .clone()
-                    .or(Some(tool_request.id.clone())),
-                Some(tool_request.name.clone()),
-                serde_json::to_value(&output)
+                name: Some(tool_request.name.clone()),
+                result: serde_json::to_value(&output)
                     .expect("tool-not-found recovery output should serialize"),
-            );
+            });
             runtime.commit_tool_result(message);
             let step =
                 runtime.request_provider_step("tool result committed; model response is pending");

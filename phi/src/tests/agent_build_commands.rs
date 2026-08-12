@@ -22,8 +22,6 @@ struct BuildProbeModule {
 }
 
 impl PhiModule for BuildProbeModule {
-    type ProbInfo = ();
-
     fn init_context(
         &mut self,
         _context: &mut crate::agent::PhiAgentBuildContext,
@@ -90,23 +88,14 @@ fn model_retry_module_is_installed_only_for_an_explicit_budget() {
     };
 
     let default_agent = build(PhiAgentCommand::Step(PhiAgentCommand::step()));
-    assert!(
-        default_agent
-            .probe_report()
-            .modules
-            .iter()
-            .all(|module| module.name != "model_retry")
-    );
+    let default_module_count = default_agent.runtime().module_count();
 
     let retry_agent = build(PhiAgentCommand::Step(
         PhiAgentCommand::step().with_max_model_request_retries(Some(3)),
     ));
-    assert!(
-        retry_agent
-            .probe_report()
-            .modules
-            .iter()
-            .any(|module| module.name == "model_retry")
+    assert_eq!(
+        retry_agent.runtime().module_count(),
+        default_module_count + 1
     );
 }
 

@@ -5,7 +5,7 @@ pub mod tools;
 use std::sync::Arc;
 
 use crate::agent::PhiAgentRuntime;
-use crate::error::{PhiAgentRuntimeError, PhiAgentRuntimeResult, PhiStructureError};
+use crate::error::PhiStructureError;
 use async_trait::async_trait;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -78,6 +78,17 @@ pub struct ToolCallResponse {
 }
 
 pub(crate) type PhiToolResult = Result<ToolCallResponse, Box<dyn PhiStructureError>>;
+
+pub(crate) enum PhiToolExecutionError {
+    NotFound {
+        detail: String,
+        request: ToolCallRequest,
+    },
+    Failed {
+        detail: serde_json::Value,
+        request: ToolCallRequest,
+    },
+}
 
 impl ToolCallResponse {
     pub fn new(
@@ -180,16 +191,19 @@ impl PhiExecutor {
         &self,
         mut request: ToolCallRequest,
         runtime: &PhiAgentRuntime,
-    ) -> PhiAgentRuntimeResult<(ToolCallRequest, ToolCallResponse)> {
+    ) -> Result<(ToolCallRequest, ToolCallResponse), PhiToolExecutionError> {
         let name = request.name.clone();
-        let tool = self.tool(name.as_str()).ok_or_else(|| {
-            PhiAgentRuntimeError::tool_not_found(
-                format!("assistant requested unknown tool: {name}"),
-                request.clone(),
-            )
-        })?;
+        let tool = self
+            .tool(name.as_str())
+            .ok_or_else(|| PhiToolExecutionError::NotFound {
+                detail: format!("assistant requested unknown tool: {name}"),
+                request: request.clone(),
+            })?;
         let mut response = tool.call(&mut request, runtime).await.map_err(|error| {
-            PhiAgentRuntimeError::tool_error(error.into_value(), request.clone())
+            PhiToolExecutionError::Failed {
+                detail: error.into_value(),
+                request: request.clone(),
+            }
         })?;
         response.output = sanitizer::sanitize_tool_call_output(response.output, self.output_limits);
         Ok((request, response))

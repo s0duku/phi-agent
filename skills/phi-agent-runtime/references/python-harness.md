@@ -52,18 +52,20 @@ harness deliberately replaces Phi's diagnostic stream.
 ```python
 def drive(state: dict, *, max_runs: int = 20) -> dict:
     for _ in range(max_runs):
-        state = phi("run", state=state)
-        probe = phi("session", "peek", state=state)
-        kind = probe["step"]["kind"]
+        state = phi("run", "-", state=state)
+        report = phi("session", "state", "-", state=state)
+        kind = report["state"]
         # Failed is terminal too, but recoverable failures must be handled first.
         if kind == "failed":
-            state = recover_failed(state, probe)
-        elif probe["step"]["is_terminal"]:
+            state = recover_failed(state, report)
+        elif kind == "turn_end":
             return state
         elif kind == "request_executor":
-            call = state["frames"][-1]["step"]["tool_calls"][0]
+            call = report["next_tool_call"]
             result = dispatch(call)
-            state = phi("session", "tool-result", "--json", json.dumps(result), state=state)
+            state = phi(
+                "session", "tool-result", "-", "--json", json.dumps(result), state=state
+            )
         # Other non-terminal boundaries (provider/compact) continue with run.
     raise TimeoutError("Phi run budget exhausted")
 ```
@@ -91,7 +93,10 @@ def dispatch(call: dict) -> dict:
 ```
 
 For an ordinary `request_executor`, call `tool-result` directly. Phi consumes
-one pending call; inspect again before handling the next one.
+one pending call; inspect again before handling the next one. The report's
+`completed_results` is the already-finished prefix of the assistant's tool-call
+list. Phi keeps that prefix in the same executor until the final result creates
+the provider step and commits the complete batch to history.
 
 ## `tool_not_found` recovery
 
@@ -100,19 +105,23 @@ When `run` returns a failed Session, inspect the complete outer frame. A
 custom implementation, then restore and resolve the request:
 
 ```python
-def recover_failed(state: dict, probe: dict) -> dict:
-    error = state["frames"][-1]["step"].get("error", {})
-    if error.get("kind") != "tool_not_found":
-        raise PhiCommandError(f"unrecoverable Phi failure: {error}")
-    call = error["tool_request"]
+def recover_failed(state: dict, report: dict) -> dict:
+    failure = report["failure"]
+    if failure.get("kind") != "tool_not_found":
+        raise PhiCommandError(f"unrecoverable Phi failure: {failure}")
+    call = failure["tool"]["request"]
     result = dispatch(call)  # or a dedicated fallback_tool(call)
-    state = phi("session", "rollback", state=state)
-    return phi("session", "tool-result", "--json", json.dumps(result), state=state)
+    state = phi("session", "rollback", "-", state=state)
+    return phi(
+        "session", "tool-result", "-", "--json", json.dumps(result), state=state
+    )
 ```
 
 The order matters: `tool-result` requires `request_executor`, while the failed
-step is not that state. Preserve the call ID and return a bounded JSON value.
-Record the original error and recovery in the audit trace.
+step is not that state. The failed step is an empty-delta child, so rollback
+restores the exact executor, including earlier completed results. Preserve the
+call ID and return a bounded JSON value. Record the original error and recovery
+before rollback removes the failed frame.
 
 ## Approval and workflow orchestration
 
@@ -143,5 +152,8 @@ Handles are runtime process state, not Session data. Preserve `status`,
 ## Testing
 
 Use a fake provider or `--null-executor`. Assert each state transition, pending
-call ordering, rollback/recovery ordering, terminal flag, and history change.
+call ordering, completed-result preservation, rollback/recovery ordering,
+terminal state, and history change. In a multi-tool fixture, assert that
+non-final results do not add executor frames and the final result creates the
+provider frame that commits the complete batch.
 Use temporary directories and never run destructive real tools in fixtures.

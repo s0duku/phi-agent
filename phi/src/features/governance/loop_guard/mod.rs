@@ -107,6 +107,24 @@ impl LoopGuardPolicy {
         }
     }
 
+    fn retry_state(&self, runtime: &PhiAgentRuntime) -> LoopGuardProbe {
+        let ancestor = request_provider_ancestor(runtime.base_expr());
+        let rejected_attempts = ancestor.and_then(loop_guard_rejected_attempts).unwrap_or(0);
+        let boundary_matches = is_loop_guard_failed_step(runtime.base_step()) && ancestor.is_some();
+        let next_rejected_attempts = boundary_matches.then_some(rejected_attempts + 1);
+        let exhausted = boundary_matches && rejected_attempts >= self.max_retries;
+
+        LoopGuardProbe {
+            active: rejected_attempts > 0,
+            rejected_attempts,
+            max_retries: self.max_retries,
+            boundary_matches,
+            will_intervene: boundary_matches && !exhausted,
+            exhausted,
+            next_rejected_attempts,
+        }
+    }
+
     fn inspect_candidate(&mut self, message: &PhiMessage) -> Result<(), PhiAgentRuntimeError> {
         let detection = self
             .detectors
@@ -143,30 +161,6 @@ fn is_loop_guard_failed_step(step: &PhiAgentStep) -> bool {
 }
 
 impl PhiModule for LoopGuardPolicy {
-    type ProbInfo = LoopGuardProbe;
-
-    fn probe_name(&self) -> &'static str {
-        "loop_guard"
-    }
-
-    fn probe(&self, runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
-        let ancestor = request_provider_ancestor(runtime.base_expr());
-        let rejected_attempts = ancestor.and_then(loop_guard_rejected_attempts).unwrap_or(0);
-        let boundary_matches = is_loop_guard_failed_step(runtime.base_step()) && ancestor.is_some();
-        let next_rejected_attempts = boundary_matches.then_some(rejected_attempts + 1);
-        let exhausted = boundary_matches && rejected_attempts >= self.max_retries;
-
-        Some(LoopGuardProbe {
-            active: rejected_attempts > 0,
-            rejected_attempts,
-            max_retries: self.max_retries,
-            boundary_matches,
-            will_intervene: boundary_matches && !exhausted,
-            exhausted,
-            next_rejected_attempts,
-        })
-    }
-
     fn intervene(
         &mut self,
         mut runtime: PhiAgentRuntime,
@@ -178,9 +172,7 @@ impl PhiModule for LoopGuardPolicy {
         // boundary policy chooses whether that failure resumes or remains
         // terminal. This preserves the "prepare first, commit last" step
         // semantics instead of letting event handlers directly control commit.
-        let probe = self
-            .probe(&runtime)
-            .expect("loop guard probe should always be available");
+        let probe = self.retry_state(&runtime);
         if !probe.boundary_matches {
             return next.call(runtime, cont);
         }
@@ -251,8 +243,9 @@ impl PhiModule for LoopGuardPolicy {
                     remove_loop_guard_rejected_attempts(delta);
                 }
             }
-            PhiAgentStepEvent::AfterModelResponse { message, .. } => {
-                self.inspect_candidate(message)?
+            PhiAgentStepEvent::AfterModelResponse { assistant, .. } => {
+                let message = PhiMessage::Assistant((*assistant).clone());
+                self.inspect_candidate(&message)?
             }
             _ => {}
         }

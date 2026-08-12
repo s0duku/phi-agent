@@ -110,7 +110,7 @@ session tool-result, and add a deterministic dry-run test.
 ```
 
 The coding agent should create the controller, define its tool allowlist and
-failure policy, use `phi session peek` for state decisions, and test the
+failure policy, use `phi session state` for state decisions, and test the
 workflow with a bounded run budget. For a single simple task, the same skill
 can produce a shell harness; Python is recommended once the workflow has
 external tools, retries, approvals, or durable checkpoints.
@@ -150,7 +150,7 @@ Session either to the same file or to stdout.
   transitions without running the agent.
 - `session tool-result` resolves the current executor request with an externally
   supplied result.
-- `session peek`, `history`, `rollback`, and `delete` inspect or manage state.
+- `session state`, `history`, `rollback`, and `delete` inspect or manage state.
 
 This interface lets a shell script, a human, or another program inspect and
 modify a Session between agent steps without bypassing Session semantics.
@@ -168,6 +168,14 @@ expressions.
 Failures and context compaction remain explicit step state. Each completed CLI
 operation persists the resulting Session, so evaluation can be inspected,
 rolled back, resumed, or driven by a different scheduler.
+
+Tool calls from one assistant response form one executor batch. Successful
+calls within that batch replace the current `RequestExecutor` step while
+accumulating `pending_results`, so they do not create one frame per tool. When
+the batch completes, Phi creates a new `RequestProvider` frame whose delta
+commits the assistant message and every tool result. A runtime failure always
+creates an empty-delta `Failed` frame over the step that failed; rollback
+therefore restores the exact executor progress immediately before the failure.
 
 ### One HeadlessTerminal job interface
 
@@ -219,7 +227,7 @@ For example, an existing container can be used as the command environment:
 
 ```bash
 docker run -dit --name phi-test-run docker.io/library/alpine /bin/sh
-phi yolo --user "list files" --container phi-test-run
+phi yolo work.session --user "list files" --container phi-test-run
 ```
 
 A custom runner receives its fixed arguments followed by the complete command
@@ -227,7 +235,7 @@ as one final argument. Agent commands apply the same runner to the built-in
 `bash_job` tool:
 
 ```bash
-phi yolo --runner bash --runner-arg=-c --user "list files"
+phi yolo work.session --runner bash --runner-arg=-c --user "list files"
 ```
 
 `--runner` and `--container` are mutually exclusive. Repeat `--runner-arg` for
@@ -264,72 +272,86 @@ either YAML source.
 
 ## Sessions
 
-Without an explicit session path, Phi uses stdin/stdout as a session transport:
+Phi always requires an explicit session target. State-transforming commands use
+`-` to select stdin/stdout as the session transport; `session delete` is a
+file-management operation and accepts only a file path.
 
 ```bash
-phi run --user "Hello"
-cat session.json | phi step
+phi session new - |
+  phi run - --user "Hello" |
+  phi step -
 ```
 
 In pipeline mode:
 
-- no Session input starts a new Session only when `--user` or `--assistant` is present
-- empty stdin without a message prints command help
-- non-empty stdin is parsed as session JSON
+- `-` explicitly selects stdin/stdout
+- stdin is parsed as session JSON
 - stdout emits the updated session JSON
+- `phi session new -` creates the initial Session
+- empty stdin is rejected instead of creating an implicit Session
 
-If you pass `[SESSION]`, Phi switches to file-backed session mode:
+Passing a file path selects file-backed session mode:
 
 ```bash
 phi session new work.session
 phi run work.session --user "Hello"
-echo "follow up" | phi run work.session
+phi run work.session --user "follow up"
 ```
 
 In file-backed mode:
 
 - the file must already exist; create it explicitly with `phi session new SESSION`
+- an empty file is rejected instead of being treated as a new Session
 - appended input and every committed Agent step are atomically written back to the same file
 - readers see either the previous complete Session or the new complete Session
-- stdin is treated as plain user text, not session JSON
+- user and assistant input must be passed through explicit message arguments
 
 ## Commands
 
 Main commands:
 
-- `phi step [SESSION]`
-- `phi run [SESSION]`
-- `phi yolo [SESSION]`
-- `phi session peek [SESSION]`
-- `phi session next [SESSION] --provider`
-- `phi session replace [SESSION] --provider`
-- `phi session tool-result [SESSION] (--json JSON|--text TEXT|--json-file FILE|--text-file FILE)`
-- `phi session rollback [SESSION]`
-- `phi session append [SESSION] (--user TEXT|--assistant TEXT)`
+- `phi step SESSION`
+- `phi run SESSION`
+- `phi yolo SESSION`
+- `phi session state SESSION`
+- `phi session next SESSION --provider`
+- `phi session replace SESSION --provider`
+- `phi session tool-result SESSION (--json JSON|--text TEXT|--json-file FILE|--text-file FILE)`
+- `phi session rollback SESSION`
+- `phi session append SESSION (--user TEXT|--assistant TEXT)`
 - `phi headlessterm exec|access|close`
 - `phi doctor`
 - `phi session new SESSION`
-- `phi session history [SESSION] [--view]`
+- `phi session history SESSION [--view]`
+- `phi session delete SESSION`
 - `phi home new|pack|unpack`
 
 Examples:
 
 ```bash
-phi step --user "Inspect the repository"
-phi run --quiet --user "Summarize the bug"
+phi session new work.session
+phi step work.session --user "Inspect the repository"
+phi run work.session --quiet --user "Summarize the bug"
 phi yolo work.session --user "Keep going until done"
-phi session peek work.session
+phi session state work.session
 phi session next work.session --provider
 phi session replace work.session --provider
-# When peek reports RequestExecutor, resolve its first pending call externally:
+# When state reports `request_executor`, resolve its next call externally:
 phi session tool-result work.session --text "external tool output"
 phi session tool-result work.session --json-file large-result.json
 phi session rollback work.session
 phi doctor
-phi session new work.session
 phi session history work.session
 # Human-readable echo-style transcript:
 phi session history work.session --view
+```
+
+For explicit stdio composition, use `-` as the session target:
+
+```bash
+phi session append - --user "piped" < work.session |
+  phi session rollback - |
+  phi session state -
 ```
 
 HeadlessTerminal commands expose the library job API as JSON:
@@ -376,13 +398,16 @@ Auto-compact triggers when rendered provider-visible history approaches the conf
 
 ## Tools
 
-Builtin tool execution is part of the same runtime step model. Tool calls are staged in the session step state first and only committed to history after execution completes.
+Builtin tool execution is part of the same runtime step model. An assistant
+message contains its tool calls directly. The current `RequestExecutor` keeps
+the assistant and completed `pending_results`; neither is committed to history
+until the complete tool batch produces the next `RequestProvider` frame.
 
 ## Notes
 
 - `run` stops at the next boundary.
 - `yolo` continues through Phi's default failed-session recovery path.
-- `session peek` reports the current session eval state and governance status as JSON.
+- `session state` explains the current serialized eval state as structured JSON without building a runtime.
 - `doctor` reports initialized runtime status, system prompt, home, and exposed tools.
 
 ## Local Build

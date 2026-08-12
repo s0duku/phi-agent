@@ -14,7 +14,7 @@ use crate::{
     error::PhiAgentRuntimeResult,
     executor::{ToolCallOutput, ToolCallRequest},
     headlessterm::{HeadlessTerminal, JobHandle, ReturnWhen},
-    message::{PhiHistory, PhiMessage, PhiToolMessage},
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage},
     module::{PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, PhiReActStep, Session},
@@ -30,8 +30,6 @@ struct PendingProvider {
 struct MarkInterruptedToolResult;
 
 impl PhiModule for MarkInterruptedToolResult {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let PhiAgentStepEvent::AfterToolCall { result, .. } = event else {
             return Ok(());
@@ -110,7 +108,7 @@ async fn interrupted_job_interact_commits_a_structured_tool_result_before_exit()
         PhiAgentStep::request_executor(
             "tool execution is pending",
             Vec::new(),
-            vec![ToolCallRequest {
+            PhiAssistantMessage::tool_calls(vec![ToolCallRequest {
                 id: "call_1".into(),
                 call_id: Some("call_1".into()),
                 name: "job_interact".into(),
@@ -118,7 +116,7 @@ async fn interrupted_job_interact_commits_a_structured_tool_result_before_exit()
                     "handle": handle.0,
                     "wait_ms": 30_000,
                 }),
-            }],
+            }]),
         ),
         vec![PhiMessage::user("wait for it")],
     );
@@ -140,14 +138,13 @@ async fn interrupted_job_interact_commits_a_structured_tool_result_before_exit()
         PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. })
     ));
     let history = agent.session().history();
-    assert!(matches!(
-        &history[1],
-        PhiMessage::Tool(PhiToolMessage::ToolCall { id, name, .. })
-            if id.as_deref() == Some("call_1") && name == "job_interact"
-    ));
+    assert!(matches!(&history[1], PhiMessage::Assistant(assistant)
+        if assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")
+            && assistant.tool_calls[0].name == "job_interact"));
     assert!(matches!(
         &history[2],
-        PhiMessage::Tool(PhiToolMessage::ToolResult { id, name, result })
+        PhiMessage::ToolResult(crate::message::PhiToolResultMessage { id, name, result })
             if id.as_deref() == Some("call_1")
                 && name.as_deref() == Some("job_interact")
                 && result["status"] == "running_user_interrupted"
@@ -296,17 +293,13 @@ fn panicked_cli_agent_persists_checkpoint_before_resuming_unwind() {
     );
     let session_path = unique_test_home().join("session.json");
     checkpoint.save(&session_path).unwrap();
-    let session_input = crate::SessionInput::FileBacked {
-        path: session_path.clone(),
-        session: checkpoint.clone(),
-        stdin_user_message: None,
-    };
+    let session_target = crate::session::SessionTarget::File(session_path.clone());
 
     let panic = catch_unwind(AssertUnwindSafe(|| {
         crate::persist_cli_agent_session(
             checkpoint.clone(),
             crate::CliAgentExit::Panicked(Box::new("original panic")),
-            &session_input,
+            &session_target,
             true,
         )
         .unwrap();

@@ -15,8 +15,6 @@ impl StepBudgetPolicy {
 }
 
 impl PhiModule for StepBudgetPolicy {
-    type ProbInfo = ();
-
     fn intervene(
         &mut self,
         runtime: PhiAgentRuntime,

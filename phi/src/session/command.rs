@@ -1,21 +1,19 @@
 use std::{
     collections::BTreeSet,
     io,
-    io::IsTerminal,
     path::{Path, PathBuf},
 };
 
 use clap::{Arg, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
-use super::{PhiReActStep, Session};
+use super::{PhiReActStep, Session, SessionTarget};
 use crate::{
-    agent::PhiAgentCommand,
     banner,
     cli::MessageArgs,
     config::ModelRequestDefaults,
     features::pretty_history,
     headlessterm::{HeadlessTerminal, JobHandle},
-    message::{PhiMessage, PhiToolMessage},
+    message::PhiMessage,
     render::PhiProviderCall,
 };
 
@@ -53,10 +51,10 @@ pub enum SessionCommand {
     )]
     ToolResult(SessionToolResultArgs),
     #[command(
-        about = "Inspect a session's current eval-state and governance status as JSON",
+        about = "Explain a session's current state as structured JSON",
         before_help = banner::startup_banner()
     )]
-    Peek(SessionPeekArgs),
+    State(SessionStateArgs),
     #[command(
         about = "Remove the outermost session frame",
         before_help = banner::startup_banner()
@@ -78,8 +76,8 @@ pub enum SessionCommand {
 pub struct SessionNewArgs {
     #[command(flatten)]
     config: crate::ConfigArgs,
-    #[arg(value_name = "SESSION")]
-    pub file: PathBuf,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdout")]
+    target: SessionTarget,
 }
 
 #[derive(Args)]
@@ -89,27 +87,27 @@ pub struct SessionHistoryArgs {
         help = "Render history as an echo-style transcript instead of JSON"
     )]
     pub view: bool,
-    pub file: PathBuf,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin")]
+    target: SessionTarget,
 }
 
-#[derive(Default)]
 pub struct SessionAppendArgs {
-    pub file: Option<PathBuf>,
+    target: SessionTarget,
     messages: MessageArgs,
 }
 
 #[derive(Args)]
 pub struct SessionRollbackArgs {
-    #[arg(value_name = "SESSION")]
-    pub file: Option<PathBuf>,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
+    target: SessionTarget,
 }
 
 #[derive(Args)]
 pub struct SessionStepTransformArgs {
     #[command(flatten)]
     config: crate::ConfigArgs,
-    #[arg(value_name = "SESSION")]
-    pub file: Option<PathBuf>,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
+    target: SessionTarget,
     #[arg(long, required = true)]
     pub provider: bool,
 }
@@ -124,8 +122,8 @@ pub struct SessionStepTransformArgs {
 pub struct SessionToolResultArgs {
     #[command(flatten)]
     config: crate::ConfigArgs,
-    #[arg(value_name = "SESSION")]
-    pub file: Option<PathBuf>,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
+    target: SessionTarget,
     #[arg(long, value_name = "JSON")]
     pub json: Option<String>,
     #[arg(long, value_name = "TEXT")]
@@ -137,13 +135,9 @@ pub struct SessionToolResultArgs {
 }
 
 #[derive(Args)]
-pub struct SessionPeekArgs {
-    #[command(flatten)]
-    config: crate::ConfigArgs,
-    #[arg(value_name = "SESSION")]
-    pub file: Option<PathBuf>,
-    #[arg(long = "max-model-request-retries", value_name = "N")]
-    pub max_model_request_retries: Option<usize>,
+pub struct SessionStateArgs {
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin")]
+    target: SessionTarget,
 }
 
 #[derive(Args)]
@@ -162,50 +156,25 @@ pub async fn run(
         SessionCommand::Next(args) => next(home_spec, args),
         SessionCommand::Replace(args) => replace(home_spec, args),
         SessionCommand::ToolResult(args) => tool_result(home_spec, args),
-        SessionCommand::Peek(args) => peek(home_spec, args),
+        SessionCommand::State(args) => state(args),
         SessionCommand::Rollback(args) => rollback(args),
         SessionCommand::History(args) => history(args),
         SessionCommand::Delete(args) => delete(args).await,
     }
 }
 
-fn peek(home_spec: Option<&str>, args: SessionPeekArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = args.config.config.as_deref();
-    let session = match args.file.as_deref() {
-        Some(path) => Session::load(path)?,
-        None if io::stdin().is_terminal() => Session::empty(),
-        None => {
-            use std::io::Read;
-            let mut input = Vec::new();
-            io::stdin().read_to_end(&mut input)?;
-            if input.iter().all(|byte| byte.is_ascii_whitespace()) {
-                Session::empty()
-            } else {
-                Session::load_bytes(&input)?
-            }
-        }
-    };
-    let home = crate::home::load_home(home_spec)?;
-    let config = crate::load_config(home.as_ref(), config_path)?;
-    let retries = args
-        .max_model_request_retries
-        .or(PhiAgentCommand::probe().max_model_request_retries);
-    let agent = crate::agent::build_agent_with_config(
-        session,
-        PhiAgentCommand::Probe(PhiAgentCommand::probe().with_max_model_request_retries(retries)),
-        home,
-        config,
-    )?;
+fn state(args: SessionStateArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let session = args.target.load()?;
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    serde_json::to_writer_pretty(&mut handle, &agent.probe_report())?;
+    serde_json::to_writer_pretty(&mut handle, &session.state()?)?;
     use std::io::Write;
     handle.write_all(b"\n")?;
     Ok(())
 }
 
 fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
-    transform(args.file, |session| {
+    transform(args.target, |session| {
         Ok(session.append_messages(args.messages.messages()))
     })
 }
@@ -215,7 +184,9 @@ fn next(
     args: SessionStepTransformArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let step = provider_step(home_spec, args.config.config.as_deref(), args.provider)?;
-    transform(args.file, |session| Ok(session.next(step)))
+    transform(args.target, |session| {
+        session.next(step).map_err(Into::into)
+    })
 }
 
 fn replace(
@@ -223,7 +194,9 @@ fn replace(
     args: SessionStepTransformArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let step = provider_step(home_spec, args.config.config.as_deref(), args.provider)?;
-    transform(args.file, |session| Ok(session.replace(step)))
+    transform(args.target, |session| {
+        session.replace(step).map_err(Into::into)
+    })
 }
 
 fn tool_result(
@@ -252,7 +225,7 @@ fn tool_result(
         _ => unreachable!("clap requires exactly one tool result input"),
     };
     let resume_call = provider_call(home_spec, config_path)?;
-    transform(args.file, |session| {
+    transform(args.target, |session| {
         session
             .insert_tool_result(result, resume_call)
             .map_err(Into::into)
@@ -284,27 +257,16 @@ fn provider_call(
 }
 
 fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {
-    transform(args.file, |session| Ok(Session::rollback(session)))
+    transform(args.target, |session| Ok(Session::rollback(session)))
 }
 
 fn transform(
-    file: Option<PathBuf>,
+    target: SessionTarget,
     operation: impl FnOnce(Session) -> Result<Session, Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = match &file {
-        Some(path) => Session::load(path)?,
-        None => {
-            use std::io::Read;
-            let mut input = Vec::new();
-            io::stdin().read_to_end(&mut input)?;
-            Session::load_bytes(&input)?
-        }
-    };
+    let session = target.load()?;
     let session = operation(session)?;
-    match file {
-        Some(path) => session.save(path),
-        None => session.write_stdout(),
-    }
+    target.persist(&session)
 }
 
 impl FromArgMatches for SessionAppendArgs {
@@ -315,7 +277,9 @@ impl FromArgMatches for SessionAppendArgs {
 
     fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, Error> {
         Ok(Self {
-            file: matches.remove_one("file"),
+            target: matches
+                .remove_one("target")
+                .expect("clap requires a session target"),
             messages: MessageArgs::parse(matches),
         })
     }
@@ -335,9 +299,11 @@ impl Args for SessionAppendArgs {
     fn augment_args(command: Command) -> Command {
         MessageArgs::augment(
             command.arg(
-                Arg::new("file")
+                Arg::new("target")
                     .value_name("SESSION")
-                    .value_parser(clap::value_parser!(PathBuf)),
+                    .help("Session file, or - for stdin/stdout")
+                    .required(true)
+                    .value_parser(clap::value_parser!(SessionTarget)),
             ),
         )
     }
@@ -350,11 +316,12 @@ impl Args for SessionAppendArgs {
 fn new(home_spec: Option<&str>, args: SessionNewArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = crate::home::load_home(home_spec)?;
     let config = crate::load_config(home.as_ref(), args.config.config.as_deref())?;
-    crate::new_session_with_config(&config)?.create(args.file)
+    let session = crate::new_session_with_config(&config)?;
+    args.target.create(&session)
 }
 
 fn history(args: SessionHistoryArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let session = Session::load(&args.file)?;
+    let session = args.target.load()?;
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     use std::io::Write;
@@ -405,11 +372,11 @@ async fn delete(args: SessionDeleteArgs) -> Result<(), Box<dyn std::error::Error
 fn running_job_handles(session: &Session) -> Vec<String> {
     let mut handles = BTreeSet::new();
     for message in session.history().iter() {
-        let PhiMessage::Tool(PhiToolMessage::ToolResult { result, .. }) = message else {
+        let PhiMessage::ToolResult(result) = message else {
             continue;
         };
         if !matches!(
-            result["value"]["status"].as_str(),
+            result.result["value"]["status"].as_str(),
             Some(
                 "running"
                     | "running_output_settled"
@@ -419,7 +386,7 @@ fn running_job_handles(session: &Session) -> Vec<String> {
         ) {
             continue;
         }
-        let Some(handle) = result["value"]["handle"].as_str() else {
+        let Some(handle) = result.result["value"]["handle"].as_str() else {
             continue;
         };
         if JobHandle::is_valid(handle) {

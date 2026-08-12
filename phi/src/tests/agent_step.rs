@@ -5,7 +5,7 @@ use crate::{
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::{PhiTool, ToolCallRequest, ToolCallResponse},
     home::LocalPhiHome,
-    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent, PhiToolMessage},
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningContent},
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, PhiReActStep, Session},
@@ -20,6 +20,7 @@ use super::support::{env_lock, step_agent_builder, stub_client};
 struct RewriteToolCallModule;
 struct RejectAfterModelResponseModule;
 struct RejectAfterToolCallModule;
+struct RejectExecutorReplaceModule;
 struct RewriteAllAssistantMessagesModule;
 struct CaptureModelRequestModule {
     captured_temperature: Arc<Mutex<Option<f64>>>,
@@ -30,6 +31,9 @@ struct CaptureEchoEventsModule {
 }
 struct CaptureWarningsModule {
     warnings: Arc<Mutex<Vec<String>>>,
+}
+struct CaptureCommitEventsModule {
+    events: Arc<Mutex<Vec<&'static str>>>,
 }
 struct RewriteArgumentsInsideTool;
 struct RegisterRewriteArgumentsToolModule;
@@ -58,8 +62,6 @@ struct ModelResponseProvider {
 }
 
 impl PhiModule for RewriteToolCallModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::BeforeToolCall { request, .. } = event {
             request.arguments = serde_json::json!({ "cmd": shell_echo_rewritten_command() });
@@ -69,8 +71,6 @@ impl PhiModule for RewriteToolCallModule {
 }
 
 impl PhiModule for RejectAfterModelResponseModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterModelResponse { .. } = event {
             return Err(PhiAgentRuntimeError::module(
@@ -82,8 +82,6 @@ impl PhiModule for RejectAfterModelResponseModule {
 }
 
 impl PhiModule for RejectAfterToolCallModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterToolCall { .. } = event {
             return Err(PhiAgentRuntimeError::module("module rejected tool result"));
@@ -92,24 +90,30 @@ impl PhiModule for RejectAfterToolCallModule {
     }
 }
 
-impl PhiModule for RewriteAllAssistantMessagesModule {
-    type ProbInfo = ();
-
+impl PhiModule for RejectExecutorReplaceModule {
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
-        let PhiAgentStepEvent::AfterModelResponse { message, .. } = event else {
+        if matches!(event, PhiAgentStepEvent::BeforeReplaceBaseStep { .. }) {
+            return Err(PhiAgentRuntimeError::module(
+                "module rejected executor replace",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl PhiModule for RewriteAllAssistantMessagesModule {
+    fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
+        let PhiAgentStepEvent::AfterModelResponse { assistant, .. } = event else {
             return Ok(());
         };
 
-        match message {
-            PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => {
-                *text = "rewritten text".to_string();
-            }
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => {
-                *content = vec![PhiReasoningContent::Summary(
-                    "rewritten reasoning".to_string(),
-                )];
-            }
-            _ => {}
+        if let Some(content) = &mut assistant.content {
+            *content = "rewritten text".to_string();
+        }
+        for reasoning in &mut assistant.reasoning {
+            reasoning.content = vec![PhiReasoningContent::Summary(
+                "rewritten reasoning".to_string(),
+            )];
         }
 
         Ok(())
@@ -117,8 +121,6 @@ impl PhiModule for RewriteAllAssistantMessagesModule {
 }
 
 impl PhiModule for CaptureModelRequestModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let PhiAgentStepEvent::BeforeModelRequest {
             history, request, ..
@@ -142,8 +144,6 @@ impl PhiModule for CaptureModelRequestModule {
 }
 
 impl PhiModule for CaptureEchoEventsModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         let label = match event {
             PhiAgentStepEvent::AfterModelResponseParsed { messages } => {
@@ -167,8 +167,6 @@ impl PhiModule for CaptureEchoEventsModule {
 }
 
 impl PhiModule for CaptureWarningsModule {
-    type ProbInfo = ();
-
     fn observe(&mut self, event: &PhiAgentCommitEvent<'_>) {
         let PhiAgentCommitEvent::WarningEmitted { message } = event else {
             return;
@@ -180,9 +178,20 @@ impl PhiModule for CaptureWarningsModule {
     }
 }
 
-impl PhiModule for RegisterRewriteArgumentsToolModule {
-    type ProbInfo = ();
+impl PhiModule for CaptureCommitEventsModule {
+    fn observe(&mut self, event: &PhiAgentCommitEvent<'_>) {
+        let label = match event {
+            PhiAgentCommitEvent::ModelResponseCommitted { .. } => "model",
+            PhiAgentCommitEvent::MessageCommitted {
+                message: PhiMessage::ToolResult(_),
+            } => "tool_result",
+            _ => return,
+        };
+        self.events.lock().unwrap().push(label);
+    }
+}
 
+impl PhiModule for RegisterRewriteArgumentsToolModule {
     fn module_tools(
         &mut self,
         _context: &crate::agent::PhiAgentBuildContext,
@@ -192,8 +201,6 @@ impl PhiModule for RegisterRewriteArgumentsToolModule {
 }
 
 impl PhiModule for RegisterStructuredFailureToolModule {
-    type ProbInfo = ();
-
     fn module_tools(
         &mut self,
         _context: &crate::agent::PhiAgentBuildContext,
@@ -203,8 +210,6 @@ impl PhiModule for RegisterStructuredFailureToolModule {
 }
 
 impl PhiModule for RegisterDeterministicSuccessToolModule {
-    type ProbInfo = ();
-
     fn module_tools(
         &mut self,
         _context: &crate::agent::PhiAgentBuildContext,
@@ -680,13 +685,16 @@ async fn after_model_response_rewrites_are_committed_for_all_assistant_messages(
     );
 
     let outcome = step_agent_builder(session)
-        .with_client(stub_client(vec![
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                id: None,
-                content: vec![PhiReasoningContent::Summary("original reasoning".into())],
-            }),
-            PhiMessage::assistant("original text"),
-        ]))
+        .with_client(stub_client(vec![PhiMessage::Assistant(
+            PhiAssistantMessage::from_parts(
+                Some("original text".into()),
+                vec![crate::message::PhiReasoningBlock {
+                    id: None,
+                    content: vec![PhiReasoningContent::Summary("original reasoning".into())],
+                }],
+                Vec::new(),
+            ),
+        )]))
         .with_module(RewriteAllAssistantMessagesModule)
         .build()
         .expect("agent should build")
@@ -697,11 +705,14 @@ async fn after_model_response_rewrites_are_committed_for_all_assistant_messages(
         outcome.session.history(),
         &[
             PhiMessage::user("hello"),
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                id: None,
-                content: vec![PhiReasoningContent::Summary("rewritten reasoning".into())],
-            }),
-            PhiMessage::assistant("rewritten text"),
+            PhiMessage::Assistant(crate::message::PhiAssistantMessage::from_parts(
+                Some("rewritten text".into()),
+                vec![crate::message::PhiReasoningBlock {
+                    id: None,
+                    content: vec![PhiReasoningContent::Summary("rewritten reasoning".into())],
+                }],
+                Vec::new(),
+            )),
         ]
     );
 }
@@ -742,12 +753,12 @@ async fn tool_call_message_commits_rewritten_request_payload() {
         PhiAgentStep::request_executor(
             "tool execution is pending",
             Vec::new(),
-            vec![ToolCallRequest {
+            PhiAssistantMessage::tool_calls(vec![ToolCallRequest {
                 id: "call_1".to_string(),
                 call_id: Some("call_1".to_string()),
                 name: shell_tool_name().to_string(),
                 arguments: serde_json::json!({ "cmd": "echo original" }),
-            }],
+            }]),
         ),
         vec![PhiMessage::user("hello")],
     );
@@ -764,7 +775,10 @@ async fn tool_call_message_commits_rewritten_request_payload() {
     let tool_call = history
         .iter()
         .find_map(|message| match message {
-            PhiMessage::Tool(PhiToolMessage::ToolCall { arguments, .. }) => Some(arguments),
+            PhiMessage::Assistant(assistant) => assistant
+                .tool_calls
+                .first()
+                .map(|request| &request.arguments),
             _ => None,
         })
         .expect("tool call message should be committed");
@@ -796,12 +810,12 @@ async fn tool_call_only_response_transitions_to_request_executor() {
     assert_eq!(outcome.session.history(), &[PhiMessage::user("list files")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, assistant, .. })
         if pending_messages.is_empty()
-            && tool_calls.len() == 1
-            && tool_calls[0].name == shell_tool_name()
-            && tool_calls[0].call_id.as_deref() == Some("call_1")
-            && tool_calls[0].arguments == serde_json::json!({ "cmd": "ls" })
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].name == shell_tool_name()
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")
+            && assistant.tool_calls[0].arguments == serde_json::json!({ "cmd": "ls" })
     ));
 }
 
@@ -810,13 +824,15 @@ async fn tool_internal_argument_rewrite_is_committed_into_history() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("running custom tool")],
-            vec![ToolCallRequest {
-                id: "call_1".to_string(),
-                call_id: Some("call_1".to_string()),
-                name: "rewrite_args".to_string(),
-                arguments: serde_json::json!({ "value": "original" }),
-            }],
+            Vec::new(),
+            PhiAssistantMessage::text("running custom tool").with_tool_calls(vec![
+                ToolCallRequest {
+                    id: "call_1".to_string(),
+                    call_id: Some("call_1".to_string()),
+                    name: "rewrite_args".to_string(),
+                    arguments: serde_json::json!({ "value": "original" }),
+                },
+            ]),
         ),
         vec![PhiMessage::user("hello")],
     );
@@ -832,7 +848,10 @@ async fn tool_internal_argument_rewrite_is_committed_into_history() {
     let tool_call = history
         .iter()
         .find_map(|message| match message {
-            PhiMessage::Tool(PhiToolMessage::ToolCall { arguments, .. }) => Some(arguments),
+            PhiMessage::Assistant(assistant) => assistant
+                .tool_calls
+                .first()
+                .map(|request| &request.arguments),
             _ => None,
         })
         .expect("tool call should be committed");
@@ -851,14 +870,14 @@ async fn assistant_and_tool_call_response_stays_pending_until_tool_step_commits(
     );
 
     let outcome = step_agent_builder(session)
-        .with_client(stub_client(vec![
-            PhiMessage::assistant("running bash now"),
-            PhiMessage::tool_call(
-                Some("call_1".to_string()),
-                shell_tool_name(),
-                serde_json::json!({ "cmd": "ls" }),
-            ),
-        ]))
+        .with_client(stub_client(vec![PhiMessage::Assistant(
+            PhiAssistantMessage::text("running bash now").with_tool_calls(vec![ToolCallRequest {
+                id: "call_1".to_string(),
+                call_id: Some("call_1".to_string()),
+                name: shell_tool_name().to_string(),
+                arguments: serde_json::json!({ "cmd": "ls" }),
+            }]),
+        )]))
         .build()
         .expect("agent should build")
         .run_single_step()
@@ -867,12 +886,13 @@ async fn assistant_and_tool_call_response_stays_pending_until_tool_step_commits(
     assert_eq!(outcome.session.history(), &[PhiMessage::user("list files")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
-        if pending_messages.as_slice() == [PhiMessage::assistant("running bash now")].as_slice()
-            && tool_calls.len() == 1
-            && tool_calls[0].name == shell_tool_name()
-            && tool_calls[0].call_id.as_deref() == Some("call_1")
-            && tool_calls[0].arguments == serde_json::json!({ "cmd": "ls" })
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, assistant, .. })
+        if pending_messages.is_empty()
+            && assistant.content.as_deref() == Some("running bash now")
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].name == shell_tool_name()
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")
+            && assistant.tool_calls[0].arguments == serde_json::json!({ "cmd": "ls" })
     ));
 }
 
@@ -885,14 +905,14 @@ async fn echo_events_follow_response_parse_and_tool_evaluation_boundaries() {
     );
 
     let first = step_agent_builder(session)
-        .with_client(stub_client(vec![
-            PhiMessage::assistant("running bash now"),
-            PhiMessage::tool_call(
-                Some("call_1".to_string()),
-                shell_tool_name(),
-                serde_json::json!({ "cmd": shell_echo_ok_command() }),
-            ),
-        ]))
+        .with_client(stub_client(vec![PhiMessage::Assistant(
+            PhiAssistantMessage::text("running bash now").with_tool_calls(vec![ToolCallRequest {
+                id: "call_1".to_string(),
+                call_id: Some("call_1".to_string()),
+                name: shell_tool_name().to_string(),
+                arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
+            }]),
+        )]))
         .with_module(CaptureEchoEventsModule {
             events: events.clone(),
         })
@@ -939,19 +959,22 @@ async fn multiple_tool_calls_response_transitions_to_request_executor_queue() {
     );
 
     let outcome = step_agent_builder(session)
-        .with_client(stub_client(vec![
-            PhiMessage::assistant("running two tools"),
-            PhiMessage::tool_call(
-                Some("call_1".to_string()),
-                shell_tool_name(),
-                serde_json::json!({ "cmd": "printf first" }),
-            ),
-            PhiMessage::tool_call(
-                Some("call_2".to_string()),
-                shell_tool_name(),
-                serde_json::json!({ "cmd": "printf second" }),
-            ),
-        ]))
+        .with_client(stub_client(vec![PhiMessage::Assistant(
+            PhiAssistantMessage::text("running two tools").with_tool_calls(vec![
+                ToolCallRequest {
+                    id: "call_1".to_string(),
+                    call_id: Some("call_1".to_string()),
+                    name: shell_tool_name().to_string(),
+                    arguments: serde_json::json!({ "cmd": "printf first" }),
+                },
+                ToolCallRequest {
+                    id: "call_2".to_string(),
+                    call_id: Some("call_2".to_string()),
+                    name: shell_tool_name().to_string(),
+                    arguments: serde_json::json!({ "cmd": "printf second" }),
+                },
+            ]),
+        )]))
         .build()
         .expect("agent should build")
         .run_single_step()
@@ -963,11 +986,12 @@ async fn multiple_tool_calls_response_transitions_to_request_executor_queue() {
     );
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
-        if pending_messages.as_slice() == [PhiMessage::assistant("running two tools")].as_slice()
-            && tool_calls.len() == 2
-            && tool_calls[0].call_id.as_deref() == Some("call_1")
-            && tool_calls[1].call_id.as_deref() == Some("call_2")
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, assistant, .. })
+        if pending_messages.is_empty()
+            && assistant.content.as_deref() == Some("running two tools")
+            && assistant.tool_calls.len() == 2
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")
+            && assistant.tool_calls[1].call_id.as_deref() == Some("call_2")
     ));
 }
 
@@ -976,8 +1000,8 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("running two tools")],
-            vec![
+            Vec::new(),
+            PhiAssistantMessage::text("running two tools").with_tool_calls(vec![
                 ToolCallRequest {
                     id: "call_1".to_string(),
                     call_id: Some("call_1".to_string()),
@@ -990,7 +1014,7 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
                     name: shell_tool_name().to_string(),
                     arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
                 },
-            ],
+            ]),
         ),
         vec![PhiMessage::user("hello")],
     );
@@ -1003,22 +1027,29 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
         .await
         .session;
 
-    assert_eq!(first.history()[0], PhiMessage::user("hello"));
+    assert_eq!(first.history(), &[PhiMessage::user("hello")]);
     assert_eq!(
-        first.history()[1],
-        PhiMessage::assistant("running two tools")
+        serde_json::to_value(&first).unwrap()["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "advancing within one tool batch must replace its executor frame"
     );
     assert!(matches!(
-        &first.history()[2],
-        PhiMessage::Tool(PhiToolMessage::ToolCall { id, .. }) if id.as_deref() == Some("call_1")
-    ));
-    assert!(matches!(
         first.step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, detail })
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor {
+            pending_messages,
+            assistant,
+            pending_results,
+            detail,
+        })
         if detail == "additional tool execution is pending"
             && pending_messages.is_empty()
-            && tool_calls.len() == 1
-            && tool_calls[0].call_id.as_deref() == Some("call_2")
+            && assistant.content.as_deref() == Some("running two tools")
+            && assistant.tool_calls.len() == 2
+            && pending_results.len() == 1
+            && pending_results[0].id.as_deref() == Some("call_1")
     ));
 
     let second = step_agent_builder(first)
@@ -1029,10 +1060,27 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
         .await
         .session;
 
-    assert!(matches!(
-        &second.history()[4],
-        PhiMessage::Tool(PhiToolMessage::ToolCall { id, .. }) if id.as_deref() == Some("call_2")
-    ));
+    assert_eq!(
+        serde_json::to_value(&second).unwrap()["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "completing one tool batch must create a provider frame over its executor"
+    );
+    assert_eq!(second.history().len(), 4);
+    assert!(
+        matches!(&second.history()[1], PhiMessage::Assistant(assistant)
+        if assistant.tool_calls.len() == 2)
+    );
+    assert!(
+        matches!(&second.history()[2], PhiMessage::ToolResult(result)
+        if result.id.as_deref() == Some("call_1"))
+    );
+    assert!(
+        matches!(&second.history()[3], PhiMessage::ToolResult(result)
+        if result.id.as_deref() == Some("call_2"))
+    );
     assert!(matches!(
         second.step(),
         PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
@@ -1041,17 +1089,60 @@ async fn multiple_tool_calls_execute_sequentially_without_dropping_queue() {
 }
 
 #[tokio::test]
+async fn failed_executor_replace_expands_over_the_original_executor() {
+    let session = Session::from_root(
+        PhiAgentStep::request_executor(
+            "tool execution is pending",
+            Vec::new(),
+            PhiAssistantMessage::tool_calls(vec![
+                ToolCallRequest {
+                    id: "call_1".to_string(),
+                    call_id: Some("call_1".to_string()),
+                    name: shell_tool_name().to_string(),
+                    arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
+                },
+                ToolCallRequest {
+                    id: "call_2".to_string(),
+                    call_id: Some("call_2".to_string()),
+                    name: shell_tool_name().to_string(),
+                    arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
+                },
+            ]),
+        ),
+        vec![PhiMessage::user("hello")],
+    );
+
+    let failed = step_agent_builder(session)
+        .with_client(Arc::new(EmptyProvider))
+        .with_module(RejectExecutorReplaceModule)
+        .build()
+        .expect("agent should build")
+        .run_single_step()
+        .await
+        .session;
+
+    assert!(matches!(failed.step(), PhiAgentStep::Failed(_)));
+    let rolled_back = Session::rollback(failed);
+    assert_eq!(rolled_back.history(), &[PhiMessage::user("hello")]);
+    assert!(matches!(
+        rolled_back.step(),
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_results, .. })
+            if pending_results.is_empty()
+    ));
+}
+
+#[tokio::test]
 async fn after_tool_call_rejection_does_not_commit_half_finished_tool_history() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("running bash now")],
-            vec![ToolCallRequest {
+            Vec::new(),
+            PhiAssistantMessage::text("running bash now").with_tool_calls(vec![ToolCallRequest {
                 id: "call_1".to_string(),
                 call_id: Some("call_1".to_string()),
                 name: shell_tool_name().to_string(),
                 arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
-            }],
+            }]),
         ),
         vec![PhiMessage::user("hello")],
     );
@@ -1082,13 +1173,13 @@ async fn tool_step_commits_pending_assistant_then_tool_call_then_result() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("running bash now")],
-            vec![ToolCallRequest {
+            Vec::new(),
+            PhiAssistantMessage::text("running bash now").with_tool_calls(vec![ToolCallRequest {
                 id: "call_1".to_string(),
                 call_id: Some("call_1".to_string()),
                 name: shell_tool_name().to_string(),
                 arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
-            }],
+            }]),
         ),
         vec![PhiMessage::user("hello")],
     );
@@ -1102,16 +1193,13 @@ async fn tool_step_commits_pending_assistant_then_tool_call_then_result() {
 
     let history = outcome.session.history();
     assert_eq!(history[0], PhiMessage::user("hello"));
-    assert_eq!(history[1], PhiMessage::assistant("running bash now"));
-    assert_eq!(
-        history[2],
-        PhiMessage::tool_call(
-            Some("call_1".to_string()),
-            shell_tool_name(),
-            serde_json::json!({ "cmd": shell_echo_ok_command() }),
-        )
-    );
-    let PhiMessage::Tool(PhiToolMessage::ToolResult { id, name, result }) = &history[3] else {
+    assert!(matches!(&history[1], PhiMessage::Assistant(assistant)
+        if assistant.content.as_deref() == Some("running bash now")
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")));
+    let PhiMessage::ToolResult(crate::message::PhiToolResultMessage { id, name, result }) =
+        &history[2]
+    else {
         panic!("fourth history entry should be a tool result");
     };
     assert_eq!(id.as_deref(), Some("call_1"));
@@ -1143,13 +1231,15 @@ async fn unknown_tool_fails_without_recovery_module() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("trying custom tool")],
-            vec![ToolCallRequest {
-                id: "call_missing".to_string(),
-                call_id: Some("call_missing".to_string()),
-                name: "no_exist".to_string(),
-                arguments: serde_json::json!({ "name": "phi" }),
-            }],
+            Vec::new(),
+            PhiAssistantMessage::text("trying custom tool").with_tool_calls(vec![
+                ToolCallRequest {
+                    id: "call_missing".to_string(),
+                    call_id: Some("call_missing".to_string()),
+                    name: "no_exist".to_string(),
+                    arguments: serde_json::json!({ "name": "phi" }),
+                },
+            ]),
         ),
         vec![PhiMessage::user("force call the missing tool")],
     );
@@ -1170,7 +1260,10 @@ async fn unknown_tool_fails_without_recovery_module() {
         PhiAgentStep::Failed(failed)
         if matches!(failed.error(), PhiAgentRuntimeError::ToolNotFound { .. })
             && failed.error().tool_request().is_some_and(|request| request.name == "no_exist")
-            && failed.error().pending_messages().is_some_and(|messages| messages == [PhiMessage::assistant("trying custom tool")].as_slice())
+            && failed.error().pending_messages().is_some_and(<[_]>::is_empty)
+            && failed.error().assistant().is_some_and(|assistant|
+                assistant.content.as_deref() == Some("trying custom tool")
+                    && assistant.tool_calls.len() == 1)
     ));
 }
 
@@ -1185,8 +1278,8 @@ async fn structured_tool_error_bubbles_to_failed_and_default_recovery_commits_it
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("trying structured failure")],
-            vec![request],
+            Vec::new(),
+            PhiAssistantMessage::text("trying structured failure").with_tool_calls(vec![request]),
         ),
         vec![PhiMessage::user("run failing tool")],
     );
@@ -1220,7 +1313,9 @@ async fn structured_tool_error_bubbles_to_failed_and_default_recovery_commits_it
     let result = history
         .iter()
         .find_map(|message| match message {
-            PhiMessage::Tool(PhiToolMessage::ToolResult { result, .. }) => Some(result),
+            PhiMessage::ToolResult(crate::message::PhiToolResultMessage { result, .. }) => {
+                Some(result)
+            }
             _ => None,
         })
         .expect("recovery should commit a tool result");
@@ -1235,13 +1330,15 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("trying custom tool")],
-            vec![ToolCallRequest {
-                id: "call_missing".to_string(),
-                call_id: Some("call_missing".to_string()),
-                name: "no_exist".to_string(),
-                arguments: serde_json::json!({ "name": "phi" }),
-            }],
+            Vec::new(),
+            PhiAssistantMessage::text("trying custom tool").with_tool_calls(vec![
+                ToolCallRequest {
+                    id: "call_missing".to_string(),
+                    call_id: Some("call_missing".to_string()),
+                    name: "no_exist".to_string(),
+                    arguments: serde_json::json!({ "name": "phi" }),
+                },
+            ]),
         ),
         vec![PhiMessage::user("force call the missing tool")],
     );
@@ -1267,16 +1364,13 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
 
     let history = outcome.session.history();
     assert_eq!(history[0], PhiMessage::user("force call the missing tool"));
-    assert_eq!(history[1], PhiMessage::assistant("trying custom tool"));
-    assert_eq!(
-        history[2],
-        PhiMessage::tool_call(
-            Some("call_missing".to_string()),
-            "no_exist",
-            serde_json::json!({ "name": "phi" }),
-        )
-    );
-    let PhiMessage::Tool(PhiToolMessage::ToolResult { id, name, result }) = &history[3] else {
+    assert!(matches!(&history[1], PhiMessage::Assistant(assistant)
+        if assistant.content.as_deref() == Some("trying custom tool")
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_missing")));
+    let PhiMessage::ToolResult(crate::message::PhiToolResultMessage { id, name, result }) =
+        &history[2]
+    else {
         panic!("fourth history entry should be a tool result");
     };
     assert_eq!(id.as_deref(), Some("call_missing"));
@@ -1299,12 +1393,49 @@ async fn unknown_tool_recovery_commits_failure_result_and_resumes_model_flow() {
 }
 
 #[tokio::test]
+async fn tool_recovery_emits_model_and_tool_result_commit_events() {
+    let session = Session::from_root(
+        PhiAgentStep::request_executor(
+            "tool execution is pending",
+            Vec::new(),
+            PhiAssistantMessage::text("trying custom tool").with_tool_calls(vec![
+                ToolCallRequest {
+                    id: "call_missing".to_string(),
+                    call_id: Some("call_missing".to_string()),
+                    name: "no_exist".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+            ]),
+        ),
+        vec![PhiMessage::user("run missing tool")],
+    );
+    let failed = step_agent_builder(session)
+        .build()
+        .unwrap()
+        .run_single_step()
+        .await
+        .session;
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    default_step_agent_builder(failed)
+        .with_module(CaptureCommitEventsModule {
+            events: events.clone(),
+        })
+        .build()
+        .unwrap()
+        .run_single_step()
+        .await;
+
+    assert_eq!(*events.lock().unwrap(), vec!["model", "tool_result"]);
+}
+
+#[tokio::test]
 async fn unknown_tool_recovery_drops_remaining_tool_queue_by_default() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("trying two tools")],
-            vec![
+            Vec::new(),
+            PhiAssistantMessage::text("trying two tools").with_tool_calls(vec![
                 ToolCallRequest {
                     id: "call_missing".to_string(),
                     call_id: Some("call_missing".to_string()),
@@ -1317,7 +1448,7 @@ async fn unknown_tool_recovery_drops_remaining_tool_queue_by_default() {
                     name: shell_tool_name().to_string(),
                     arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
                 },
-            ],
+            ]),
         ),
         vec![PhiMessage::user("force call two tools")],
     );
@@ -1342,15 +1473,12 @@ async fn unknown_tool_recovery_drops_remaining_tool_queue_by_default() {
         recovered.history()[0],
         PhiMessage::user("force call two tools")
     );
-    assert_eq!(
-        recovered.history()[1],
-        PhiMessage::assistant("trying two tools")
+    assert!(
+        matches!(&recovered.history()[1], PhiMessage::Assistant(assistant)
+        if assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_missing"))
     );
-    assert!(matches!(
-        &recovered.history()[2],
-        PhiMessage::Tool(PhiToolMessage::ToolCall { id, .. }) if id.as_deref() == Some("call_missing")
-    ));
-    assert_eq!(recovered.history().len(), 4);
+    assert_eq!(recovered.history().len(), 3);
     assert!(matches!(
         recovered.step(),
         PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
@@ -1363,8 +1491,8 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("trying three tools")],
-            vec![
+            Vec::new(),
+            PhiAssistantMessage::text("trying three tools").with_tool_calls(vec![
                 ToolCallRequest {
                     id: "call_1".to_string(),
                     call_id: Some("call_1".to_string()),
@@ -1383,7 +1511,7 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
                     name: shell_tool_name().to_string(),
                     arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
                 },
-            ],
+            ]),
         ),
         vec![PhiMessage::user("force call three tools")],
     );
@@ -1399,10 +1527,11 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
 
     assert!(matches!(
         after_first.step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { tool_calls, .. })
-        if tool_calls.len() == 2
-            && tool_calls[0].call_id.as_deref() == Some("call_missing")
-            && tool_calls[1].call_id.as_deref() == Some("call_3")
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { assistant, pending_results, .. })
+        if assistant.tool_calls.len() == 3
+            && pending_results.len() == 1
+            && assistant.tool_calls[1].call_id.as_deref() == Some("call_missing")
+            && assistant.tool_calls[2].call_id.as_deref() == Some("call_3")
     ));
 
     let failed = step_agent_builder(after_first)
@@ -1419,6 +1548,27 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
         if matches!(failed.error(), PhiAgentRuntimeError::ToolNotFound { .. })
             && failed.error().remaining_tool_requests().is_some_and(|requests| requests.len() == 1)
     ));
+    assert_eq!(
+        serde_json::to_value(&failed).unwrap()["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "a tool failure must add exactly one failed frame"
+    );
+    let rolled_back = Session::rollback(failed.clone());
+    assert_eq!(
+        serde_json::to_value(&rolled_back).unwrap()["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        rolled_back.step(),
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_results, .. })
+            if pending_results.len() == 1
+    ));
 
     let recovered = default_step_agent_builder(failed)
         .with_client(Arc::new(EmptyProvider))
@@ -1430,27 +1580,23 @@ async fn multi_tool_recovery_keeps_prior_success_and_ignores_remaining_after_fai
 
     let history = recovered.history();
     assert_eq!(history[0], PhiMessage::user("force call three tools"));
-    assert_eq!(history[1], PhiMessage::assistant("trying three tools"));
+    assert!(matches!(&history[1], PhiMessage::Assistant(assistant)
+        if assistant.content.as_deref() == Some("trying three tools")
+            && assistant.tool_calls.len() == 2
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")
+            && assistant.tool_calls[1].call_id.as_deref() == Some("call_missing")));
     assert!(matches!(
         &history[2],
-        PhiMessage::Tool(PhiToolMessage::ToolCall { id, .. }) if id.as_deref() == Some("call_1")
-    ));
-    assert!(matches!(
-        &history[3],
-        PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. })
+        PhiMessage::ToolResult(crate::message::PhiToolResultMessage { id, result, .. })
             if id.as_deref() == Some("call_1") && result["status"] == serde_json::json!("exited")
     ));
     assert!(matches!(
-        &history[4],
-        PhiMessage::Tool(PhiToolMessage::ToolCall { id, .. }) if id.as_deref() == Some("call_missing")
-    ));
-    assert!(matches!(
-        &history[5],
-        PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. })
+        &history[3],
+        PhiMessage::ToolResult(crate::message::PhiToolResultMessage { id, result, .. })
             if id.as_deref() == Some("call_missing")
                 && result["kind"] == serde_json::json!("tool_not_found")
     ));
-    assert_eq!(history.len(), 6);
+    assert_eq!(history.len(), 4);
     assert!(matches!(
         recovered.step(),
         PhiAgentStep::ReAct(PhiReActStep::RequestProvider { detail, .. })
@@ -1463,13 +1609,13 @@ async fn failed_tool_step_rolls_back_to_original_request() {
     let session = Session::from_root(
         PhiAgentStep::request_executor(
             "tool execution is pending",
-            vec![PhiMessage::assistant("running bash now")],
-            vec![ToolCallRequest {
+            Vec::new(),
+            PhiAssistantMessage::text("running bash now").with_tool_calls(vec![ToolCallRequest {
                 id: "call_1".to_string(),
                 call_id: Some("call_1".to_string()),
                 name: shell_tool_name().to_string(),
                 arguments: serde_json::json!({ "cmd": shell_echo_ok_command() }),
-            }],
+            }]),
         ),
         vec![PhiMessage::user("hello")],
     );

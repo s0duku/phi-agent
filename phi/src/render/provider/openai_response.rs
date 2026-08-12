@@ -1,15 +1,15 @@
 use std::vec;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::{PhiModelResponse, PhiModelTurnState, PhiProvider, PhiProviderCall};
+use super::{DynProvider, PhiModelResponse, PhiModelTurnState, PhiProviderCall};
 use crate::{
     config::ProviderConfig,
     error::{PhiAgentResult, PhiAgentRuntimeError},
     executor::PhiToolDefinition,
     message::{
-        PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiToolMessage, PhiUserMessage,
+        PhiAssistantMessage, PhiMessage, PhiReasoningBlock, PhiReasoningContent, PhiUserMessage,
     },
     render::PhiRenderedMessages,
 };
@@ -27,41 +27,32 @@ impl ResponsesClient {
             config,
         }
     }
-}
 
-#[async_trait]
-impl PhiProvider for ResponsesClient {
-    type ProviderMessage = ProviderMessage;
-    type ProviderTool = ResponsesToolDefinition;
-
-    fn provider_messages(
+    fn phi_assistant(
         &self,
-        messages: &PhiRenderedMessages,
-    ) -> PhiAgentResult<Vec<Self::ProviderMessage>> {
-        Ok(ResponsesPrompt::from_phi_messages(messages).input)
-    }
-
-    fn phi_messages(
-        &self,
-        response: Vec<Self::ProviderMessage>,
-    ) -> PhiAgentResult<Vec<PhiMessage>> {
-        response
+        response: Vec<ProviderMessage>,
+    ) -> PhiAgentResult<Option<PhiAssistantMessage>> {
+        let messages = response
             .into_iter()
             .map(ProviderMessage::into_phi_messages)
             .collect::<Result<Vec<_>, _>>()
-            .map(|messages| messages.into_iter().flatten().collect())
+            .map(|messages| messages.into_iter().flatten().collect::<Vec<_>>())?;
+        coalesce_assistant_response(messages)
     }
 
-    fn provider_tool(&self, tool: &PhiToolDefinition) -> Self::ProviderTool {
+    fn provider_tool(&self, tool: &PhiToolDefinition) -> ResponsesToolDefinition {
         ResponsesToolDefinition::from_tool_definition(tool.clone())
     }
+}
 
+#[async_trait]
+impl DynProvider for ResponsesClient {
     async fn complete(
         &self,
         request: &PhiProviderCall,
-        messages: &PhiRenderedMessages,
+        messages: PhiRenderedMessages,
     ) -> PhiAgentResult<PhiModelResponse> {
-        let prompt = ResponsesPrompt::from_phi_messages(messages);
+        let prompt = ResponsesPrompt::from_phi_messages(&messages);
         let provider_tools = request
             .tools
             .iter()
@@ -108,8 +99,8 @@ impl PhiProvider for ResponsesClient {
         })?;
         response.validate_status()?;
         let turn_state = response.turn_state();
-        let messages = self.phi_messages(response.into_provider_messages())?;
-        Ok(PhiModelResponse::new(messages, turn_state))
+        let assistant = self.phi_assistant(response.into_provider_messages())?;
+        Ok(PhiModelResponse::from_assistant(assistant, turn_state))
     }
 }
 
@@ -127,13 +118,20 @@ pub enum ProviderMessage {
     Reasoning {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_null_default")]
         summary: Vec<ResponsesReasoningSummary>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "deserialize_null_default"
+        )]
         content: Vec<ResponsesReasoningContent>,
         #[serde(skip_serializing_if = "Option::is_none")]
         encrypted_content: Option<String>,
     },
     FunctionCall {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         call_id: String,
         name: String,
         arguments: String,
@@ -148,56 +146,54 @@ impl ProviderMessage {
                 role: "user".to_string(),
                 content: vec![ResponsesContentPart::InputText { text: text.clone() }],
             }],
-            PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => vec![Self::Message {
-                role: "assistant".to_string(),
-                content: vec![ResponsesContentPart::OutputText { text: text.clone() }],
-            }],
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning { id, content }) => {
-                vec![Self::Reasoning {
-                    id: id.clone(),
-                    summary: content
-                        .iter()
-                        .filter_map(|part| match part {
-                            PhiReasoningContent::Summary(text)
-                            | PhiReasoningContent::Redacted { data: text } => {
-                                Some(ResponsesReasoningSummary::SummaryText { text: text.clone() })
-                            }
-                            PhiReasoningContent::Text { .. }
-                            | PhiReasoningContent::Encrypted(_) => None,
-                        })
-                        .collect(),
-                    content: content
-                        .iter()
-                        .filter_map(|part| match part {
-                            PhiReasoningContent::Text { text, .. } => {
-                                Some(ResponsesReasoningContent::ReasoningText {
-                                    text: text.clone(),
-                                })
-                            }
-                            PhiReasoningContent::Summary(_)
-                            | PhiReasoningContent::Redacted { .. }
-                            | PhiReasoningContent::Encrypted(_) => None,
-                        })
-                        .collect(),
-                    encrypted_content: content.iter().find_map(|part| match part {
-                        PhiReasoningContent::Encrypted(data) => Some(data.clone()),
-                        _ => None,
-                    }),
-                }]
+            PhiMessage::Assistant(assistant) => {
+                let mut output = Vec::new();
+                for block in &assistant.reasoning {
+                    output.push(Self::Reasoning {
+                        id: block.id.clone(),
+                        summary: block
+                            .content
+                            .iter()
+                            .filter_map(|part| match part {
+                                PhiReasoningContent::Summary(text)
+                                | PhiReasoningContent::Redacted { data: text } => {
+                                    Some(ResponsesReasoningSummary::SummaryText {
+                                        text: text.clone(),
+                                    })
+                                }
+                                PhiReasoningContent::Text { .. }
+                                | PhiReasoningContent::Encrypted(_) => None,
+                            })
+                            .collect(),
+                        content: Vec::new(),
+                        encrypted_content: block.content.iter().find_map(|part| match part {
+                            PhiReasoningContent::Encrypted(data) => Some(data.clone()),
+                            _ => None,
+                        }),
+                    });
+                }
+                if let Some(text) = assistant.content.as_ref().filter(|text| !text.is_empty()) {
+                    output.push(Self::Message {
+                        role: "assistant".to_string(),
+                        content: vec![ResponsesContentPart::OutputText { text: text.clone() }],
+                    });
+                }
+                output.extend(assistant.tool_calls.iter().map(|call| {
+                    let call_id = call.call_id.clone().unwrap_or_else(|| call.id.clone());
+                    Self::FunctionCall {
+                        id: (call.id != call_id).then(|| call.id.clone()),
+                        call_id,
+                        name: call.name.clone(),
+                        arguments: serde_json::to_string(&call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    }
+                }));
+                output
             }
-            PhiMessage::Tool(PhiToolMessage::ToolCall {
-                id,
-                name,
-                arguments,
-            }) => vec![Self::FunctionCall {
-                call_id: id.clone().unwrap_or_else(|| name.clone()),
-                name: name.clone(),
-                arguments: serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string()),
-            }],
-            PhiMessage::Tool(PhiToolMessage::ToolResult { id, result, .. }) => {
+            PhiMessage::ToolResult(result) => {
                 vec![Self::FunctionCallOutput {
-                    call_id: id.clone().unwrap_or_default(),
-                    output: result.to_string(),
+                    call_id: result.id.clone().unwrap_or_default(),
+                    output: super::tool_result_text(&result.result),
                 }]
             }
         }
@@ -217,7 +213,7 @@ impl ProviderMessage {
                 if text.is_empty() {
                     vec![]
                 } else if role == "assistant" {
-                    vec![PhiMessage::Assistant(PhiAssistantMessage::Text(text))]
+                    vec![PhiMessage::assistant(text)]
                 } else {
                     vec![PhiMessage::User(PhiUserMessage::Text(text))]
                 }
@@ -257,28 +253,74 @@ impl ProviderMessage {
                 if reasoning.is_empty() {
                     vec![]
                 } else {
-                    vec![PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                        id,
-                        content: reasoning,
-                    })]
+                    vec![PhiMessage::Assistant(PhiAssistantMessage::from_parts(
+                        None,
+                        vec![PhiReasoningBlock {
+                            id,
+                            content: reasoning,
+                        }],
+                        Vec::new(),
+                    ))]
                 }
             }
             Self::FunctionCall {
+                id,
                 call_id,
                 name,
                 arguments,
-            } => vec![PhiMessage::tool_call(
-                Some(call_id),
-                name,
-                serde_json::from_str(&arguments).map_err(|error| {
-                    PhiAgentRuntimeError::provider_response(format!(
-                        "openai_response invalid tool-call arguments JSON: {} | raw={}",
-                        error, arguments
-                    ))
-                })?,
-            )],
+            } => vec![PhiMessage::Assistant(PhiAssistantMessage::tool_calls(
+                vec![crate::executor::ToolCallRequest {
+                    id: id.unwrap_or_else(|| call_id.clone()),
+                    call_id: Some(call_id),
+                    name,
+                    arguments: serde_json::from_str(&arguments).map_err(|error| {
+                        PhiAgentRuntimeError::provider_response(format!(
+                            "openai_response invalid tool-call arguments JSON: {} | raw={}",
+                            error, arguments
+                        ))
+                    })?,
+                }],
+            ))],
         })
     }
+}
+
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn coalesce_assistant_response(
+    messages: Vec<PhiMessage>,
+) -> PhiAgentResult<Option<PhiAssistantMessage>> {
+    let mut assistant = PhiAssistantMessage::from_parts(None, Vec::new(), Vec::new());
+    for message in messages {
+        match message {
+            PhiMessage::Assistant(next) => {
+                if let Some(content) = next.content {
+                    match &mut assistant.content {
+                        Some(current) if !current.is_empty() => {
+                            current.push('\n');
+                            current.push_str(&content);
+                        }
+                        Some(current) => current.push_str(&content),
+                        None => assistant.content = Some(content),
+                    }
+                }
+                assistant.reasoning.extend(next.reasoning);
+                assistant.tool_calls.extend(next.tool_calls);
+            }
+            _ => {
+                return Err(PhiAgentRuntimeError::provider_response(
+                    "openai_response returned a non-assistant response item",
+                ));
+            }
+        }
+    }
+    Ok((!assistant.is_empty()).then_some(assistant))
 }
 
 struct ResponsesPrompt {
@@ -444,11 +486,13 @@ impl ResponsesCreateResponse {
                         .collect(),
                 }),
                 ResponsesOutputItem::FunctionCall {
+                    id,
                     call_id,
                     name,
                     arguments,
                     ..
                 } => Some(ProviderMessage::FunctionCall {
+                    id,
                     call_id,
                     name,
                     arguments,
@@ -481,7 +525,7 @@ enum ResponsesOutputItem {
     },
     FunctionCall {
         #[serde(default, rename = "id")]
-        _id: Option<String>,
+        id: Option<String>,
         call_id: String,
         name: String,
         arguments: String,
@@ -491,9 +535,9 @@ enum ResponsesOutputItem {
     Reasoning {
         #[serde(default)]
         id: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_null_default")]
         summary: Vec<ResponsesReasoningSummary>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_null_default")]
         content: Vec<ResponsesReasoningContent>,
         #[serde(default)]
         encrypted_content: Option<String>,
@@ -664,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn function_call_uses_call_id_instead_of_item_id() {
+    fn function_call_preserves_item_id_and_call_id() {
         let response = serde_json::from_str::<ResponsesCreateResponse>(
             r#"{
                 "id": "resp_test",
@@ -694,11 +738,23 @@ mod tests {
 
         assert_eq!(
             messages,
-            vec![PhiMessage::tool_call(
-                Some("call_123".to_string()),
-                "bash",
-                serde_json::json!({ "command": "ls" }),
-            )]
+            vec![PhiMessage::Assistant(PhiAssistantMessage::tool_calls(
+                vec![crate::executor::ToolCallRequest {
+                    id: "fc_456".to_string(),
+                    call_id: Some("call_123".to_string()),
+                    name: "bash".to_string(),
+                    arguments: serde_json::json!({ "command": "ls" }),
+                },]
+            ))]
+        );
+        assert_eq!(
+            ProviderMessage::from_phi_message(&messages[0]),
+            vec![ProviderMessage::FunctionCall {
+                id: Some("fc_456".to_string()),
+                call_id: "call_123".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({ "command": "ls" }).to_string(),
+            }]
         );
     }
 
@@ -731,17 +787,17 @@ mod tests {
 
         assert_eq!(
             phi_message,
-            PhiMessage::Assistant(PhiAssistantMessage::Reasoning {
-                id: Some("rs_123".to_string()),
-                content: vec![
+            PhiMessage::reasoning(
+                Some("rs_123".to_string()),
+                vec![
                     PhiReasoningContent::Summary("summary".to_string()),
                     PhiReasoningContent::Text {
                         text: "reasoning".to_string(),
                         signature: None,
                     },
                     PhiReasoningContent::Encrypted("encrypted-state".to_string()),
-                ],
-            })
+                ]
+            )
         );
         assert_eq!(
             ProviderMessage::from_phi_message(&phi_message),
@@ -750,9 +806,38 @@ mod tests {
                 summary: vec![ResponsesReasoningSummary::SummaryText {
                     text: "summary".to_string(),
                 }],
-                content: vec![ResponsesReasoningContent::ReasoningText {
-                    text: "reasoning".to_string(),
-                }],
+                content: Vec::new(),
+                encrypted_content: Some("encrypted-state".to_string()),
+            }]
+        );
+        let json = serde_json::to_value(ProviderMessage::from_phi_message(&phi_message))
+            .expect("reasoning request should serialize");
+        assert!(json[0].get("content").is_none());
+        assert_eq!(json[0]["encrypted_content"], "encrypted-state");
+    }
+
+    #[test]
+    fn reasoning_response_accepts_null_lists() {
+        let response = serde_json::from_str::<ResponsesCreateResponse>(
+            r#"{
+                "status": "completed",
+                "output": [{
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "summary": null,
+                    "content": null,
+                    "encrypted_content": "encrypted-state"
+                }]
+            }"#,
+        )
+        .expect("null reasoning lists should deserialize");
+
+        assert_eq!(
+            response.into_provider_messages(),
+            vec![ProviderMessage::Reasoning {
+                id: Some("rs_123".to_string()),
+                summary: Vec::new(),
+                content: Vec::new(),
                 encrypted_content: Some("encrypted-state".to_string()),
             }]
         );
@@ -797,7 +882,24 @@ mod tests {
             items,
             vec![ProviderMessage::FunctionCallOutput {
                 call_id: "call_123".to_string(),
-                output: "\"done\"".to_string(),
+                output: "done".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn serializes_structured_tool_results_as_json_text() {
+        let items = ProviderMessage::from_phi_message(&PhiMessage::tool_result(
+            Some("call_123".to_string()),
+            Some("bash".to_string()),
+            serde_json::json!({"status": "done"}),
+        ));
+
+        assert_eq!(
+            items,
+            vec![ProviderMessage::FunctionCallOutput {
+                call_id: "call_123".to_string(),
+                output: serde_json::json!({"status": "done"}).to_string(),
             }]
         );
     }

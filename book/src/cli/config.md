@@ -36,9 +36,9 @@ Agent, Doctor, and Session commands that construct provider state accept an
 explicit replacement file:
 
 ```bash
-phi run --config ./config.yml --user "Inspect this repository"
-phi doctor --config ./config.yml
 phi session new work.session --config ./config.yml
+phi run work.session --config ./config.yml --user "Inspect this repository"
+phi doctor --config ./config.yml
 ```
 
 The precedence is built-in defaults, then either the Home configuration or the

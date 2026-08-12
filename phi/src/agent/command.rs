@@ -5,7 +5,6 @@ pub enum PhiAgentCommand {
     Run(RunCommand),
     Yolo(RunCommand),
     Step(StepCommand),
-    Probe(ProbeCommand),
     Doctor(DoctorCommand),
     History(HistoryCommand),
 }
@@ -42,11 +41,6 @@ enum ExecutionTarget {
 }
 
 #[derive(Clone)]
-pub struct ProbeCommand {
-    pub max_model_request_retries: Option<usize>,
-}
-
-#[derive(Clone)]
 pub struct DoctorCommand;
 
 #[derive(Clone)]
@@ -69,10 +63,6 @@ pub struct AgentCommandArgs {
 
 pub type StepCommandArgs = AgentCommandArgs;
 
-pub struct ProbeCommandArgs {
-    pub max_model_request_retries: Option<usize>,
-}
-
 pub struct RunCommandInput<T> {
     pub args: T,
     pub forced_max_steps: Option<usize>,
@@ -93,12 +83,6 @@ impl PhiAgentCommand {
     pub fn step() -> StepCommand {
         StepCommand {
             options: AgentCommandOptions::enabled_local(),
-        }
-    }
-
-    pub fn probe() -> ProbeCommand {
-        ProbeCommand {
-            max_model_request_retries: None,
         }
     }
 
@@ -152,16 +136,6 @@ impl PhiAgentCommand {
         }))
     }
 
-    pub fn from_probe_args<T>(args: T) -> Result<Self, Box<dyn std::error::Error>>
-    where
-        T: Into<ProbeCommandArgs>,
-    {
-        let args = args.into();
-        Ok(Self::Probe(Self::probe().with_max_model_request_retries(
-            args.max_model_request_retries,
-        )))
-    }
-
     pub fn container(&self) -> Option<&str> {
         self.options().and_then(AgentCommandOptions::container)
     }
@@ -184,12 +158,8 @@ impl PhiAgentCommand {
     }
 
     pub(crate) fn max_model_request_retries(&self) -> Option<usize> {
-        match self {
-            Self::Probe(command) => command.max_model_request_retries,
-            _ => self
-                .options()
-                .and_then(|options| options.max_model_request_retries),
-        }
+        self.options()
+            .and_then(|options| options.max_model_request_retries)
     }
 
     pub(crate) fn verbose(&self) -> bool {
@@ -283,16 +253,6 @@ impl AgentCommandOptions {
             )),
             ExecutorOptions::Null => None,
         }
-    }
-}
-
-impl ProbeCommand {
-    pub fn with_max_model_request_retries(
-        mut self,
-        max_model_request_retries: Option<usize>,
-    ) -> Self {
-        self.max_model_request_retries = max_model_request_retries;
-        self
     }
 }
 
@@ -421,7 +381,6 @@ mod tests {
             PhiAgentCommand::Run(PhiAgentCommand::run()),
             PhiAgentCommand::Yolo(PhiAgentCommand::yolo()),
             PhiAgentCommand::Step(PhiAgentCommand::step()),
-            PhiAgentCommand::Probe(PhiAgentCommand::probe()),
         ] {
             assert_eq!(command.max_model_request_retries(), None);
         }

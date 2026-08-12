@@ -219,8 +219,6 @@ impl Drop for SpinnerModule {
 }
 
 impl PhiModule for SpinnerModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         match event {
             PhiAgentStepEvent::BeforeCompactRequest { .. } => {

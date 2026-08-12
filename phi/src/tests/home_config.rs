@@ -51,8 +51,6 @@ struct CaptureEnvModule {
 }
 
 impl PhiModule for CaptureEnvModule {
-    type ProbInfo = ();
-
     fn init_context(
         &mut self,
         context: &mut PhiAgentBuildContext,

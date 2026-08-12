@@ -10,7 +10,7 @@ use crate::{
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::ToolCallRequest,
     home::LocalPhiHome,
-    message::{PhiHistory, PhiMessage, PhiToolMessage},
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage},
     module::{PhiAgentStepEvent, PhiModule},
     render::{PhiModelResponse, PhiModelTurnState, PhiProviderCall, TestClient},
     session::{PhiAgentStep, PhiReActStep, Session},
@@ -85,8 +85,6 @@ struct RejectFirstModelResponseModule {
 }
 
 impl PhiModule for RejectAfterToolCallModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if let PhiAgentStepEvent::AfterToolCall { .. } = event {
             return Err(PhiAgentRuntimeError::module("module rejected tool result"));
@@ -96,8 +94,6 @@ impl PhiModule for RejectAfterToolCallModule {
 }
 
 impl PhiModule for RejectFirstModelResponseModule {
-    type ProbInfo = ();
-
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         if matches!(event, PhiAgentStepEvent::AfterModelResponse { .. }) && !self.rejected {
             self.rejected = true;
@@ -191,17 +187,23 @@ fn pending_tool_session(
     pending_messages: Vec<PhiMessage>,
     arguments: serde_json::Value,
 ) -> Session {
+    let mut pending_messages = pending_messages;
+    let assistant = pending_messages
+        .iter()
+        .position(|message| matches!(message, PhiMessage::Assistant(_)))
+        .map(|index| match pending_messages.remove(index) {
+            PhiMessage::Assistant(assistant) => assistant,
+            _ => unreachable!(),
+        })
+        .unwrap_or_else(|| PhiAssistantMessage::tool_calls(Vec::new()))
+        .with_tool_calls(vec![ToolCallRequest {
+            id: "call_1".to_string(),
+            call_id: Some("call_1".to_string()),
+            name: shell_tool_name().to_string(),
+            arguments,
+        }]);
     Session::from_root(
-        PhiAgentStep::request_executor(
-            "tool execution is pending",
-            pending_messages,
-            vec![ToolCallRequest {
-                id: "call_1".to_string(),
-                call_id: Some("call_1".to_string()),
-                name: shell_tool_name().to_string(),
-                arguments,
-            }],
-        ),
+        PhiAgentStep::request_executor("tool execution is pending", pending_messages, assistant),
         history,
     )
 }
@@ -214,14 +216,14 @@ async fn invariant_model_step_with_tool_call_keeps_history_clean() {
     );
 
     let outcome = step_agent_builder(session)
-        .with_client(stub_client(vec![
-            PhiMessage::assistant("running bash now"),
-            PhiMessage::tool_call(
-                Some("call_1".to_string()),
-                shell_tool_name(),
-                serde_json::json!({ "cmd": "ls" }),
-            ),
-        ]))
+        .with_client(stub_client(vec![PhiMessage::Assistant(
+            PhiAssistantMessage::text("running bash now").with_tool_calls(vec![ToolCallRequest {
+                id: "call_1".to_string(),
+                call_id: Some("call_1".to_string()),
+                name: shell_tool_name().to_string(),
+                arguments: serde_json::json!({ "cmd": "ls" }),
+            }]),
+        )]))
         .build()
         .expect("agent should build")
         .run_single_step()
@@ -230,11 +232,12 @@ async fn invariant_model_step_with_tool_call_keeps_history_clean() {
     assert_eq!(outcome.session.history(), &[PhiMessage::user("list files")]);
     assert!(matches!(
         outcome.session.step(),
-        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, tool_calls, .. })
-        if pending_messages.as_slice() == [PhiMessage::assistant("running bash now")].as_slice()
-            && tool_calls.len() == 1
-            && tool_calls[0].name == shell_tool_name()
-            && tool_calls[0].call_id.as_deref() == Some("call_1")
+        PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { pending_messages, assistant, .. })
+        if pending_messages.is_empty()
+            && assistant.content.as_deref() == Some("running bash now")
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].name == shell_tool_name()
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")
     ));
 }
 
@@ -255,16 +258,13 @@ async fn invariant_tool_step_commits_pending_messages_atomically() {
 
     let history = outcome.session.history();
     assert_eq!(history[0], PhiMessage::user("hello"));
-    assert_eq!(history[1], PhiMessage::assistant("running bash now"));
-    assert_eq!(
-        history[2],
-        PhiMessage::tool_call(
-            Some("call_1".to_string()),
-            shell_tool_name(),
-            serde_json::json!({ "cmd": shell_echo_ok_command() }),
-        )
-    );
-    let PhiMessage::Tool(PhiToolMessage::ToolResult { id, name, result }) = &history[3] else {
+    assert!(matches!(&history[1], PhiMessage::Assistant(assistant)
+        if assistant.content.as_deref() == Some("running bash now")
+            && assistant.tool_calls.len() == 1
+            && assistant.tool_calls[0].call_id.as_deref() == Some("call_1")));
+    let PhiMessage::ToolResult(crate::message::PhiToolResultMessage { id, name, result }) =
+        &history[2]
+    else {
         panic!("fourth history entry should be a tool result");
     };
     assert_eq!(id.as_deref(), Some("call_1"));

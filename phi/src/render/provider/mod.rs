@@ -3,17 +3,24 @@ pub(crate) mod openai_chat;
 pub(crate) mod openai_response;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{ModelRequestDefaults, ProviderConfig, ReasoningEffort},
     error::{PhiAgentRuntimeError, PhiAgentRuntimeResult},
     executor::PhiToolDefinition,
-    message::PhiMessage,
+    message::PhiAssistantMessage,
 };
 
 use self::{fake::FakeClient, openai_chat::OpenAiCompatClient, openai_response::ResponsesClient};
 use super::PhiRenderedMessages;
+
+pub(super) fn tool_result_text(result: &serde_json::Value) -> String {
+    match result {
+        serde_json::Value::String(text) => text.clone(),
+        result => result.to_string(),
+    }
+}
 
 pub(super) fn http_error(
     prefix: &str,
@@ -158,23 +165,57 @@ pub(crate) enum PhiModelTurnState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PhiModelResponse {
-    pub(crate) messages: Vec<PhiMessage>,
+    pub(crate) assistant: Option<PhiAssistantMessage>,
     pub(crate) turn_state: PhiModelTurnState,
 }
 
 impl PhiModelResponse {
-    pub(crate) fn unspecified(messages: Vec<PhiMessage>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn unspecified(messages: Vec<crate::message::PhiMessage>) -> Self {
+        Self::new(messages, PhiModelTurnState::Unspecified)
+    }
+
+    pub(crate) fn from_assistant(
+        assistant: Option<PhiAssistantMessage>,
+        turn_state: PhiModelTurnState,
+    ) -> Self {
         Self {
-            messages,
-            turn_state: PhiModelTurnState::Unspecified,
+            assistant,
+            turn_state,
         }
     }
 
-    pub(crate) fn new(messages: Vec<PhiMessage>, turn_state: PhiModelTurnState) -> Self {
-        Self {
-            messages,
-            turn_state,
-        }
+    #[cfg(test)]
+    pub(crate) fn new(
+        messages: Vec<crate::message::PhiMessage>,
+        turn_state: PhiModelTurnState,
+    ) -> Self {
+        let mut messages = messages.into_iter();
+        let assistant = messages.next().map(|message| match message {
+            crate::message::PhiMessage::Assistant(assistant) => assistant,
+            _ => panic!("model response must contain only an assistant message"),
+        });
+        assert!(
+            messages.next().is_none(),
+            "model response must contain at most one assistant message"
+        );
+        Self::from_assistant(assistant, turn_state)
+    }
+
+    pub(crate) fn assistant(assistant: PhiAssistantMessage, turn_state: PhiModelTurnState) -> Self {
+        Self::from_assistant(Some(assistant), turn_state)
+    }
+}
+
+impl From<PhiAssistantMessage> for PhiModelResponse {
+    fn from(assistant: PhiAssistantMessage) -> Self {
+        Self::assistant(assistant, PhiModelTurnState::Unspecified)
+    }
+}
+
+impl From<Option<PhiAssistantMessage>> for PhiModelResponse {
+    fn from(assistant: Option<PhiAssistantMessage>) -> Self {
+        Self::from_assistant(assistant, PhiModelTurnState::Unspecified)
     }
 }
 
@@ -206,53 +247,12 @@ impl PhiProviderCall {
 }
 
 #[async_trait]
-pub(in crate::render) trait PhiProvider: Send + Sync {
-    type ProviderMessage: Clone + Send + Sync + Serialize + DeserializeOwned;
-    type ProviderTool: Clone + Send + Sync + Serialize;
-
-    // Provider conversion and requests run inside agent evaluation. Their
-    // failures intentionally use PhiAgentRuntimeResult so retry/recovery policy
-    // can persist and classify the failed provider step.
-    fn provider_messages(
-        &self,
-        messages: &PhiRenderedMessages,
-    ) -> PhiAgentRuntimeResult<Vec<Self::ProviderMessage>>;
-
-    fn phi_messages(
-        &self,
-        response: Vec<Self::ProviderMessage>,
-    ) -> PhiAgentRuntimeResult<Vec<PhiMessage>>;
-
-    fn provider_tool(&self, tool: &PhiToolDefinition) -> Self::ProviderTool;
-
-    async fn complete(
-        &self,
-        request: &PhiProviderCall,
-        messages: &PhiRenderedMessages,
-    ) -> PhiAgentRuntimeResult<PhiModelResponse>;
-}
-
-#[async_trait]
 pub(in crate::render) trait DynProvider: Send + Sync {
     async fn complete(
         &self,
         request: &PhiProviderCall,
         messages: PhiRenderedMessages,
     ) -> PhiAgentRuntimeResult<PhiModelResponse>;
-}
-
-#[async_trait]
-impl<T> DynProvider for T
-where
-    T: PhiProvider,
-{
-    async fn complete(
-        &self,
-        request: &PhiProviderCall,
-        messages: PhiRenderedMessages,
-    ) -> PhiAgentRuntimeResult<PhiModelResponse> {
-        PhiProvider::complete(self, request, &messages).await
-    }
 }
 
 pub(in crate::render) fn build_provider(

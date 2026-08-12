@@ -1,5 +1,5 @@
 use crate::{
-    message::{PhiAssistantMessage, PhiMessage, PhiReasoningContent, PhiUserMessage},
+    message::{PhiMessage, PhiReasoningContent, PhiUserMessage},
     utils::approx_token_count,
 };
 
@@ -11,15 +11,29 @@ pub(crate) fn approx_message_token_count(message: &PhiMessage) -> usize {
     match message {
         PhiMessage::System(text) => approx_text_token_count(text),
         PhiMessage::User(PhiUserMessage::Text(text)) => approx_text_token_count(text),
-        PhiMessage::Tool(tool) => approx_text_token_count(
-            &serde_json::to_string(tool).expect("tool messages should serialize"),
+        PhiMessage::ToolResult(result) => approx_text_token_count(
+            &serde_json::to_string(result).expect("tool results should serialize"),
         ),
-        PhiMessage::Assistant(PhiAssistantMessage::Text(text)) => approx_text_token_count(text),
-        PhiMessage::Assistant(PhiAssistantMessage::Reasoning { content, .. }) => content
-            .iter()
-            .filter_map(PhiReasoningContent::display_text)
-            .map(approx_text_token_count)
-            .sum(),
+        PhiMessage::Assistant(assistant) => {
+            assistant
+                .content
+                .as_deref()
+                .map_or(0, approx_text_token_count)
+                + assistant
+                    .reasoning
+                    .iter()
+                    .flat_map(|block| block.content.iter())
+                    .filter_map(PhiReasoningContent::display_text)
+                    .map(approx_text_token_count)
+                    .sum::<usize>()
+                + assistant
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        approx_text_token_count(&serde_json::to_string(call).unwrap_or_default())
+                    })
+                    .sum::<usize>()
+        }
     }
 }
 

@@ -1,10 +1,10 @@
 //! Phi library entrypoint.
 //!
 //! The core Phi concept is that a full agent session can flow through
-//! stdin/stdout as JSON. That makes `phi run` usable both as an
+//! stdin/stdout as JSON through an explicit `-` target. That makes `phi run` usable both as an
 //! interactive command and as a process in a session pipeline:
 //!
-//! - stdin: optional prior session JSON
+//! - stdin: prior session JSON when SESSION is `-`
 //! - stdout: updated session JSON
 //!
 //! This allows callers to chain steps together without introducing a separate
@@ -22,7 +22,6 @@ pub mod headlessterm;
 pub mod home;
 pub mod message;
 pub mod module;
-pub mod probe;
 pub mod render;
 pub mod session;
 pub mod utils;
@@ -33,7 +32,7 @@ mod tests;
 use std::{
     any::Any,
     future::{Future, poll_fn},
-    io::{self, IsTerminal, Read},
+    io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::Path,
     path::PathBuf,
@@ -41,8 +40,8 @@ use std::{
 };
 
 use clap::{
-    Arg, ArgAction, ArgMatches, Args, Command as ClapCommand, CommandFactory, Error as ClapError,
-    FromArgMatches, Parser, Subcommand,
+    Arg, ArgAction, ArgMatches, Args, Command as ClapCommand, Error as ClapError, FromArgMatches,
+    Parser, Subcommand,
 };
 
 use agent::{PhiAgent, PhiAgentCommand, build_agent_with_config};
@@ -50,21 +49,7 @@ use config::PhiConfig;
 use features::{pretty_info, pretty_warning};
 use home::{command::HomeArgs, load_home};
 use message::PhiMessage;
-use session::{PhiAgentStep, PhiReActStep, Session};
-
-enum SessionInput {
-    NoInput,
-    Pipeline(Session),
-    FileBacked {
-        path: PathBuf,
-        session: Session,
-        stdin_user_message: Option<String>,
-    },
-    MissingFile {
-        path: PathBuf,
-        stdin_user_message: Option<String>,
-    },
-}
+use session::{PhiAgentStep, PhiReActStep, Session, SessionTarget};
 
 enum CliAgentExit {
     Completed,
@@ -148,40 +133,23 @@ async fn step_agent(
     args: StepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = args.base.config.as_deref();
-    let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input);
-    if matches!(session_input, SessionInput::MissingFile { .. }) {
-        return print_subcommand_help("step");
-    }
-    let Some(session) = session_input.session_for_agent() else {
-        if input_messages.is_empty() {
-            return print_subcommand_help("step");
-        }
-        let home = load_home(home_spec)?;
-        let config = load_config(home.as_ref(), config_path)?;
-        let session = new_session_with_config(&config)?;
-        emit_new_session_history(&session, args.base.quiet);
-        return run_step_with_input(args, session_input, input_messages, session, home, config)
-            .await;
-    };
+    let session = args.base.session_target.load()?;
+    let input_messages = args.base.messages.messages();
     let home = load_home(home_spec)?;
     let config = load_config(home.as_ref(), config_path)?;
-    run_step_with_input(args, session_input, input_messages, session, home, config).await
+    run_step_with_input(args, input_messages, session, home, config).await
 }
 
 async fn run_step_with_input(
     args: StepArgs,
-    session_input: SessionInput,
     input_messages: Vec<PhiMessage>,
     session: Session,
     home: std::sync::Arc<dyn home::PhiHome>,
     config: PhiConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    emit_existing_session_notice(&session_input, args.base.quiet);
+    emit_existing_session_notice(&args.base.session_target, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
     let session = session.append_messages(input_messages);
-    let checkpoint_path = session_input.existing_session_path().map(Path::to_path_buf);
-
     let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::StepCommandInput {
@@ -189,10 +157,10 @@ async fn run_step_with_input(
         })?,
         home,
         config,
-        |session| persist_file_checkpoint(session, checkpoint_path.as_deref()),
+        |session| args.base.session_target.checkpoint(session),
     )
     .await?;
-    persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
+    persist_cli_agent_session(session, exit, &args.base.session_target, args.base.quiet)
 }
 
 async fn run_agent_with_step_limit(
@@ -201,36 +169,13 @@ async fn run_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = args.base.config.as_deref();
-    let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input);
-    if matches!(session_input, SessionInput::MissingFile { .. }) {
-        return print_subcommand_help("run");
-    }
-    let Some(session) = session_input.session_for_agent() else {
-        if input_messages.is_empty() {
-            return print_subcommand_help("run");
-        }
-        let home = load_home(home_spec)?;
-        let config = load_config(home.as_ref(), config_path)?;
-        let session = new_session_with_config(&config)?;
-        emit_new_session_history(&session, args.base.quiet);
-        return run_with_input(
-            args,
-            forced_max_steps,
-            session_input,
-            input_messages,
-            session,
-            home,
-            config,
-        )
-        .await;
-    };
+    let session = args.base.session_target.load()?;
+    let input_messages = args.base.messages.messages();
     let home = load_home(home_spec)?;
     let config = load_config(home.as_ref(), config_path)?;
     run_with_input(
         args,
         forced_max_steps,
-        session_input,
         input_messages,
         session,
         home,
@@ -242,18 +187,15 @@ async fn run_agent_with_step_limit(
 async fn run_with_input(
     args: RunArgs,
     forced_max_steps: Option<usize>,
-    session_input: SessionInput,
     input_messages: Vec<PhiMessage>,
     session: Session,
     home: std::sync::Arc<dyn home::PhiHome>,
     config: PhiConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    emit_existing_session_notice(&session_input, args.base.quiet);
+    emit_existing_session_notice(&args.base.session_target, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
     let session = session.append_messages(input_messages);
     let max_steps = forced_max_steps.or(args.max_steps);
-    let checkpoint_path = session_input.existing_session_path().map(Path::to_path_buf);
-
     let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::RunCommandInput {
@@ -262,10 +204,10 @@ async fn run_with_input(
         })?,
         home,
         config,
-        |session| persist_file_checkpoint(session, checkpoint_path.as_deref()),
+        |session| args.base.session_target.checkpoint(session),
     )
     .await?;
-    persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
+    persist_cli_agent_session(session, exit, &args.base.session_target, args.base.quiet)
 }
 
 async fn yolo_agent_with_step_limit(
@@ -274,36 +216,13 @@ async fn yolo_agent_with_step_limit(
     forced_max_steps: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = args.base.config.as_deref();
-    let session_input = read_session_input(args.base.session_path.as_deref())?;
-    let input_messages = collect_effective_input_messages(&args.base, &session_input);
-    if matches!(session_input, SessionInput::MissingFile { .. }) {
-        return print_subcommand_help("yolo");
-    }
-    let Some(session) = session_input.session_for_agent() else {
-        if input_messages.is_empty() {
-            return print_subcommand_help("yolo");
-        }
-        let home = load_home(home_spec)?;
-        let config = load_config(home.as_ref(), config_path)?;
-        let session = new_session_with_config(&config)?;
-        emit_new_session_history(&session, args.base.quiet);
-        return yolo_with_input(
-            args,
-            forced_max_steps,
-            session_input,
-            input_messages,
-            session,
-            home,
-            config,
-        )
-        .await;
-    };
+    let session = args.base.session_target.load()?;
+    let input_messages = args.base.messages.messages();
     let home = load_home(home_spec)?;
     let config = load_config(home.as_ref(), config_path)?;
     yolo_with_input(
         args,
         forced_max_steps,
-        session_input,
         input_messages,
         session,
         home,
@@ -315,18 +234,15 @@ async fn yolo_agent_with_step_limit(
 async fn yolo_with_input(
     args: RunArgs,
     forced_max_steps: Option<usize>,
-    session_input: SessionInput,
     input_messages: Vec<PhiMessage>,
     session: Session,
     home: std::sync::Arc<dyn home::PhiHome>,
     config: PhiConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    emit_existing_session_notice(&session_input, args.base.quiet);
+    emit_existing_session_notice(&args.base.session_target, args.base.quiet);
     emit_input_messages(&input_messages, args.base.quiet);
     let session = session.append_messages(input_messages);
     let max_steps = forced_max_steps.or(args.max_steps);
-    let checkpoint_path = session_input.existing_session_path().map(Path::to_path_buf);
-
     let (session, exit) = run_cli_agent(
         session,
         PhiAgentCommand::try_from(agent::YoloCommandInput {
@@ -335,10 +251,10 @@ async fn yolo_with_input(
         })?,
         home,
         config,
-        |session| persist_file_checkpoint(session, checkpoint_path.as_deref()),
+        |session| args.base.session_target.checkpoint(session),
     )
     .await?;
-    persist_cli_agent_session(session, exit, &session_input, args.base.quiet)
+    persist_cli_agent_session(session, exit, &args.base.session_target, args.base.quiet)
 }
 
 async fn run_cli_agent(
@@ -454,11 +370,11 @@ fn resume_panic_after_persist_failure(
 
 fn persist_panicked_session(
     session: &Session,
-    session_input: &SessionInput,
+    session_target: &SessionTarget,
     quiet: bool,
     payload: Box<dyn Any + Send>,
 ) -> ! {
-    if let Err(error) = persist_outcome_session(session, session_input) {
+    if let Err(error) = session_target.persist(session) {
         resume_panic_after_persist_failure(payload, error);
     }
     if !quiet {
@@ -473,13 +389,13 @@ fn persist_panicked_session(
 fn persist_cli_agent_session(
     session: Session,
     exit: CliAgentExit,
-    session_input: &SessionInput,
+    session_target: &SessionTarget,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let CliAgentExit::Panicked(payload) = exit {
-        persist_panicked_session(&session, session_input, quiet, payload);
+        persist_panicked_session(&session, session_target, quiet, payload);
     }
-    persist_outcome_session(&session, session_input)?;
+    session_target.persist(&session)?;
     if matches!(
         exit,
         CliAgentExit::Interrupted | CliAgentExit::InterruptedAfterStep
@@ -514,22 +430,6 @@ fn doctor_runtime(
     use std::io::Write;
     handle.write_all(b"\n")?;
     Ok(())
-}
-
-impl SessionInput {
-    fn session_for_agent(&self) -> Option<Session> {
-        match self {
-            Self::Pipeline(session) | Self::FileBacked { session, .. } => Some(session.clone()),
-            Self::NoInput | Self::MissingFile { .. } => None,
-        }
-    }
-
-    fn existing_session_path(&self) -> Option<&Path> {
-        match self {
-            Self::FileBacked { path, .. } => Some(path.as_path()),
-            Self::NoInput | Self::Pipeline(_) | Self::MissingFile { .. } => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -570,15 +470,6 @@ pub(crate) fn new_session_with_config(
     ))
 }
 
-fn emit_new_session_history(session: &Session, quiet: bool) {
-    if quiet {
-        return;
-    }
-    for message in session.history().iter() {
-        eprintln!("{}", features::pretty_message(message));
-    }
-}
-
 fn emit_input_messages(messages: &[PhiMessage], quiet: bool) {
     if quiet {
         return;
@@ -588,128 +479,19 @@ fn emit_input_messages(messages: &[PhiMessage], quiet: bool) {
     }
 }
 
-fn print_subcommand_help(name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Cli::command();
-    let mut subcommand = command
-        .find_subcommand_mut(name)
-        .expect("agent CLI subcommand should exist")
-        .clone()
-        .bin_name(format!("phi {name}"));
-    subcommand.print_help()?;
-    println!();
-    Ok(())
-}
-
-// Without [SESSION], Phi reads/writes session JSON through stdin/stdout so
-// sessions can be piped directly across process boundaries. With [SESSION], Phi
-// treats the path as the persistent backing store and stdin, when present, is
-// interpreted as a plain user message instead.
-fn read_session_input(path: Option<&Path>) -> Result<SessionInput, Box<dyn std::error::Error>> {
-    match path {
-        Some(path) => {
-            let stdin_user_message = read_stdin_user_message()?;
-            if path.exists() {
-                Ok(SessionInput::FileBacked {
-                    path: path.to_path_buf(),
-                    session: Session::load(path)?,
-                    stdin_user_message,
-                })
-            } else {
-                Ok(SessionInput::MissingFile {
-                    path: path.to_path_buf(),
-                    stdin_user_message,
-                })
-            }
-        }
-        None if io::stdin().is_terminal() => Ok(SessionInput::NoInput),
-        None => {
-            let mut input = Vec::new();
-            io::stdin().read_to_end(&mut input)?;
-
-            if input.iter().all(|byte| byte.is_ascii_whitespace()) {
-                Ok(SessionInput::NoInput)
-            } else {
-                Ok(SessionInput::Pipeline(Session::load_bytes(&input)?))
-            }
-        }
-    }
-}
-
-fn existing_session_notice(session_input: &SessionInput) -> Option<String> {
-    session_input
-        .existing_session_path()
+fn existing_session_notice(session_target: &SessionTarget) -> Option<String> {
+    session_target
+        .file()
         .map(|path| format!("resuming from existing session file: {}", path.display()))
 }
 
-fn emit_existing_session_notice(session_input: &SessionInput, quiet: bool) {
+fn emit_existing_session_notice(session_target: &SessionTarget, quiet: bool) {
     if quiet {
         return;
     }
 
-    if let Some(message) = existing_session_notice(session_input) {
+    if let Some(message) = existing_session_notice(session_target) {
         eprintln!("{}", pretty_info(&message));
-    }
-}
-
-fn read_stdin_user_message() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    if io::stdin().is_terminal() {
-        return Ok(None);
-    }
-
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let stripped = input.trim();
-    if stripped.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(stripped.to_string()))
-    }
-}
-
-fn collect_effective_input_messages(
-    args: &AgentCliArgs,
-    session_input: &SessionInput,
-) -> Vec<PhiMessage> {
-    let mut messages = Vec::new();
-
-    if let SessionInput::FileBacked {
-        stdin_user_message: Some(text),
-        ..
-    }
-    | SessionInput::MissingFile {
-        stdin_user_message: Some(text),
-        ..
-    } = session_input
-    {
-        messages.push(PhiMessage::user(text.clone()));
-    }
-
-    messages.extend(args.messages.messages());
-    messages
-}
-
-fn persist_outcome_session(
-    session: &Session,
-    session_input: &SessionInput,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match session_input {
-        SessionInput::NoInput | SessionInput::Pipeline(_) => session.write_stdout(),
-        SessionInput::FileBacked { path, .. } => session.save(path),
-        SessionInput::MissingFile { path, .. } => Err(format!(
-            "cannot persist a session that was not loaded from {}",
-            path.display()
-        )
-        .into()),
-    }
-}
-
-fn persist_file_checkpoint(
-    session: &Session,
-    path: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match path {
-        Some(path) => session.save(path),
-        None => Ok(()),
     }
 }
 
@@ -784,9 +566,8 @@ struct DoctorArgs {
     config: ConfigArgs,
 }
 
-#[derive(Default)]
 struct AgentCliArgs {
-    session_path: Option<PathBuf>,
+    session_target: SessionTarget,
     config: Option<PathBuf>,
     quiet: bool,
     null_executor: bool,
@@ -797,13 +578,11 @@ struct AgentCliArgs {
     messages: cli::MessageArgs,
 }
 
-#[derive(Default)]
 struct RunArgs {
     base: AgentCliArgs,
     max_steps: Option<usize>,
 }
 
-#[derive(Default)]
 struct StepArgs {
     base: AgentCliArgs,
 }
@@ -909,7 +688,9 @@ impl Args for StepArgs {
 
 fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
     AgentCliArgs {
-        session_path: matches.remove_one::<PathBuf>("session_path"),
+        session_target: matches
+            .remove_one::<SessionTarget>("session_target")
+            .expect("clap requires a session target"),
         config: matches.remove_one::<PathBuf>("config"),
         quiet: matches.get_flag("quiet"),
         null_executor: matches.get_flag("null_executor"),
@@ -925,8 +706,8 @@ fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
 }
 
 fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
-    if let Some(session_path) = matches.remove_one::<PathBuf>("session_path") {
-        target.session_path = Some(session_path);
+    if let Some(session_target) = matches.remove_one::<SessionTarget>("session_target") {
+        target.session_target = session_target;
     }
     if let Some(config) = matches.remove_one::<PathBuf>("config") {
         target.config = Some(config);
@@ -956,9 +737,11 @@ fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
 fn add_agent_cli_args(cmd: ClapCommand) -> ClapCommand {
     cli::MessageArgs::augment(
         cmd.arg(
-            Arg::new("session_path")
+            Arg::new("session_target")
                 .value_name("SESSION")
-                .value_parser(clap::value_parser!(PathBuf)),
+                .help("Session file, or - for stdin/stdout")
+                .required(true)
+                .value_parser(clap::value_parser!(SessionTarget)),
         )
         .arg(
             Arg::new("config")

@@ -8,14 +8,7 @@ use crate::{
     message::{PhiHistory, PhiMessage},
     render::PhiProviderCall,
 };
-use serde::Serialize;
 use std::sync::Arc;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct PhiModuleProbeJson {
-    pub name: &'static str,
-    pub info: serde_json::Value,
-}
 
 // A step is the agent's atomic state transition. Runtime and modules transform the
 // runtime-owned PhiStepExpr; they do not construct or edit Session values. Session is the
@@ -51,7 +44,7 @@ pub(crate) enum PhiAgentStepEvent<'a> {
         request: &'a mut PhiProviderCall,
     },
     AfterModelResponse {
-        message: &'a mut PhiMessage,
+        assistant: &'a mut crate::message::PhiAssistantMessage,
     },
     AfterModelResponseParsed {
         messages: &'a [PhiMessage],
@@ -63,12 +56,12 @@ pub(crate) enum PhiAgentStepEvent<'a> {
     },
     BeforeCreateNextStep {
         base_expr: &'a PhiStepExpr,
-        step: &'a mut crate::session::PhiReActStep,
+        step: &'a crate::session::PhiReActStep,
         delta: &'a mut PhiExprDelta,
     },
     BeforeReplaceBaseStep {
         base_expr: &'a PhiStepExpr,
-        step: &'a mut crate::session::PhiReActStep,
+        step: &'a crate::session::PhiReActStep,
         delta: &'a mut PhiExprDelta,
     },
     AfterToolCall {
@@ -86,16 +79,6 @@ pub(crate) enum PhiAgentCommitEvent<'a> {
 }
 
 pub(crate) trait PhiModule: Send + Sync {
-    type ProbInfo: Serialize;
-
-    fn probe_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
-    }
-
-    fn probe(&self, _runtime: &PhiAgentRuntime) -> Option<Self::ProbInfo> {
-        None
-    }
-
     fn init_context(&mut self, _context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
         Ok(())
     }
@@ -132,11 +115,6 @@ pub(crate) trait PhiModule: Send + Sync {
 }
 
 pub(crate) trait DynPhiModule: Send + Sync {
-    // Probe is observational and is not part of runtime step evaluation.
-    // PhiAgentRuntimeResult is reserved for errors that may become a Failed
-    // agent step; probe info therefore serializes directly at this boundary.
-    fn probe_json(&self, runtime: &PhiAgentRuntime) -> Option<PhiModuleProbeJson>;
-
     fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()>;
 
     fn module_tools(&mut self, context: &PhiAgentBuildContext) -> Vec<Arc<dyn PhiTool>>;
@@ -157,13 +135,6 @@ impl<T> DynPhiModule for T
 where
     T: PhiModule,
 {
-    fn probe_json(&self, runtime: &PhiAgentRuntime) -> Option<PhiModuleProbeJson> {
-        self.probe(runtime).map(|info| PhiModuleProbeJson {
-            name: self.probe_name(),
-            info: serde_json::to_value(info).expect("module probe info should serialize to JSON"),
-        })
-    }
-
     fn init_context(&mut self, context: &mut PhiAgentBuildContext) -> PhiAgentRuntimeResult<()> {
         PhiModule::init_context(self, context)
     }
@@ -274,16 +245,6 @@ impl PhiModuleChain {
         self.modules[index] = module;
     }
 
-    pub(crate) fn probe_json(&self, runtime: &PhiAgentRuntime) -> Vec<PhiModuleProbeJson> {
-        let mut output = Vec::new();
-        for module in &self.modules {
-            if let Some(probe) = module.probe_json(runtime) {
-                output.push(probe);
-            }
-        }
-        output
-    }
-
     pub(crate) fn handle(
         &mut self,
         event: &mut PhiAgentStepEvent<'_>,
@@ -323,6 +284,4 @@ pub(crate) fn module_tools(
 
 pub(crate) struct NoopModule;
 
-impl PhiModule for NoopModule {
-    type ProbInfo = ();
-}
+impl PhiModule for NoopModule {}

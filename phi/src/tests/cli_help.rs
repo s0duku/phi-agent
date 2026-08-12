@@ -14,9 +14,33 @@ fn root_help_starts_with_banner() {
 #[test]
 fn config_is_shared_by_setup_consuming_commands() {
     for args in [
-        vec!["phi", "run", "--config", "custom.yml", "--user", "hello"],
-        vec!["phi", "yolo", "--config", "custom.yml", "--user", "hello"],
-        vec!["phi", "step", "--config", "custom.yml", "--user", "hello"],
+        vec![
+            "phi",
+            "run",
+            "-",
+            "--config",
+            "custom.yml",
+            "--user",
+            "hello",
+        ],
+        vec![
+            "phi",
+            "yolo",
+            "-",
+            "--config",
+            "custom.yml",
+            "--user",
+            "hello",
+        ],
+        vec![
+            "phi",
+            "step",
+            "-",
+            "--config",
+            "custom.yml",
+            "--user",
+            "hello",
+        ],
         vec!["phi", "doctor", "--config", "custom.yml"],
         vec![
             "phi",
@@ -94,7 +118,7 @@ fn direct_subcommand_help_starts_with_banner() {
 #[test]
 fn agent_commands_accept_null_executor() {
     for command in ["run", "yolo", "step"] {
-        Cli::try_parse_from(["phi", command, "--null-executor", "--user", "hello"])
+        Cli::try_parse_from(["phi", command, "-", "--null-executor", "--user", "hello"])
             .unwrap_or_else(|error| panic!("{command} should accept --null-executor: {error}"));
     }
 }
@@ -105,6 +129,7 @@ fn agent_and_headlessterm_commands_accept_structured_runners() {
         Cli::try_parse_from([
             "phi",
             command,
+            "-",
             "--runner",
             "bash",
             "--runner-arg=-c",
@@ -130,6 +155,7 @@ fn agent_and_headlessterm_commands_accept_structured_runners() {
         Cli::try_parse_from([
             "phi",
             "step",
+            "-",
             "--container",
             "dev",
             "--runner",
@@ -139,12 +165,14 @@ fn agent_and_headlessterm_commands_accept_structured_runners() {
         ])
         .is_err()
     );
-    assert!(Cli::try_parse_from(["phi", "step", "--runner-arg=-c", "--user", "hello",]).is_err());
+    assert!(
+        Cli::try_parse_from(["phi", "step", "-", "--runner-arg=-c", "--user", "hello",]).is_err()
+    );
 }
 
 #[test]
 fn cli_model_retry_matches_library_command_defaults_and_explicit_values() {
-    let default_cli = Cli::try_parse_from(["phi", "step", "--user", "hello"])
+    let default_cli = Cli::try_parse_from(["phi", "step", "-", "--user", "hello"])
         .expect("step should parse without a retry option");
     let crate::Command::Step(default_args) = default_cli.command else {
         panic!("expected step command");
@@ -163,6 +191,7 @@ fn cli_model_retry_matches_library_command_defaults_and_explicit_values() {
     let explicit_cli = Cli::try_parse_from([
         "phi",
         "step",
+        "-",
         "--max-model-request-retries",
         "5",
         "--user",
@@ -184,6 +213,7 @@ fn null_executor_dominates_container_in_agent_command_options() {
     let cli = Cli::try_parse_from([
         "phi",
         "step",
+        "-",
         "--null-executor",
         "--container",
         "unused-container",
@@ -269,8 +299,9 @@ fn session_help_exposes_session_transform_commands() {
     assert!(help.contains("replace"));
     assert!(help.contains("tool-result"));
     assert!(help.contains("rollback"));
-    assert!(help.contains("peek"));
-    assert!(help.contains("Inspect a session's current eval-state and governance status as JSON"));
+    assert!(help.contains("state"));
+    assert!(help.contains("Explain a session's current state as structured JSON"));
+    assert!(!help.contains("peek"));
 
     let append_help = command
         .find_subcommand_mut("session")
@@ -281,6 +312,8 @@ fn session_help_exposes_session_transform_commands() {
         .to_string();
     assert!(append_help.contains("--user <TEXT>"));
     assert!(append_help.contains("--assistant <TEXT>"));
+    assert!(append_help.contains("<SESSION>"));
+    assert!(append_help.contains("stdin/stdout"));
     assert!(!append_help.contains("--tool-result"));
 
     let tool_result_help = command
@@ -294,4 +327,40 @@ fn session_help_exposes_session_transform_commands() {
     assert!(tool_result_help.contains("--text <TEXT>"));
     assert!(tool_result_help.contains("--json-file <FILE>"));
     assert!(tool_result_help.contains("--text-file <FILE>"));
+
+    for name in ["state", "rollback", "history"] {
+        let help = command
+            .find_subcommand_mut("session")
+            .unwrap()
+            .find_subcommand_mut(name)
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(help.contains("<SESSION>"));
+        assert!(help.contains("- for stdin"));
+    }
+}
+
+#[test]
+fn agent_commands_require_an_explicit_session_target() {
+    let mut command = crate::Cli::command();
+    for name in ["step", "run", "yolo"] {
+        let help = command
+            .find_subcommand_mut(name)
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(help.contains("<SESSION>"));
+        assert!(help.contains("- for stdin/stdout"));
+    }
+
+    let help = command
+        .find_subcommand_mut("session")
+        .unwrap()
+        .find_subcommand_mut("new")
+        .unwrap()
+        .render_help()
+        .to_string();
+    assert!(help.contains("<SESSION>"));
+    assert!(help.contains("- for stdout"));
 }

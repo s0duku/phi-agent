@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::{
     config::ProviderConfig,
     error::PhiAgentRuntimeResult,
-    message::{PhiHistory, PhiMessage},
+    executor::ToolCallRequest,
+    message::{PhiAssistantMessage, PhiHistory, PhiMessage, PhiReasoningBlock},
 };
 
 use provider::DynProvider;
@@ -21,23 +22,39 @@ pub(crate) fn compact_prompt_token_count() -> usize {
 }
 
 #[derive(Clone, Debug)]
-pub(in crate::render) struct PhiRenderedMessages(Vec<Arc<PhiMessage>>);
-
-fn render_messages(messages: Vec<Arc<PhiMessage>>) -> PhiRenderedMessages {
-    PhiRenderedMessages(messages)
+pub(in crate::render) struct PhiRenderedMessages {
+    messages: Vec<Arc<PhiMessage>>,
+    provider_context: Option<serde_json::Value>,
 }
 
 impl PhiRenderedMessages {
     pub(crate) fn from_history(history: PhiHistory) -> Self {
-        render_messages(history.into_arcs())
+        let provider_context = history.latest_provider_context();
+        Self {
+            messages: history.into_arcs(),
+            provider_context,
+        }
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &PhiMessage> {
-        self.0.iter().map(|message| message.as_ref())
+        self.messages.iter().map(|message| message.as_ref())
     }
 
     pub(crate) fn iter_rev(&self) -> impl Iterator<Item = &PhiMessage> {
-        self.0.iter().rev().map(|message| message.as_ref())
+        self.messages.iter().rev().map(|message| message.as_ref())
+    }
+
+    pub(in crate::render) fn provider_context(&self) -> Option<&serde_json::Value> {
+        self.provider_context.as_ref()
+    }
+
+    pub(in crate::render) fn provider_assistant(
+        content: Option<String>,
+        reasoning: Vec<PhiReasoningBlock>,
+        tool_calls: Vec<ToolCallRequest>,
+        provider_context: Option<serde_json::Value>,
+    ) -> PhiAssistantMessage {
+        PhiAssistantMessage::from_provider_parts(content, reasoning, tool_calls, provider_context)
     }
 }
 
