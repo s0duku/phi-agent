@@ -47,9 +47,13 @@ fn missing_session_path_fails_without_creating_a_file() {
 }
 
 #[test]
-fn session_new_and_step_compose_through_explicit_stdio() {
+fn session_new_and_append_compose_through_explicit_stdio() {
     let new_session = Command::new(PHI)
         .args(["session", "new", "-"])
+        .env_remove("PHI_MODEL")
+        .env_remove("PHI_PROVIDER")
+        .env_remove("PHI_API")
+        .env_remove("PHI_KEY")
         .output()
         .expect("phi session new - should execute");
     assert!(
@@ -58,19 +62,24 @@ fn session_new_and_step_compose_through_explicit_stdio() {
         String::from_utf8_lossy(&new_session.stderr)
     );
 
-    let mut step = Command::new(PHI)
-        .args(["step", "-", "--user", "hello", "--quiet"])
+    let mut append = Command::new(PHI)
+        .args(["session", "append", "-", "--user", "hello"])
+        .env_remove("PHI_MODEL")
+        .env_remove("PHI_PROVIDER")
+        .env_remove("PHI_API")
+        .env_remove("PHI_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("phi step - should execute");
+        .expect("phi session append - should execute");
     use std::io::Write;
-    step.stdin
+    append
+        .stdin
         .take()
         .unwrap()
         .write_all(&new_session.stdout)
         .unwrap();
-    let output = step.wait_with_output().unwrap();
+    let output = append.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "{}",
