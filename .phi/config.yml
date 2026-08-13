@@ -4,7 +4,7 @@ model:
   # max_tokens: 32000
   reasoning:
     enabled: true
-    effort: medium
+    effort: high
     # token_budget: 4096
 
 provider:
