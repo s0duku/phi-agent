@@ -253,7 +253,11 @@ impl ProviderMessage {
 pub struct ProviderAssistantMessage {
     #[serde(serialize_with = "serialize_optional_content")]
     pub content: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub tool_calls: Vec<ProviderToolCall>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "reasoning_content")]
     pub reasoning_content: Option<String>,
@@ -439,7 +443,7 @@ fn reasoning_value(
     current: ReasoningFormat,
     target: ReasoningFormat,
 ) -> Option<String> {
-    if current != target || parts.is_empty() {
+    if current != target {
         return None;
     }
 
@@ -545,7 +549,7 @@ mod tests {
                 vec![ProviderMessage::Assistant(ProviderAssistantMessage {
                     content: Some("answer".to_string()),
                     tool_calls: Vec::new(),
-                    reasoning_content: None,
+                    reasoning_content: Some(String::new()),
                     reasoning: None,
                 })],
                 vec![ProviderMessage::Assistant(ProviderAssistantMessage {
@@ -559,7 +563,7 @@ mod tests {
                             arguments: serde_json::json!({ "command": "pwd" }).to_string(),
                         },
                     }],
-                    reasoning_content: None,
+                    reasoning_content: Some(String::new()),
                     reasoning: None,
                 })],
                 vec![ProviderMessage::Tool {
@@ -964,7 +968,7 @@ mod tests {
         .expect("assistant should serialize");
 
         assert_eq!(json["content"], "");
-        assert_eq!(json["tool_calls"], serde_json::json!([]));
+        assert!(json.get("tool_calls").is_none());
         assert!(json.get("reasoning").is_none());
         assert!(
             !json
@@ -973,6 +977,25 @@ mod tests {
                 .values()
                 .any(serde_json::Value::is_null)
         );
+    }
+
+    #[test]
+    fn assistant_without_reasoning_serializes_empty_current_reasoning_field() {
+        let messages = [PhiMessage::assistant("answer"), PhiMessage::tool_call(
+            Some("call_1".to_string()),
+            "lookup",
+            serde_json::json!({}),
+        )];
+
+        for message in &messages {
+            let mapped = ProviderMessage::from_single_phi_message(
+                message,
+                ReasoningFormat::PhiReasoningContent,
+            );
+            let json = serde_json::to_value(&mapped[0]).expect("assistant should serialize");
+            assert_eq!(json["reasoning_content"], "");
+            assert!(json.get("reasoning").is_none());
+        }
     }
 
     #[test]
@@ -988,7 +1011,7 @@ mod tests {
 
         let json = serde_json::to_value(mapped).expect("provider messages should serialize");
         assert_eq!(json[0]["content"], "");
-        assert_eq!(json[0]["tool_calls"], serde_json::json!([]));
+        assert!(json[0].get("tool_calls").is_none());
         assert_eq!(json[0]["reasoning_content"], "default format");
         assert!(json[0].get("reasoning").is_none());
         assert!(

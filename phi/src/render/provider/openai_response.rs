@@ -165,7 +165,20 @@ impl ProviderMessage {
                                 | PhiReasoningContent::Encrypted(_) => None,
                             })
                             .collect(),
-                        content: Vec::new(),
+                        content: block
+                            .content
+                            .iter()
+                            .filter_map(|part| match part {
+                                PhiReasoningContent::Text { text, .. } => {
+                                    Some(ResponsesReasoningContent::ReasoningText {
+                                        text: text.clone(),
+                                    })
+                                }
+                                PhiReasoningContent::Summary(_)
+                                | PhiReasoningContent::Redacted { .. }
+                                | PhiReasoningContent::Encrypted(_) => None,
+                            })
+                            .collect(),
                         encrypted_content: block.content.iter().find_map(|part| match part {
                             PhiReasoningContent::Encrypted(data) => Some(data.clone()),
                             _ => None,
@@ -806,13 +819,16 @@ mod tests {
                 summary: vec![ResponsesReasoningSummary::SummaryText {
                     text: "summary".to_string(),
                 }],
-                content: Vec::new(),
+                content: vec![ResponsesReasoningContent::ReasoningText {
+                    text: "reasoning".to_string(),
+                }],
                 encrypted_content: Some("encrypted-state".to_string()),
             }]
         );
         let json = serde_json::to_value(ProviderMessage::from_phi_message(&phi_message))
             .expect("reasoning request should serialize");
-        assert!(json[0].get("content").is_none());
+        assert_eq!(json[0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(json[0]["content"][0]["text"], "reasoning");
         assert_eq!(json[0]["encrypted_content"], "encrypted-state");
     }
 
