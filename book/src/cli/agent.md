@@ -23,4 +23,6 @@ By default, built-in shell jobs use the host shell. `--container NAME` targets
 an already-running Docker container. Alternatively, `--runner PROGRAM` passes
 each shell command to that program as one final argument, after any repeated
 `--runner-arg ARG` values. For example, `--runner bash --runner-arg=-c` executes
-commands through `bash -c`. `--runner` and `--container` are mutually exclusive.
+commands through `bash -c`. Local shell jobs and custom runner jobs inherit the
+caller’s current working directory; Docker jobs keep container cwd semantics.
+`--runner` and `--container` are mutually exclusive.

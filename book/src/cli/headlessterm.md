@@ -17,5 +17,6 @@ phi headlessterm close JOB_HANDLE
 `exec` uses the host shell by default. `--container NAME` executes inside an
 already-running Docker container. `--runner PROGRAM` instead starts a custom
 command carrier: repeated `--runner-arg ARG` values are followed by the complete
-command as one final argument. `--runner` and `--container` are mutually
-exclusive.
+command as one final argument. Local shell jobs and custom runner jobs inherit
+the caller’s current working directory; Docker jobs keep container cwd
+semantics. `--runner` and `--container` are mutually exclusive.

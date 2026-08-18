@@ -113,7 +113,9 @@ before rollback because the failed child is removed by that operation.
 
 1. Use `phi session new|append|store|remove|state|history|rollback` for durable state edits.
    `session history` emits the committed `PhiHistory` as JSON by default; add
-   `--view` only when an echo-style human-readable transcript is needed.
+   `--view` only when an echo-style human-readable transcript is needed, or
+   `--last` to print the last committed message as JSON (`null` for an empty
+   history).
    Add `next --provider` or `replace --provider` when a workflow must create or
    replace a provider boundary without evaluating it. Use `rollback --to STEP`
    to remove outer frames until the nearest requested step kind remains.
@@ -131,7 +133,9 @@ before rollback because the failed child is removed by that operation.
 6. Use `phi headlessterm exec|access|close` for persistent shell, REPL,
    debugger, or server jobs. Keep its handle outside Session and close it. Use
    `--runner PROGRAM` with repeated `--runner-arg ARG` values when commands must
-   pass through a custom carrier.
+   pass through a custom carrier. Local shell and custom runner jobs inherit
+   the caller's current working directory; Docker jobs keep container cwd
+   semantics.
 7. Use `phi doctor` to inspect resolved home, configuration, system prompt, and
    exposed tools. Use `--null-executor` for model-only deterministic tests.
 

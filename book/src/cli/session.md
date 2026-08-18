@@ -19,11 +19,14 @@ Session operations are ownership-consuming transformations:
   file-only and does not accept stdin/stdout transport.
 
 `phi session history` prints the committed `PhiHistory` as JSON, suitable for
-machine-readable pipelines. Pass `--view` to render the echo-style transcript.
+machine-readable pipelines. Pass `--view` to render the echo-style transcript,
+or `--last` to print the last committed message as JSON (`null` for an empty
+history).
 
 ```bash
 phi session history work.session
 phi session history work.session --view
+phi session history work.session --last
 ```
 
 ```bash

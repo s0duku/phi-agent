@@ -45,7 +45,9 @@ quiet output or the harness provides an intentional replacement log stream.
 `append` adds a user or assistant message to the outer delta. `store --key KEY --json JSON` (or `--json-file`, `--text`, `--text-file`) persists an external value in the outer delta; `remove --key KEY` writes a removal tombstone. `next --provider` creates a provider request frame. `replace --provider` replaces the outer step while retaining its composed delta. `rollback` removes one frame, while `rollback --to STEP` removes frames until the nearest requested kind is current. `tool-result --text TEXT`, `--json JSON`, `--text-file FILE`, or `--json-file FILE` supplies the first pending executor result without invoking an executor and applies the configured executor output sanitizer. Use `--no-sanitize` only when the external result is already bounded and must be preserved byte-for-byte. Prefer file input when the result may exceed command-line argument limits; sanitization still applies after file input unless disabled.
 
 `session history` emits the committed `PhiHistory` as JSON by default. Use
-`session history SESSION --view` for the echo-style transcript view.
+`session history SESSION --view` for the echo-style transcript view, or
+`session history SESSION --last` to emit the last committed message as JSON
+(`null` for an empty history).
 
 Inline message flags also have file-backed forms: `--user-file FILE` and
 `--assistant-file FILE`. They are available on `session append`, `run`, `yolo`,
@@ -56,6 +58,10 @@ refuse to treat a missing path as an existing session. In pipeline mode, `-`
 explicitly selects stdin/stdout and stdin is Session JSON. Start a new pipeline
 Session with `phi session new -`. Empty stdin and empty files are errors, and
 stdin is never inferred to be a user message.
+
+Local shell jobs and custom runner jobs inherit the caller's current working
+directory. Docker jobs keep the container's cwd semantics, so do not assume the
+host cwd exists inside the container.
 
 Check `state` before intervention. It explains the current step as structured
 JSON, including the next pending tool call when the state is

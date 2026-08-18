@@ -225,6 +225,8 @@ standalone CLI integration and harness guide.
   GDB, shells, and other interactive processes.
 - **Selectable command execution:** Phi can use the host shell, enter an
   already-running container, or pass commands through a custom runner program.
+  Local shell and custom runner jobs inherit the caller's current working
+  directory; Docker jobs keep container cwd semantics.
 - **Structural rollback:** the S-expression-style step structure makes rollback
   an explicit Session transformation.
 
@@ -237,7 +239,8 @@ phi yolo work.session --user "list files" --container phi-test-run
 
 A custom runner receives its fixed arguments followed by the complete command
 as one final argument. Agent commands apply the same runner to the built-in
-`bash_job` tool:
+`bash_job` tool, and the runner inherits the caller's current working
+directory:
 
 ```bash
 phi yolo work.session --runner bash --runner-arg=-c --user "list files"
@@ -329,7 +332,7 @@ Main commands:
 - `phi headlessterm exec|access|close`
 - `phi doctor`
 - `phi session new SESSION`
-- `phi session history SESSION [--view]`
+- `phi session history SESSION [--view|--last]`
 - `phi session delete SESSION`
 - `phi home new|pack|unpack`
 
@@ -351,6 +354,7 @@ phi doctor
 phi session history work.session
 # Human-readable echo-style transcript:
 phi session history work.session --view
+phi session history work.session --last
 ```
 
 For explicit stdio composition, use `-` as the session target:
