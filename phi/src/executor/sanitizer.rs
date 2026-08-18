@@ -15,26 +15,22 @@ struct StringLeaf {
     tokens: usize,
 }
 
-const TRUNCATION_MARKER: &str = "\n\n[... truncated ...]\n\n";
+const TRUNCATION_NOTICE_RESERVE_NUMERATOR: usize = 3;
+const TRUNCATION_NOTICE_RESERVE_DENOMINATOR: usize = 2;
 
-pub fn format_truncated_text(text: &str, preview_bytes: usize) -> String {
-    if text.len() <= preview_bytes {
+pub fn format_truncated_text(text: &str, token_budget: usize) -> String {
+    if approx_token_count(text) <= token_budget {
         return text.to_string();
     }
 
-    let original_token_count = approx_token_count(text);
-    let total_lines = text.lines().count();
-    let truncated = truncate_middle_text(text, preview_bytes);
-    format!(
-        "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n{truncated}"
-    )
+    truncate_text_to_token_budget(text, token_budget)
 }
 
-pub fn maybe_truncate_text(text: &str, threshold_tokens: usize, preview_bytes: usize) -> String {
+pub fn maybe_truncate_text(text: &str, threshold_tokens: usize) -> String {
     if approx_token_count(text) <= threshold_tokens {
         return text.to_string();
     }
-    format_truncated_text(text, preview_bytes)
+    format_truncated_text(text, threshold_tokens)
 }
 
 pub fn sanitize_tool_call_output(
@@ -44,14 +40,12 @@ pub fn sanitize_tool_call_output(
     ToolCallOutput::new(sanitize_json_string_leaves(
         output.into_value(),
         limits.output_threshold_tokens,
-        limits.preview_bytes,
     ))
 }
 
 pub fn sanitize_json_string_leaves(
     value: serde_json::Value,
     total_token_budget: usize,
-    preview_bytes: usize,
 ) -> serde_json::Value {
     let mut leaves = Vec::new();
     collect_string_leaves(&value, &mut Vec::new(), &mut leaves);
@@ -79,11 +73,7 @@ pub fn sanitize_json_string_leaves(
             && let Some(slot) = value_at_path_mut(&mut sanitized, &leaf.path)
             && let Some(text) = slot.as_str()
         {
-            *slot = serde_json::Value::String(truncate_text_to_token_budget(
-                text,
-                assigned_tokens,
-                preview_bytes,
-            ));
+            *slot = serde_json::Value::String(truncate_text_to_token_budget(text, assigned_tokens));
         }
 
         remaining_budget = remaining_budget.saturating_sub(assigned_tokens);
@@ -93,30 +83,42 @@ pub fn sanitize_json_string_leaves(
     sanitized
 }
 
-pub fn truncate_middle_text(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
+pub fn truncate_middle_text(text: &str, body_bytes: usize) -> String {
+    if text.len() <= body_bytes {
         return text.to_string();
     }
 
-    if max_bytes <= TRUNCATION_MARKER.len() {
-        return take_prefix_at_char_boundary(TRUNCATION_MARKER, max_bytes).to_string();
+    if body_bytes == 0 {
+        return truncation_marker(text.len(), text.len());
     }
 
-    let available = max_bytes - TRUNCATION_MARKER.len();
-    let head_budget = available / 2;
-    let tail_budget = available - head_budget;
+    let head_budget = body_bytes / 2;
+    let tail_budget = body_bytes - head_budget;
     let head = take_prefix_at_char_boundary(text, head_budget);
     let tail = take_suffix_at_char_boundary(text, tail_budget);
+    let omitted = text
+        .len()
+        .saturating_sub(head.len())
+        .saturating_sub(tail.len());
+    let marker = truncation_marker(omitted, text.len());
 
-    format!("{head}{TRUNCATION_MARKER}{tail}")
+    format!("{head}{marker}{tail}")
 }
 
-fn truncate_text_to_token_budget(text: &str, token_budget: usize, preview_bytes: usize) -> String {
+fn truncate_text_to_token_budget(text: &str, token_budget: usize) -> String {
     if token_budget == 0 {
         return String::new();
     }
-    let max_bytes = preview_bytes.min(token_budget.saturating_mul(APPROX_BYTES_PER_TOKEN));
-    maybe_truncate_text(text, token_budget, max_bytes)
+    let max_notice = truncation_marker(text.len(), text.len());
+    let notice_reserve_tokens = approx_token_count(&max_notice)
+        .saturating_mul(TRUNCATION_NOTICE_RESERVE_NUMERATOR)
+        .div_ceil(TRUNCATION_NOTICE_RESERVE_DENOMINATOR);
+    let body_tokens = token_budget.saturating_sub(notice_reserve_tokens);
+    truncate_middle_text(text, body_tokens.saturating_mul(APPROX_BYTES_PER_TOKEN))
+}
+
+fn truncation_marker(omitted_bytes: usize, original_bytes: usize) -> String {
+    format!("\n\n[truncated: omitted {omitted_bytes} of {original_bytes} bytes]\n\n")
 }
 
 fn collect_string_leaves(
@@ -193,16 +195,23 @@ mod tests {
         format_truncated_text, maybe_truncate_text, sanitize_json_string_leaves,
         sanitize_tool_call_output, truncate_middle_text,
     };
-    use crate::executor::{ToolCallOutput, ToolOutputLimits};
+    use crate::{
+        executor::{ToolCallOutput, ToolOutputLimits},
+        utils::approx_token_count,
+    };
 
     #[test]
     fn middle_truncation_keeps_head_and_tail() {
         let text = "0123456789abcdefghijklmnopqrstuvwxyz";
         let truncated = truncate_middle_text(text, 32);
-        assert!(truncated.contains("[... truncated ...]"));
+        assert!(truncated.contains("[truncated: omitted "));
         let (head, tail) = truncated
-            .split_once("[... truncated ...]")
+            .split_once(" bytes]\n\n")
             .expect("truncated text should contain a middle marker");
+        let head = head
+            .split_once("[truncated:")
+            .map(|(prefix, _)| prefix)
+            .expect("truncated text should contain a marker prefix");
         assert!(!head.is_empty(), "head preview should be preserved");
         assert!(!tail.is_empty(), "tail preview should be preserved");
         assert!(
@@ -218,15 +227,16 @@ mod tests {
     #[test]
     fn formatted_truncation_reports_original_shape() {
         let text = "line1\nline2\nline3\nline4\nline5";
-        let formatted = format_truncated_text(text, 20);
-        assert!(formatted.contains("Warning: truncated output"));
-        assert!(formatted.contains("Total output lines: 5"));
+        let formatted = format_truncated_text(text, 4);
+        assert!(formatted.contains("[truncated: omitted "));
+        assert!(formatted.contains(" of "));
+        assert!(formatted.contains(" bytes]"));
     }
 
     #[test]
     fn maybe_truncate_leaves_small_text_unchanged() {
         let text = "short output";
-        assert_eq!(maybe_truncate_text(text, 32, 16), text);
+        assert_eq!(maybe_truncate_text(text, 32), text);
     }
 
     #[test]
@@ -239,19 +249,19 @@ mod tests {
             }
         });
 
-        let sanitized = sanitize_json_string_leaves(value, 64, 48);
+        let sanitized = sanitize_json_string_leaves(value, 64);
 
         assert!(
             sanitized["stdout"]
                 .as_str()
                 .expect("stdout should stay a string")
-                .contains("[... truncated ...]")
+                .contains("[truncated: omitted ")
         );
         assert!(
             sanitized["stderr"]
                 .as_str()
                 .expect("stderr should stay a string")
-                .contains("[... truncated ...]")
+                .contains("[truncated: omitted ")
         );
         assert_eq!(sanitized["nested"]["message"], serde_json::json!("short"));
     }
@@ -263,19 +273,35 @@ mod tests {
             "stdout": "y".repeat(400)
         }));
 
-        let sanitized = sanitize_tool_call_output(output, ToolOutputLimits::new(64, 48));
+        let sanitized = sanitize_tool_call_output(output, ToolOutputLimits::new(64));
 
         assert!(
             sanitized.as_value()["error"]
                 .as_str()
                 .expect("error should remain a string")
-                .contains("Warning: truncated output")
+                .contains("[truncated: omitted ")
         );
         assert!(
             sanitized.as_value()["stdout"]
                 .as_str()
                 .expect("stdout should stay a string")
-                .contains("Warning: truncated output")
+                .contains("[truncated: omitted ")
+        );
+    }
+
+    #[test]
+    fn truncation_uses_assigned_token_budget_after_notice_reserve() {
+        let text = "0123456789".repeat(100);
+        let truncated = format_truncated_text(&text, 64);
+
+        assert!(truncated.contains("[truncated: omitted "));
+        assert!(
+            truncated.len() > 48,
+            "preview should not be capped by a tiny byte limit"
+        );
+        assert!(
+            approx_token_count(&truncated) <= 64,
+            "truncated output should fit assigned token budget"
         );
     }
 }

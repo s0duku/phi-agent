@@ -181,7 +181,7 @@ impl PhiModule for CaptureWarningsModule {
 impl PhiModule for CaptureCommitEventsModule {
     fn observe(&mut self, event: &PhiAgentCommitEvent<'_>) {
         let label = match event {
-            PhiAgentCommitEvent::ModelResponseCommitted { .. } => "model",
+            PhiAgentCommitEvent::ModelResponseCommitted => "model",
             PhiAgentCommitEvent::MessageCommitted {
                 message: PhiMessage::ToolResult(_),
             } => "tool_result",

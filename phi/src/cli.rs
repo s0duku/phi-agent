@@ -45,7 +45,12 @@ impl MessageArgs {
         collect(matches, "user", PhiMessage::user, &mut ordered);
         collect(matches, "assistant", PhiMessage::assistant, &mut ordered);
         collect_files(matches, "user_file", PhiMessage::user, &mut ordered)?;
-        collect_files(matches, "assistant_file", PhiMessage::assistant, &mut ordered)?;
+        collect_files(
+            matches,
+            "assistant_file",
+            PhiMessage::assistant,
+            &mut ordered,
+        )?;
         Ok(Self {
             messages: ordered.into_values().collect(),
         })

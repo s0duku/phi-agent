@@ -65,11 +65,6 @@ impl PhiEnvOverrides {
                     PhiConfigEnv::ReasoningEffort,
                     "one of: minimal, low, medium, high",
                 )?,
-                token_budget: parse(
-                    values,
-                    PhiConfigEnv::ThinkingTokenBudget,
-                    "an unsigned integer",
-                )?,
             },
         };
         let provider = ProviderConfigPatch {
@@ -87,11 +82,6 @@ impl PhiEnvOverrides {
             tool_threshold_tokens: parse(
                 values,
                 PhiConfigEnv::ToolThresholdTokens,
-                "an unsigned integer",
-            )?,
-            tool_preview_bytes: parse(
-                values,
-                PhiConfigEnv::ToolPreviewBytes,
                 "an unsigned integer",
             )?,
         };

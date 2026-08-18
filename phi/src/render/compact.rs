@@ -43,7 +43,6 @@ pub(super) async fn compact_history(
     summary_request.tools.clear();
     summary_request.temperature = Some(0.0);
     summary_request.enable_reasoning = false;
-    summary_request.thinking_token_budget = 0;
     summary_request.max_tokens = summary_request
         .max_tokens
         .min(COMPACT_SUMMARY_MAX_TOKENS)

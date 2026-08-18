@@ -80,10 +80,6 @@ impl DynProvider for OpenAiCompatClient {
         let mut extra = serde_json::Map::new();
         if request.enable_reasoning {
             extra.insert(
-                "thinking_token_budget".to_string(),
-                serde_json::json!(request.thinking_token_budget),
-            );
-            extra.insert(
                 "reasoning_effort".to_string(),
                 serde_json::json!(request.reasoning_effort.as_str()),
             );
@@ -988,11 +984,10 @@ mod tests {
 
     #[test]
     fn assistant_without_reasoning_serializes_empty_current_reasoning_field() {
-        let messages = [PhiMessage::assistant("answer"), PhiMessage::tool_call(
-            Some("call_1".to_string()),
-            "lookup",
-            serde_json::json!({}),
-        )];
+        let messages = [
+            PhiMessage::assistant("answer"),
+            PhiMessage::tool_call(Some("call_1".to_string()), "lookup", serde_json::json!({})),
+        ];
 
         for message in &messages {
             let mapped = ProviderMessage::from_single_phi_message(
@@ -1003,6 +998,28 @@ mod tests {
             assert_eq!(json["reasoning_content"], "");
             assert!(json.get("reasoning").is_none());
         }
+    }
+
+    #[test]
+    fn reasoning_request_serializes_only_reasoning_effort() {
+        let request = ChatCompletionRequest {
+            model: "test-model".to_string(),
+            messages: vec![ProviderMessage::User {
+                content: "hello".to_string(),
+            }],
+            tools: None,
+            temperature: None,
+            max_tokens: 123,
+            extra: {
+                let mut extra = serde_json::Map::new();
+                extra.insert("reasoning_effort".to_string(), serde_json::json!("medium"));
+                extra
+            },
+        };
+
+        let json = serde_json::to_value(request).expect("request should serialize");
+        assert_eq!(json["reasoning_effort"], "medium");
+        assert!(json.get("thinking_token_budget").is_none());
     }
 
     #[test]

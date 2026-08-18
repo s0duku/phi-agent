@@ -1,11 +1,10 @@
 model:
   name: gpt-5
   temperature: 1.0
-  # max_tokens: 32000
+  # max_tokens: 32768
   reasoning:
     enabled: true
     effort: high
-    # token_budget: 4096
 
 provider:
   kind: openai_chat
@@ -18,7 +17,6 @@ runtime:
   context_tokens: 262144
 
 executor:
-  # tool_threshold_tokens: 6144
-  # tool_preview_bytes: 2048
+  # tool_threshold_tokens: 8192
 
 tools: []

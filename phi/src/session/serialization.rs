@@ -327,7 +327,6 @@ mod tests {
                     temperature: None,
                     max_tokens: 128,
                     enable_reasoning: false,
-                    thinking_token_budget: 0,
                     reasoning_effort: crate::config::ReasoningEffort::Medium,
                 },
             ),
@@ -417,12 +416,21 @@ mod tests {
             .store_json("answer", serde_json::json!({"value": 42}))
             .unwrap();
         let stored = serde_json::to_value(&session).unwrap();
-        assert_eq!(stored["frames"][0]["delta"]["effects"]["answer"]["kind"], "store");
-        assert_eq!(stored["frames"][0]["delta"]["effects"]["answer"]["value"]["value"], 42);
+        assert_eq!(
+            stored["frames"][0]["delta"]["effects"]["answer"]["kind"],
+            "store"
+        );
+        assert_eq!(
+            stored["frames"][0]["delta"]["effects"]["answer"]["value"]["value"],
+            42
+        );
 
         let removed = session.remove_key("answer").unwrap();
         let removed = serde_json::to_value(&removed).unwrap();
-        assert_eq!(removed["frames"][0]["delta"]["effects"]["answer"]["kind"], "remove");
+        assert_eq!(
+            removed["frames"][0]["delta"]["effects"]["answer"]["kind"],
+            "remove"
+        );
     }
 
     #[test]

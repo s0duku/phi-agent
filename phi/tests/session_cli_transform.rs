@@ -475,7 +475,7 @@ fn tool_result_applies_configured_output_sanitizer() {
     std::fs::write(&path, request_executor_session_json(false)).unwrap();
     std::fs::write(
         &config_path,
-        "executor:\n  tool_threshold_tokens: 1\n  tool_preview_bytes: 32\n",
+        "executor:\n  tool_threshold_tokens: 1\n",
     )
     .unwrap();
 
@@ -515,7 +515,7 @@ fn tool_result_can_disable_output_sanitizer() {
     std::fs::write(&path, request_executor_session_json(false)).unwrap();
     std::fs::write(
         &config_path,
-        "executor:\n  tool_threshold_tokens: 1\n  tool_preview_bytes: 8\n",
+        "executor:\n  tool_threshold_tokens: 1\n",
     )
     .unwrap();
     let value = "this external result must remain unchanged";

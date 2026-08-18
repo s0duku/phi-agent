@@ -138,7 +138,11 @@ pub struct SessionRemoveArgs {
 
 #[derive(Args)]
 pub struct SessionRollbackArgs {
-    #[arg(long, value_name = "STEP", help = "Rollback to the nearest frame of this step kind")]
+    #[arg(
+        long,
+        value_name = "STEP",
+        help = "Rollback to the nearest frame of this step kind"
+    )]
     pub to: Option<SessionStepKind>,
     #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
     target: SessionTarget,
@@ -249,14 +253,17 @@ fn parse_stored_value(
             .map_err(|error| format!("invalid --json value: {error}").into()),
         (None, Some(text), None, None) => Ok(serde_json::Value::String(text)),
         (None, None, Some(path), None) => {
-            let bytes = std::fs::read(&path)
-                .map_err(|error| format!("failed to read --json-file {}: {error}", path.display()))?;
-            serde_json::from_slice(&bytes)
-                .map_err(|error| format!("invalid JSON in --json-file {}: {error}", path.display()).into())
+            let bytes = std::fs::read(&path).map_err(|error| {
+                format!("failed to read --json-file {}: {error}", path.display())
+            })?;
+            serde_json::from_slice(&bytes).map_err(|error| {
+                format!("invalid JSON in --json-file {}: {error}", path.display()).into()
+            })
         }
         (None, None, None, Some(path)) => Ok(serde_json::Value::String(
-            std::fs::read_to_string(&path)
-                .map_err(|error| format!("failed to read --text-file {}: {error}", path.display()))?,
+            std::fs::read_to_string(&path).map_err(|error| {
+                format!("failed to read --text-file {}: {error}", path.display())
+            })?,
         )),
         _ => unreachable!("clap requires exactly one stored value input"),
     }
@@ -315,7 +322,6 @@ fn tool_result(
         crate::executor::sanitizer::sanitize_json_string_leaves(
             result,
             config.executor().tool_threshold_tokens,
-            config.executor().tool_preview_bytes,
         )
     };
     let resume_call = provider_call(home_spec, config_path)?;

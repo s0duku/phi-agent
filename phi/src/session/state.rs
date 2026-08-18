@@ -50,7 +50,6 @@ pub struct PhiProviderRequestState<'a> {
     pub temperature: Option<f64>,
     pub max_tokens: u64,
     pub enable_reasoning: bool,
-    pub thinking_token_budget: u64,
     pub reasoning_effort: ReasoningEffort,
 }
 
@@ -135,7 +134,6 @@ impl<'a> TryFrom<&'a PhiAgentStep> for PhiStepState<'a> {
                         temperature: call.temperature,
                         max_tokens: call.max_tokens,
                         enable_reasoning: call.enable_reasoning,
-                        thinking_token_budget: call.thinking_token_budget,
                         reasoning_effort: call.reasoning_effort,
                     },
                 }

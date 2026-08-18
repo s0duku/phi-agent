@@ -72,7 +72,7 @@ pub(crate) enum PhiAgentStepEvent<'a> {
 
 #[derive(Debug)]
 pub(crate) enum PhiAgentCommitEvent<'a> {
-    ModelResponseCommitted { message: &'a PhiMessage },
+    ModelResponseCommitted,
     MessageCommitted { message: &'a PhiMessage },
     WarningEmitted { message: &'a str },
     StepFailed { error: &'a PhiAgentRuntimeError },

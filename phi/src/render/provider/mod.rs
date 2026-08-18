@@ -228,7 +228,6 @@ pub struct PhiProviderCall {
     pub temperature: Option<f64>,
     pub max_tokens: u64,
     pub enable_reasoning: bool,
-    pub thinking_token_budget: u64,
     pub reasoning_effort: ReasoningEffort,
 }
 
@@ -240,7 +239,6 @@ impl PhiProviderCall {
             temperature: defaults.temperature,
             max_tokens: defaults.max_tokens,
             enable_reasoning: defaults.enable_reasoning,
-            thinking_token_budget: defaults.thinking_token_budget,
             reasoning_effort: defaults.reasoning_effort,
         }
     }

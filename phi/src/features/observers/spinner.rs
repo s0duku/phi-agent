@@ -247,7 +247,7 @@ impl PhiModule for SpinnerModule {
 
     fn observe(&mut self, event: &PhiAgentCommitEvent<'_>) {
         match event {
-            PhiAgentCommitEvent::ModelResponseCommitted { .. }
+            PhiAgentCommitEvent::ModelResponseCommitted
             | PhiAgentCommitEvent::MessageCommitted { .. }
             | PhiAgentCommitEvent::WarningEmitted { .. }
             | PhiAgentCommitEvent::StepFailed { .. } => self.stop(),

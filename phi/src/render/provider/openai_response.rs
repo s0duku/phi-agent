@@ -893,7 +893,10 @@ mod tests {
                     PhiAgentRuntimeError::ModelOutputLimit { .. }
                 ));
             } else {
-                assert!(matches!(&error, PhiAgentRuntimeError::ProviderResponse { .. }));
+                assert!(matches!(
+                    &error,
+                    PhiAgentRuntimeError::ProviderResponse { .. }
+                ));
             }
             assert_eq!(error.detail(), expected_detail);
         }

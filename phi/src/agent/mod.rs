@@ -250,10 +250,8 @@ impl PreparedPhiAgentBuilder {
             tools = crate::executor::builtins::default_tools();
             crate::module::module_tools(&mut modules, &self.context, &mut tools);
         }
-        let output_limits = ToolOutputLimits::new(
-            self.context.config.executor().tool_threshold_tokens,
-            self.context.config.executor().tool_preview_bytes,
-        );
+        let output_limits =
+            ToolOutputLimits::new(self.context.config.executor().tool_threshold_tokens);
         let executor = PhiExecutor::from_tools(tools, output_limits)?;
 
         let model_defaults = if let Some(model_defaults) = self.model_defaults.take() {
@@ -520,7 +518,7 @@ impl PhiAgentRuntime {
         self.modules
             .observe(&PhiAgentCommitEvent::MessageCommitted { message: &message });
         self.modules
-            .observe(&PhiAgentCommitEvent::ModelResponseCommitted { message: &message });
+            .observe(&PhiAgentCommitEvent::ModelResponseCommitted);
     }
 
     // Display rendering belongs to the step events before this point.

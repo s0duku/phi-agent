@@ -20,14 +20,12 @@ pub struct PhiToolDefinition {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolOutputLimits {
     pub output_threshold_tokens: usize,
-    pub preview_bytes: usize,
 }
 
 impl ToolOutputLimits {
-    pub const fn new(output_threshold_tokens: usize, preview_bytes: usize) -> Self {
+    pub const fn new(output_threshold_tokens: usize) -> Self {
         Self {
             output_threshold_tokens,
-            preview_bytes,
         }
     }
 
@@ -36,7 +34,6 @@ impl ToolOutputLimits {
             output_threshold_tokens: self
                 .output_threshold_tokens
                 .min(other.output_threshold_tokens),
-            preview_bytes: self.preview_bytes.min(other.preview_bytes),
         }
     }
 }

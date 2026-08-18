@@ -172,5 +172,4 @@ mod tests {
             PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. })
         ));
     }
-
 }

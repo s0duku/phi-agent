@@ -11,11 +11,10 @@ phi home new .phi
 model:
   name: gpt-5
   temperature: 1.0
-  max_tokens: 32000
+  max_tokens: 32768
   reasoning:
     enabled: true
     effort: medium
-    token_budget: 4096
 provider:
   kind: openai_chat
   api_base: https://api.openai.com/v1
@@ -27,8 +26,7 @@ runtime:
   max_steps: 1000000
   context_tokens: 262144
 executor:
-  tool_threshold_tokens: 6144
-  tool_preview_bytes: 2048
+  tool_threshold_tokens: 8192
 tools: []
 ```
 

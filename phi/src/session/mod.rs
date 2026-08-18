@@ -532,7 +532,9 @@ impl Session {
     pub fn remove_key(self, key: impl Into<String>) -> Result<Self, PhiAgentRuntimeError> {
         let key = key.into();
         if key.is_empty() {
-            return Err(PhiAgentRuntimeError::session("remove key must not be empty"));
+            return Err(PhiAgentRuntimeError::session(
+                "remove key must not be empty",
+            ));
         }
         let step = self.0.step().clone();
         let mut delta = self.0.delta().clone();
@@ -630,7 +632,9 @@ impl Session {
                 "rollback target step kind {kind:?} was not found"
             )));
         };
-        Ok(Self::from_frames(frames.into_iter().take(index + 1).collect()))
+        Ok(Self::from_frames(
+            frames.into_iter().take(index + 1).collect(),
+        ))
     }
 
     pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {

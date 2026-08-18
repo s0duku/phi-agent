@@ -21,7 +21,6 @@ pub(crate) fn test_model_defaults() -> ModelRequestDefaults {
         temperature: Some(0.0),
         max_tokens: 1024,
         enable_reasoning: true,
-        thinking_token_budget: 128,
         reasoning_effort: ReasoningEffort::Medium,
     }
 }

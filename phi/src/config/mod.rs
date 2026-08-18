@@ -101,8 +101,6 @@ impl PhiConfig {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::executor::ToolOutputLimits;
-
     use super::*;
 
     #[test]
@@ -157,16 +155,7 @@ tools:
 
     #[test]
     fn tool_output_limits_are_derived_from_typed_config() {
-        let config = PhiConfig::from_yaml(
-            b"executor:\n  tool_threshold_tokens: 1234\n  tool_preview_bytes: 567\n",
-        )
-        .unwrap();
-        assert_eq!(
-            ToolOutputLimits::new(
-                config.executor().tool_threshold_tokens,
-                config.executor().tool_preview_bytes,
-            ),
-            ToolOutputLimits::new(1234, 567)
-        );
+        let config = PhiConfig::from_yaml(b"executor:\n  tool_threshold_tokens: 1234\n").unwrap();
+        assert_eq!(config.executor().tool_threshold_tokens, 1234);
     }
 }

@@ -14,7 +14,6 @@ pub struct ModelConfig {
 pub struct ReasoningConfig {
     pub enabled: bool,
     pub effort: ReasoningEffort,
-    pub token_budget: u64,
 }
 
 #[derive(Clone)]
@@ -23,7 +22,6 @@ pub struct ModelRequestDefaults {
     pub temperature: Option<f64>,
     pub max_tokens: u64,
     pub enable_reasoning: bool,
-    pub thinking_token_budget: u64,
     pub reasoning_effort: ReasoningEffort,
 }
 
@@ -70,7 +68,6 @@ pub(super) struct ModelConfigPatch {
 pub(super) struct ReasoningConfigPatch {
     pub enabled: Option<bool>,
     pub effort: Option<ReasoningEffort>,
-    pub token_budget: Option<u64>,
 }
 
 impl Default for ModelConfig {
@@ -82,7 +79,6 @@ impl Default for ModelConfig {
             reasoning: ReasoningConfig {
                 enabled: defaults::REASONING_ENABLED,
                 effort: ReasoningEffort::default(),
-                token_budget: defaults::REASONING_TOKEN_BUDGET,
             },
         }
     }
@@ -105,9 +101,6 @@ impl ModelConfig {
         if let Some(value) = patch.reasoning.effort {
             self.reasoning.effort = value;
         }
-        if let Some(value) = patch.reasoning.token_budget {
-            self.reasoning.token_budget = value;
-        }
     }
 }
 
@@ -124,7 +117,6 @@ impl From<&super::PhiConfig> for ModelRequestDefaults {
             temperature: config.model().temperature,
             max_tokens: config.model().max_tokens,
             enable_reasoning: config.model().reasoning.enabled,
-            thinking_token_budget: config.model().reasoning.token_budget,
             reasoning_effort: config.model().reasoning.effort,
         }
     }
