@@ -143,7 +143,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "phi-message-{}-{}.txt",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::write(&path, "from file").unwrap();
         let matches: ArgMatches = MessageArgs::augment(Command::new("messages"))
