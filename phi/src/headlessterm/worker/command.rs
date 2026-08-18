@@ -14,8 +14,9 @@ const EXIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// programs time to establish `nohup` handling before termination of the
 /// terminal session sends SIGHUP to its foreground process group.
 pub(crate) fn build(command: TerminalCommand) -> Result<CommandBuilder, String> {
+    let cwd = current_working_directory()?;
     match command {
-        TerminalCommand::Shell { command } => return Ok(build_shell(command)),
+        TerminalCommand::Shell { command } => return Ok(build_shell(command, &cwd)),
         TerminalCommand::DockerExec {
             container,
             command,
@@ -40,6 +41,7 @@ pub(crate) fn build(command: TerminalCommand) -> Result<CommandBuilder, String> 
                 return Err("custom runner program cannot be empty".to_owned());
             }
             let mut builder = CommandBuilder::new(program);
+            builder.cwd(&cwd);
             builder.args(args);
             builder.arg(command);
             return Ok(builder);
@@ -153,9 +155,12 @@ fn choose_container_cli(
     }
 }
 
-fn build_shell(command: String) -> CommandBuilder {
-    let cwd = std::env::current_dir()
-        .unwrap_or_else(|error| panic!("unable to determine current working directory: {error}"));
+fn current_working_directory() -> Result<std::path::PathBuf, String> {
+    std::env::current_dir()
+        .map_err(|error| format!("unable to determine current working directory: {error}"))
+}
+
+fn build_shell(command: String, cwd: &std::path::Path) -> CommandBuilder {
     #[cfg(unix)]
     {
         let shell = unix_shell();
@@ -243,10 +248,19 @@ mod tests {
     }
 
     #[test]
-    fn shell_command_builder_uses_the_current_directory() {
+    fn local_command_builders_use_the_current_directory() {
         let cwd = std::env::current_dir().unwrap();
-        let builder = build(TerminalCommand::shell("pwd")).unwrap();
-        assert_eq!(builder.get_cwd().and_then(|dir| dir.to_str()), cwd.to_str());
+
+        let shell = build(TerminalCommand::shell("pwd")).unwrap();
+        assert_eq!(shell.get_cwd().and_then(|dir| dir.to_str()), cwd.to_str());
+
+        let runner = build(TerminalCommand::custom_runner(
+            "runner",
+            vec!["--flag".into()],
+            "pwd",
+        ))
+        .unwrap();
+        assert_eq!(runner.get_cwd().and_then(|dir| dir.to_str()), cwd.to_str());
     }
 
     #[test]
