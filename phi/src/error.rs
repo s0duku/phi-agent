@@ -110,6 +110,12 @@ pub enum PhiAgentRuntimeError {
     ProviderResponse {
         detail: String,
     },
+    ModelOutputLimit {
+        detail: String,
+    },
+    ModelToolParseError {
+        detail: String,
+    },
     Module {
         detail: String,
     },
@@ -200,6 +206,18 @@ impl PhiAgentRuntimeError {
         }
     }
 
+    pub fn model_output_limit(detail: impl Into<String>) -> Self {
+        Self::ModelOutputLimit {
+            detail: detail.into(),
+        }
+    }
+
+    pub fn model_tool_parse_error(detail: impl Into<String>) -> Self {
+        Self::ModelToolParseError {
+            detail: detail.into(),
+        }
+    }
+
     pub fn module(detail: impl Into<String>) -> Self {
         Self::Module {
             detail: detail.into(),
@@ -244,6 +262,8 @@ impl PhiAgentRuntimeError {
             | Self::ContextExceededLimit { detail }
             | Self::ProviderRequest { detail, .. }
             | Self::ProviderResponse { detail, .. }
+            | Self::ModelOutputLimit { detail }
+            | Self::ModelToolParseError { detail }
             | Self::Module { detail, .. }
             | Self::Home { detail, .. }
             | Self::ToolNotFound { detail, .. }

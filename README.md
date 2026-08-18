@@ -145,12 +145,17 @@ transformations: they read one Session, apply one operation, and write the new
 Session either to the same file or to stdout.
 
 - `session new` creates initialized state.
-- `session append` adds user or assistant messages to the current outer delta.
+- `session append` adds user or assistant messages to the current outer delta;
+  use `--user-file` or `--assistant-file` for file-backed input.
+- `session store` and `session remove` persist or mask external key/value state
+  in the current outer delta.
 - `session next` and `session replace` reproduce the corresponding step-frame
   transitions without running the agent.
 - `session tool-result` resolves the current executor request with an externally
-  supplied result.
-- `session state`, `history`, `rollback`, and `delete` inspect or manage state.
+  supplied result and applies the configured executor output sanitizer. Pass
+  `--no-sanitize` only for an already-bounded result that must remain unchanged.
+- `session state`, `history`, `rollback`, and `delete` inspect or manage state;
+  `rollback --to STEP` can retain the nearest frame of a selected step kind.
 
 This interface lets a shell script, a human, or another program inspect and
 modify a Session between agent steps without bypassing Session semantics.
@@ -317,8 +322,10 @@ Main commands:
 - `phi session next SESSION --provider`
 - `phi session replace SESSION --provider`
 - `phi session tool-result SESSION (--json JSON|--text TEXT|--json-file FILE|--text-file FILE)`
-- `phi session rollback SESSION`
-- `phi session append SESSION (--user TEXT|--assistant TEXT)`
+- `phi session store SESSION --key KEY (--json JSON|--json-file FILE|--text TEXT|--text-file FILE)`
+- `phi session remove SESSION --key KEY`
+- `phi session rollback SESSION [--to STEP]`
+- `phi session append SESSION (--user TEXT|--assistant TEXT|--user-file FILE|--assistant-file FILE)`
 - `phi headlessterm exec|access|close`
 - `phi doctor`
 - `phi session new SESSION`
@@ -391,10 +398,11 @@ Phi includes built-in governance modules for:
 - step budgets
 - tool execution limits
 - model retry boundaries
-- loop guard
 - automatic context compaction
 
 Auto-compact triggers when rendered provider-visible history approaches the configured context limit. Compact is still a normal step transition, so failures remain visible in session state and can be resumed by later scheduler steps.
+
+Provider failures that stop model output at the configured token limit or contain malformed tool-call JSON are serialized as distinct `ModelOutputLimit` and `ModelToolParseError` failure kinds; both currently follow the normal failed-step fallback.
 
 ## Tools
 

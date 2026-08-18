@@ -6,7 +6,7 @@ use std::{
 
 use clap::{Arg, ArgMatches, Args, Command, Error, FromArgMatches, Subcommand};
 
-use super::{PhiReActStep, Session, SessionTarget};
+use super::{PhiReActStep, Session, SessionStepKind, SessionTarget};
 use crate::{
     banner,
     cli::MessageArgs,
@@ -35,6 +35,16 @@ pub enum SessionCommand {
         before_help = banner::startup_banner()
     )]
     Append(SessionAppendArgs),
+    #[command(
+        about = "Store a JSON value in the outermost session delta",
+        before_help = banner::startup_banner()
+    )]
+    Store(SessionStoreArgs),
+    #[command(
+        about = "Remove a key from the outermost session delta",
+        before_help = banner::startup_banner()
+    )]
+    Remove(SessionRemoveArgs),
     #[command(
         about = "Add a new outer session frame",
         before_help = banner::startup_banner()
@@ -97,7 +107,39 @@ pub struct SessionAppendArgs {
 }
 
 #[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("value")
+        .required(true)
+        .multiple(false)
+        .args(["json", "text", "json_file", "text_file"])
+))]
+pub struct SessionStoreArgs {
+    #[arg(long, value_name = "KEY", required = true)]
+    pub key: String,
+    #[arg(long, value_name = "JSON")]
+    pub json: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    pub text: Option<String>,
+    #[arg(long = "json-file", value_name = "FILE")]
+    pub json_file: Option<PathBuf>,
+    #[arg(long = "text-file", value_name = "FILE")]
+    pub text_file: Option<PathBuf>,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
+    target: SessionTarget,
+}
+
+#[derive(Args)]
+pub struct SessionRemoveArgs {
+    #[arg(long, value_name = "KEY", required = true)]
+    pub key: String,
+    #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
+    target: SessionTarget,
+}
+
+#[derive(Args)]
 pub struct SessionRollbackArgs {
+    #[arg(long, value_name = "STEP", help = "Rollback to the nearest frame of this step kind")]
+    pub to: Option<SessionStepKind>,
     #[arg(value_name = "SESSION", help = "Session file, or - for stdin/stdout")]
     target: SessionTarget,
 }
@@ -132,6 +174,8 @@ pub struct SessionToolResultArgs {
     pub json_file: Option<PathBuf>,
     #[arg(long = "text-file", value_name = "FILE")]
     pub text_file: Option<PathBuf>,
+    #[arg(long = "no-sanitize")]
+    pub no_sanitize: bool,
 }
 
 #[derive(Args)]
@@ -153,6 +197,8 @@ pub async fn run(
     match args.command {
         SessionCommand::New(args) => new(home_spec, args),
         SessionCommand::Append(args) => append(args),
+        SessionCommand::Store(args) => store(args),
+        SessionCommand::Remove(args) => remove(args),
         SessionCommand::Next(args) => next(home_spec, args),
         SessionCommand::Replace(args) => replace(home_spec, args),
         SessionCommand::ToolResult(args) => tool_result(home_spec, args),
@@ -177,6 +223,43 @@ fn append(args: SessionAppendArgs) -> Result<(), Box<dyn std::error::Error>> {
     transform(args.target, |session| {
         Ok(session.append_messages(args.messages.messages()))
     })
+}
+
+fn store(args: SessionStoreArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let value = parse_stored_value(args.json, args.text, args.json_file, args.text_file)?;
+    transform(args.target, |session| {
+        session.store_json(args.key, value).map_err(Into::into)
+    })
+}
+
+fn remove(args: SessionRemoveArgs) -> Result<(), Box<dyn std::error::Error>> {
+    transform(args.target, |session| {
+        session.remove_key(args.key).map_err(Into::into)
+    })
+}
+
+fn parse_stored_value(
+    json: Option<String>,
+    text: Option<String>,
+    json_file: Option<PathBuf>,
+    text_file: Option<PathBuf>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    match (json, text, json_file, text_file) {
+        (Some(json), None, None, None) => serde_json::from_str(&json)
+            .map_err(|error| format!("invalid --json value: {error}").into()),
+        (None, Some(text), None, None) => Ok(serde_json::Value::String(text)),
+        (None, None, Some(path), None) => {
+            let bytes = std::fs::read(&path)
+                .map_err(|error| format!("failed to read --json-file {}: {error}", path.display()))?;
+            serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid JSON in --json-file {}: {error}", path.display()).into())
+        }
+        (None, None, None, Some(path)) => Ok(serde_json::Value::String(
+            std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read --text-file {}: {error}", path.display()))?,
+        )),
+        _ => unreachable!("clap requires exactly one stored value input"),
+    }
 }
 
 fn next(
@@ -204,6 +287,8 @@ fn tool_result(
     args: SessionToolResultArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = args.config.config.as_deref();
+    let home = crate::home::load_home(home_spec)?;
+    let config = crate::load_config(home.as_ref(), config_path)?;
     let result = match (args.json, args.text, args.json_file, args.text_file) {
         (Some(json), None, None, None) => serde_json::from_str(&json)
             .map_err(|error| format!("invalid --json tool result: {error}"))?,
@@ -223,6 +308,15 @@ fn tool_result(
             serde_json::Value::String(text)
         }
         _ => unreachable!("clap requires exactly one tool result input"),
+    };
+    let result = if args.no_sanitize {
+        result
+    } else {
+        crate::executor::sanitizer::sanitize_json_string_leaves(
+            result,
+            config.executor().tool_threshold_tokens,
+            config.executor().tool_preview_bytes,
+        )
     };
     let resume_call = provider_call(home_spec, config_path)?;
     transform(args.target, |session| {
@@ -257,7 +351,10 @@ fn provider_call(
 }
 
 fn rollback(args: SessionRollbackArgs) -> Result<(), Box<dyn std::error::Error>> {
-    transform(args.target, |session| Ok(Session::rollback(session)))
+    transform(args.target, |session| match args.to {
+        Some(kind) => Session::rollback_to(session, kind).map_err(Into::into),
+        None => Ok(Session::rollback(session)),
+    })
 }
 
 fn transform(
@@ -280,7 +377,8 @@ impl FromArgMatches for SessionAppendArgs {
             target: matches
                 .remove_one("target")
                 .expect("clap requires a session target"),
-            messages: MessageArgs::parse(matches),
+            messages: MessageArgs::parse(matches)
+                .map_err(|error| Error::raw(clap::error::ErrorKind::InvalidValue, error))?,
         })
     }
 

@@ -35,6 +35,7 @@ or a durable file:
 ```bash
 phi session new task.session
 phi session append task.session --user "the user's task"
+# Use --user-file FILE or --assistant-file FILE when input is too large for an argument.
 ```
 
 The Python harness may use pipeline JSON or a file path; choose one transport
@@ -110,24 +111,33 @@ before rollback because the failed child is removed by that operation.
 
 ## CLI capability map
 
-1. Use `phi session new|append|state|history|rollback` for durable state edits.
+1. Use `phi session new|append|store|remove|state|history|rollback` for durable state edits.
    `session history` emits the committed `PhiHistory` as JSON by default; add
    `--view` only when an echo-style human-readable transcript is needed.
    Add `next --provider` or `replace --provider` when a workflow must create or
-   replace a provider boundary without evaluating it.
-2. Use `phi run SESSION` for the main workflow scheduler. Set `--max-steps`
+   replace a provider boundary without evaluating it. Use `rollback --to STEP`
+   to remove outer frames until the nearest requested step kind remains.
+2. Use `phi session store --key KEY --json JSON|--json-file FILE SESSION` to
+   persist an external JSON value in the current frame delta, or
+   `phi session remove --key KEY SESSION` to write a removal tombstone. Text
+   and text-file inputs are also supported for string values.
+3. Use `phi run SESSION` for the main workflow scheduler. Set `--max-steps`
    as the per-run budget and inspect the returned Session before continuing.
-3. Use `phi step SESSION` for per-transition inspection or custom scheduling.
-4. Use `phi session tool-result SESSION --json JSON|--text TEXT` to resolve
+4. Use `phi step SESSION` for per-transition inspection or custom scheduling.
+5. Use `phi session tool-result SESSION --json JSON|--text TEXT` to resolve
    exactly one pending tool call without invoking Phi's executor. Use
    `--json-file FILE` or `--text-file FILE` when the result may exceed command-line
    argument limits.
-5. Use `phi headlessterm exec|access|close` for persistent shell, REPL,
+6. Use `phi headlessterm exec|access|close` for persistent shell, REPL,
    debugger, or server jobs. Keep its handle outside Session and close it. Use
    `--runner PROGRAM` with repeated `--runner-arg ARG` values when commands must
    pass through a custom carrier.
-6. Use `phi doctor` to inspect resolved home, configuration, system prompt, and
+7. Use `phi doctor` to inspect resolved home, configuration, system prompt, and
    exposed tools. Use `--null-executor` for model-only deterministic tests.
+
+All agent message flags also accept `--user-file FILE` and
+`--assistant-file FILE`; `session append` accepts the same options. File-backed
+messages participate in the same command-line ordering as inline messages.
 
 Read [references/python-harness.md](references/python-harness.md) for the
 recommended wrapper and recovery controller. Read

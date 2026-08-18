@@ -196,7 +196,7 @@ mod tests {
     use crate::error::PhiAgentRuntimeError;
     use crate::expr::{PhiStepExpr, PhiVariable};
     use crate::message::{PhiHistory, PhiMessage};
-    use crate::session::PhiAgentStep;
+    use crate::session::{PhiAgentStep, PhiReActStep, SessionStepKind};
     use crate::tests::support::test_model_defaults;
 
     const COUNT: PhiVariable<i32> = PhiVariable::new("count");
@@ -412,6 +412,20 @@ mod tests {
     }
 
     #[test]
+    fn external_store_and_remove_update_the_outer_delta() {
+        let session = Session::from_root(PhiAgentStep::turn_end("root"), Vec::<PhiMessage>::new())
+            .store_json("answer", serde_json::json!({"value": 42}))
+            .unwrap();
+        let stored = serde_json::to_value(&session).unwrap();
+        assert_eq!(stored["frames"][0]["delta"]["effects"]["answer"]["kind"], "store");
+        assert_eq!(stored["frames"][0]["delta"]["effects"]["answer"]["value"]["value"], 42);
+
+        let removed = session.remove_key("answer").unwrap();
+        let removed = serde_json::to_value(&removed).unwrap();
+        assert_eq!(removed["frames"][0]["delta"]["effects"]["answer"]["kind"], "remove");
+    }
+
+    #[test]
     fn appending_messages_only_rebuilds_the_outermost_frame() {
         let parent = PhiStepExpr::new(
             PhiAgentStep::turn_end("parent"),
@@ -468,6 +482,29 @@ mod tests {
         let root_after_rollback = root.clone().rollback();
         assert_eq!(root_after_rollback.step(), root.step());
         assert_eq!(root_after_rollback.history(), root.history());
+    }
+
+    #[test]
+    fn rollback_to_keeps_the_nearest_requested_step_kind() {
+        let root = Session::from_root(PhiAgentStep::turn_end("root"), Vec::<PhiMessage>::new());
+        let compact = root.next(PhiReActStep::request_compact()).unwrap();
+        let current = compact
+            .clone()
+            .next(PhiReActStep::request_provider(
+                "resume",
+                &test_model_defaults(),
+            ))
+            .unwrap();
+
+        let rolled_back = current
+            .rollback_to(SessionStepKind::RequestCompact)
+            .unwrap();
+        assert!(matches!(
+            rolled_back.step(),
+            PhiAgentStep::ReAct(crate::session::PhiReActStep::RequestCompact { .. })
+        ));
+        assert_eq!(rolled_back.frames().len(), 2);
+        assert_eq!(rolled_back.history(), compact.history());
     }
 
     #[test]

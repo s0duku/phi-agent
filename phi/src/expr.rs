@@ -97,6 +97,14 @@ impl PhiExprDelta {
         self.effects.remove(variable.name);
     }
 
+    pub(crate) fn store_json(&mut self, key: impl Into<String>, value: Value) {
+        self.effects.store_json(key, value);
+    }
+
+    pub(crate) fn remove_key(&mut self, key: impl Into<String>) {
+        self.effects.remove_key(key);
+    }
+
     fn lookup_impl(&self, name: &str) -> EffectLookup<'_> {
         self.effects.lookup_impl(name)
     }
@@ -139,9 +147,18 @@ impl PhiVariableEffects {
             .insert(name.to_string(), PhiVariableEffect::Store { value });
     }
 
+    fn store_json(&mut self, name: impl Into<String>, value: Value) {
+        self.effects
+            .insert(name.into(), PhiVariableEffect::Store { value });
+    }
+
     fn remove(&mut self, name: &str) {
         self.effects
             .insert(name.to_string(), PhiVariableEffect::Remove);
+    }
+
+    fn remove_key(&mut self, name: impl Into<String>) {
+        self.effects.insert(name.into(), PhiVariableEffect::Remove);
     }
 
     fn lookup_impl(&self, name: &str) -> EffectLookup<'_> {

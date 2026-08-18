@@ -499,7 +499,7 @@ fn emit_existing_session_notice(session_target: &SessionTarget, quiet: bool) {
 #[command(
     name = "phi",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Literally A CLI Agent",
+    about = "CLI-oriented Agent Runtime",
     before_help = banner::startup_banner(),
     after_help = concat!("Version: ", env!("CARGO_PKG_VERSION"))
 )]
@@ -617,7 +617,7 @@ impl FromArgMatches for RunArgs {
 
     fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, ClapError> {
         Ok(Self {
-            base: parse_agent_cli_args(matches),
+            base: parse_agent_cli_args(matches)?,
             max_steps: matches.remove_one::<usize>("max_steps"),
         })
     }
@@ -628,7 +628,7 @@ impl FromArgMatches for RunArgs {
     }
 
     fn update_from_arg_matches_mut(&mut self, matches: &mut ArgMatches) -> Result<(), ClapError> {
-        update_agent_cli_args(&mut self.base, matches);
+        update_agent_cli_args(&mut self.base, matches)?;
         if let Some(max_steps) = matches.remove_one::<usize>("max_steps") {
             self.max_steps = Some(max_steps);
         }
@@ -661,7 +661,7 @@ impl FromArgMatches for StepArgs {
 
     fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, ClapError> {
         Ok(Self {
-            base: parse_agent_cli_args(matches),
+            base: parse_agent_cli_args(matches)?,
         })
     }
 
@@ -671,7 +671,7 @@ impl FromArgMatches for StepArgs {
     }
 
     fn update_from_arg_matches_mut(&mut self, matches: &mut ArgMatches) -> Result<(), ClapError> {
-        update_agent_cli_args(&mut self.base, matches);
+        update_agent_cli_args(&mut self.base, matches)?;
         Ok(())
     }
 }
@@ -686,8 +686,8 @@ impl Args for StepArgs {
     }
 }
 
-fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
-    AgentCliArgs {
+fn parse_agent_cli_args(matches: &mut ArgMatches) -> Result<AgentCliArgs, ClapError> {
+    Ok(AgentCliArgs {
         session_target: matches
             .remove_one::<SessionTarget>("session_target")
             .expect("clap requires a session target"),
@@ -701,11 +701,15 @@ fn parse_agent_cli_args(matches: &mut ArgMatches) -> AgentCliArgs {
             .remove_many::<String>("runner_arg")
             .map(Iterator::collect)
             .unwrap_or_default(),
-        messages: cli::MessageArgs::parse(matches),
-    }
+        messages: cli::MessageArgs::parse(matches)
+            .map_err(|error| ClapError::raw(clap::error::ErrorKind::InvalidValue, error))?,
+    })
 }
 
-fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
+fn update_agent_cli_args(
+    target: &mut AgentCliArgs,
+    matches: &mut ArgMatches,
+) -> Result<(), ClapError> {
     if let Some(session_target) = matches.remove_one::<SessionTarget>("session_target") {
         target.session_target = session_target;
     }
@@ -731,7 +735,11 @@ fn update_agent_cli_args(target: &mut AgentCliArgs, matches: &mut ArgMatches) {
             .map(Iterator::collect::<Vec<_>>)
             .unwrap_or_default(),
     );
-    target.messages.extend_from_matches(matches);
+    target
+        .messages
+        .extend_from_matches(matches)
+        .map_err(|error| ClapError::raw(clap::error::ErrorKind::InvalidValue, error))?;
+    Ok(())
 }
 
 fn add_agent_cli_args(cmd: ClapCommand) -> ClapCommand {

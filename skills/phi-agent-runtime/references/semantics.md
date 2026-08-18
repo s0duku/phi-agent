@@ -9,9 +9,21 @@ Session JSON contains a `frames` array ordered from the root to the current
 outer frame. The current step is `frames[-1].step`. `session state` explains
 that step as stable structured information for orchestration.
 
+`session store --key KEY` and `session remove --key KEY` update only the
+current frame's variable-effect delta. Store accepts JSON or text inputs;
+remove records a tombstone that masks values inherited from parent frames.
+`session rollback --to STEP` preserves the nearest matching frame kind and
+removes only newer outer frames. Supported kinds are `request_compact`,
+`request_provider`, `request_executor`, `compacted`, `turn_end`, and `failed`.
+
 Common step kinds are `request_provider`, `request_executor`, `request_compact`,
 `compacted`, `turn_end`, and `failed`. A failed step contains an error object;
 runtime failures are explicit state, not assistant text.
+
+Provider model-output failures are typed in the failed error object:
+`model_output_limit` means generation stopped at the output-token limit;
+`model_tool_parse_error` means a returned tool call contained malformed JSON
+arguments. They currently follow the normal failed-step fallback.
 
 An assistant message owns its tool-call list. A `request_executor` holds that
 assistant turn and the batch's `pending_results`. Each non-final tool result

@@ -12,6 +12,48 @@ use crate::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{convert::Infallible, io::Read, path::PathBuf, str::FromStr, sync::Arc};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionStepKind {
+    RequestCompact,
+    RequestProvider,
+    RequestExecutor,
+    Compacted,
+    TurnEnd,
+    Failed,
+}
+
+impl FromStr for SessionStepKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "request_compact" => Ok(Self::RequestCompact),
+            "request_provider" => Ok(Self::RequestProvider),
+            "request_executor" => Ok(Self::RequestExecutor),
+            "compacted" => Ok(Self::Compacted),
+            "turn_end" => Ok(Self::TurnEnd),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!(
+                "invalid step kind `{value}`; expected request_compact, request_provider, request_executor, compacted, turn_end, or failed"
+            )),
+        }
+    }
+}
+
+impl SessionStepKind {
+    fn matches(self, step: &PhiAgentStep) -> bool {
+        match (self, step) {
+            (Self::Failed, PhiAgentStep::Failed(_)) => true,
+            (Self::RequestCompact, PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. }))
+            | (Self::RequestProvider, PhiAgentStep::ReAct(PhiReActStep::RequestProvider { .. }))
+            | (Self::RequestExecutor, PhiAgentStep::ReAct(PhiReActStep::RequestExecutor { .. }))
+            | (Self::Compacted, PhiAgentStep::ReAct(PhiReActStep::Compacted))
+            | (Self::TurnEnd, PhiAgentStep::ReAct(PhiReActStep::TurnEnd { .. })) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum SessionTarget {
     Stdio,
@@ -466,6 +508,40 @@ impl Session {
         })
     }
 
+    /// Stores a JSON value in the outermost frame's variable-effect delta.
+    #[must_use]
+    pub fn store_json(
+        self,
+        key: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Result<Self, PhiAgentRuntimeError> {
+        let key = key.into();
+        if key.is_empty() {
+            return Err(PhiAgentRuntimeError::session("store key must not be empty"));
+        }
+        let step = self.0.step().clone();
+        let mut delta = self.0.delta().clone();
+        delta.store_json(key, value);
+        let session = Self(self.0.replace_base_step_with_delta(step, delta));
+        session.validate()?;
+        Ok(session)
+    }
+
+    /// Records removal of a key in the outermost frame's variable-effect delta.
+    #[must_use]
+    pub fn remove_key(self, key: impl Into<String>) -> Result<Self, PhiAgentRuntimeError> {
+        let key = key.into();
+        if key.is_empty() {
+            return Err(PhiAgentRuntimeError::session("remove key must not be empty"));
+        }
+        let step = self.0.step().clone();
+        let mut delta = self.0.delta().clone();
+        delta.remove_key(key);
+        let session = Self(self.0.replace_base_step_with_delta(step, delta));
+        session.validate()?;
+        Ok(session)
+    }
+
     /// Adds a new outer frame with an empty delta.
     #[must_use]
     pub fn next(self, step: PhiReActStep) -> Result<Self, PhiAgentRuntimeError> {
@@ -544,6 +620,17 @@ impl Session {
             .into_expr()
             .expect("a non-root expression must retain its parent");
         Self(Arc::try_unwrap(parent).unwrap_or_else(|shared| (*shared).clone()))
+    }
+
+    /// Removes outer frames until the current frame has the requested kind.
+    pub fn rollback_to(self, kind: SessionStepKind) -> Result<Self, PhiAgentRuntimeError> {
+        let frames = self.frames();
+        let Some(index) = frames.iter().rposition(|frame| kind.matches(&frame.step)) else {
+            return Err(PhiAgentRuntimeError::session(format!(
+                "rollback target step kind {kind:?} was not found"
+            )));
+        };
+        Ok(Self::from_frames(frames.into_iter().take(index + 1).collect()))
     }
 
     pub(crate) fn validate(&self) -> Result<(), PhiAgentRuntimeError> {

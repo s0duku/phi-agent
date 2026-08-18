@@ -15,11 +15,6 @@ use crate::{
     session::{PhiAgentStep, PhiReActStep},
 };
 use governance::auto_compact::AutoCompactPolicy;
-use governance::loop_guard::{
-    LoopGuardConfig, ReasoningSimilarityConfig, default_loopguard_max_retries,
-    default_loopguard_reasoning_min_chars, default_loopguard_reasoning_ngram_size,
-    default_loopguard_reasoning_similarity_threshold, default_loopguard_window,
-};
 #[allow(unused_imports)]
 pub(crate) use governance::model_retry::ModelRetryPolicy;
 pub use observers::echo::pretty_history;
@@ -40,11 +35,6 @@ pub(crate) fn build_default_modules(context: &PhiAgentBuildContext) -> PhiModule
         )));
     }
 
-    // Loop detection is a built-in governance policy, not a user-tunable
-    // runtime switch. Keep it always mounted from source-level defaults.
-    modules.push_governance(Box::new(governance::loop_guard::LoopGuardPolicy::new(
-        loop_guard_config(),
-    )));
     let context_tokens = context.config().runtime().context_tokens;
     modules.push_governance(Box::new(AutoCompactPolicy::new(context_tokens)));
 
@@ -228,32 +218,6 @@ fn command_requires_user_input(command: &PhiAgentCommand) -> bool {
         command,
         PhiAgentCommand::Run(_) | PhiAgentCommand::Yolo(_) | PhiAgentCommand::Step(_)
     )
-}
-
-fn loop_guard_config() -> LoopGuardConfig {
-    let config = LoopGuardConfig {
-        window: default_loopguard_window(),
-        max_retries: default_loopguard_max_retries(),
-        reasoning: Some(ReasoningSimilarityConfig {
-            ngram_size: default_loopguard_reasoning_ngram_size(),
-            similarity_threshold: default_loopguard_reasoning_similarity_threshold(),
-            min_chars: default_loopguard_reasoning_min_chars(),
-        }),
-    };
-
-    debug_assert!(config.window > 0, "loop guard window must stay non-zero");
-    if let Some(reasoning) = &config.reasoning {
-        debug_assert!(
-            reasoning.ngram_size > 0,
-            "loop guard reasoning ngram size must stay non-zero"
-        );
-        debug_assert!(
-            (0.0..=1.0).contains(&reasoning.similarity_threshold),
-            "loop guard reasoning similarity threshold must stay within [0, 1]"
-        );
-    }
-
-    config
 }
 
 fn command_max_steps(command: &PhiAgentCommand) -> Option<usize> {

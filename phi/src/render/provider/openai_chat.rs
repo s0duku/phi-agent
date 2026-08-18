@@ -140,6 +140,11 @@ impl DynProvider for OpenAiCompatClient {
         let choice = response.choices.into_iter().next().ok_or_else(|| {
             PhiAgentRuntimeError::provider_response("openai_chat provider returned no choices")
         })?;
+        if choice.finish_reason.as_deref() == Some("length") {
+            return Err(PhiAgentRuntimeError::model_output_limit(
+                "openai_chat model output reached the configured token limit",
+            ));
+        }
         let assistant = self.phi_assistant(
             if choice.message.has_content() || !choice.message.tool_calls.is_empty() {
                 vec![ProviderMessage::Assistant(choice.message)]
@@ -315,7 +320,7 @@ impl ProviderAssistantMessage {
         for tool_call in self.tool_calls {
             let raw_arguments = tool_call.function.arguments.clone();
             let parsed_arguments = serde_json::from_str(&raw_arguments).map_err(|error| {
-                PhiAgentRuntimeError::provider_response(format!(
+                PhiAgentRuntimeError::model_tool_parse_error(format!(
                     "openai_chat invalid tool-call arguments JSON: {} | raw={}",
                     error, raw_arguments
                 ))
@@ -370,6 +375,8 @@ struct ChatCompletionResponse {
 #[derive(Clone, Debug, Deserialize)]
 struct ChatCompletionChoice {
     message: ProviderAssistantMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -809,7 +816,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            PhiAgentRuntimeError::ProviderResponse { .. }
+            PhiAgentRuntimeError::ModelToolParseError { .. }
         ));
         assert!(
             error.detail().contains("invalid tool-call arguments JSON"),

@@ -161,11 +161,7 @@ impl PhiModule for ModelRetryPolicy {
             return Ok(());
         };
 
-        if super::loop_guard::affects_loop_guard_rejected_attempts(delta) {
-            store_model_retry_state(delta, previous_retry_state);
-        } else {
-            remove_model_retry_state(delta);
-        }
+        store_model_retry_state(delta, previous_retry_state);
 
         Ok(())
     }

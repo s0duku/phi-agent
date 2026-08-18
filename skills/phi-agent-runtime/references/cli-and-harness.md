@@ -42,10 +42,14 @@ quiet output or the harness provides an intentional replacement log stream.
 
 ## Session operations
 
-`append` adds a user or assistant message to the outer delta. `next --provider` creates a provider request frame. `replace --provider` replaces the outer step while retaining its composed delta. `rollback` removes one frame. `tool-result --text TEXT`, `--json JSON`, `--text-file FILE`, or `--json-file FILE` supplies the first pending executor result without invoking an executor. Prefer file input when the result may exceed command-line argument limits.
+`append` adds a user or assistant message to the outer delta. `store --key KEY --json JSON` (or `--json-file`, `--text`, `--text-file`) persists an external value in the outer delta; `remove --key KEY` writes a removal tombstone. `next --provider` creates a provider request frame. `replace --provider` replaces the outer step while retaining its composed delta. `rollback` removes one frame, while `rollback --to STEP` removes frames until the nearest requested kind is current. `tool-result --text TEXT`, `--json JSON`, `--text-file FILE`, or `--json-file FILE` supplies the first pending executor result without invoking an executor and applies the configured executor output sanitizer. Use `--no-sanitize` only when the external result is already bounded and must be preserved byte-for-byte. Prefer file input when the result may exceed command-line argument limits; sanitization still applies after file input unless disabled.
 
 `session history` emits the committed `PhiHistory` as JSON by default. Use
 `session history SESSION --view` for the echo-style transcript view.
+
+Inline message flags also have file-backed forms: `--user-file FILE` and
+`--assistant-file FILE`. They are available on `session append`, `run`, `yolo`,
+and `step`, and retain their ordering relative to inline message flags.
 
 Create a file-backed session explicitly with `phi session new PATH`; Phi will
 refuse to treat a missing path as an existing session. In pipeline mode, `-`

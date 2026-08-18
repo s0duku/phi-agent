@@ -287,7 +287,7 @@ impl ProviderMessage {
                     call_id: Some(call_id),
                     name,
                     arguments: serde_json::from_str(&arguments).map_err(|error| {
-                        PhiAgentRuntimeError::provider_response(format!(
+                        PhiAgentRuntimeError::model_tool_parse_error(format!(
                             "openai_response invalid tool-call arguments JSON: {} | raw={}",
                             error, arguments
                         ))
@@ -460,6 +460,11 @@ impl ResponsesCreateResponse {
                     .as_ref()
                     .and_then(|details| details.reason.as_deref())
                     .unwrap_or("unknown reason");
+                if reason == "max_output_tokens" {
+                    return Err(PhiAgentRuntimeError::model_output_limit(format!(
+                        "openai_response incomplete: {reason}"
+                    )));
+                }
                 Err(PhiAgentRuntimeError::provider_response(format!(
                     "openai_response incomplete: {reason}"
                 )))
@@ -882,6 +887,14 @@ mod tests {
             let error = response
                 .validate_status()
                 .expect_err("non-completed response should fail");
+            if expected_detail.contains("max_output_tokens") {
+                assert!(matches!(
+                    &error,
+                    PhiAgentRuntimeError::ModelOutputLimit { .. }
+                ));
+            } else {
+                assert!(matches!(&error, PhiAgentRuntimeError::ProviderResponse { .. }));
+            }
             assert_eq!(error.detail(), expected_detail);
         }
     }

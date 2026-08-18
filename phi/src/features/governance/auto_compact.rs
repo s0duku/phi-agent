@@ -39,10 +39,7 @@ impl PhiModule for AutoCompactPolicy {
             return next.call(runtime, cont);
         };
 
-        if super::model_retry::model_retry_state(expr).is_some()
-            || super::loop_guard::loop_guard_rejected_attempts(expr)
-                .is_some_and(|attempts| attempts != 0)
-        {
+        if super::model_retry::model_retry_state(expr).is_some() {
             return next.call(runtime, cont);
         }
 
@@ -176,36 +173,4 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn loop_guard_request_provider_is_not_compacted() {
-        let defaults = crate::tests::support::test_model_defaults();
-        let session = Session::from_expr(
-            crate::expr::PhiStepExpr::new(
-                PhiAgentStep::request_provider("loop retry", &defaults),
-                vec![PhiMessage::user("hello")],
-            )
-            .store(
-                crate::features::governance::loop_guard::LOOP_GUARD_REJECTED_ATTEMPTS_VARIABLE,
-                1,
-            ),
-        );
-        let outcome = crate::agent::PhiAgent::builder(
-            session,
-            PhiAgentCommand::Step(PhiAgentCommand::step()),
-        )
-        .with_home(Arc::new(crate::home::LocalPhiHome::new(
-            crate::tests::support::unique_test_home(),
-        )))
-        .with_client(stub_client(vec![PhiMessage::assistant("done")]))
-        .with_module(AutoCompactPolicy::with_threshold(1))
-        .build()
-        .expect("agent should build")
-        .run_single_step()
-        .await;
-
-        assert!(!matches!(
-            outcome.session.step(),
-            PhiAgentStep::ReAct(PhiReActStep::RequestCompact { .. })
-        ));
-    }
 }

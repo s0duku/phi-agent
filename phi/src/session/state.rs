@@ -78,6 +78,12 @@ pub enum PhiFailureState<'a> {
     ProviderResponse {
         detail: &'a str,
     },
+    ModelOutputLimit {
+        detail: &'a str,
+    },
+    ModelToolParseError {
+        detail: &'a str,
+    },
     Module {
         detail: &'a str,
     },
@@ -176,6 +182,10 @@ impl<'a> TryFrom<&'a PhiAgentRuntimeError> for PhiFailureState<'a> {
             }
             PhiAgentRuntimeError::ProviderRequest { detail } => Self::ProviderRequest { detail },
             PhiAgentRuntimeError::ProviderResponse { detail } => Self::ProviderResponse { detail },
+            PhiAgentRuntimeError::ModelOutputLimit { detail } => Self::ModelOutputLimit { detail },
+            PhiAgentRuntimeError::ModelToolParseError { detail } => {
+                Self::ModelToolParseError { detail }
+            }
             PhiAgentRuntimeError::Module { detail } => Self::Module { detail },
             PhiAgentRuntimeError::Home { detail } => Self::Home { detail },
             PhiAgentRuntimeError::ToolError { detail, turn } => Self::ToolError {

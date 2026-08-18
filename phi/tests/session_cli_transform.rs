@@ -49,6 +49,48 @@ fn append_updates_a_file_and_preserves_cli_message_order() {
 }
 
 #[test]
+fn append_reads_user_and_assistant_messages_from_files() {
+    let path = unique_session_path("append-files");
+    let user_path = unique_session_path("append-user-input");
+    let assistant_path = unique_session_path("append-assistant-input");
+    std::fs::write(&path, root_session_json()).unwrap();
+    std::fs::write(&user_path, "file user").unwrap();
+    std::fs::write(&assistant_path, "file assistant").unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "append",
+            path.to_string_lossy().as_ref(),
+            "--user-file",
+            user_path.to_string_lossy().as_ref(),
+            "--assistant-file",
+            assistant_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert_eq!(
+        session.history(),
+        &[
+            phi::message::PhiMessage::system("system"),
+            phi::message::PhiMessage::user("file user"),
+            phi::message::PhiMessage::assistant("file assistant"),
+        ]
+    );
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(user_path).unwrap();
+    std::fs::remove_file(assistant_path).unwrap();
+}
+
+#[test]
 fn append_and_rollback_compose_through_stdio() {
     let mut append = Command::new(PHI)
         .args(["session", "append", "-", "--user", "piped"])
@@ -424,6 +466,88 @@ fn tool_result_text_file_preserves_the_complete_text() {
 
     std::fs::remove_file(path).unwrap();
     std::fs::remove_file(result_path).unwrap();
+}
+
+#[test]
+fn tool_result_applies_configured_output_sanitizer() {
+    let path = unique_session_path("tool-result-sanitized");
+    let config_path = unique_session_path("tool-result-sanitizer-config");
+    std::fs::write(&path, request_executor_session_json(false)).unwrap();
+    std::fs::write(
+        &config_path,
+        "executor:\n  tool_threshold_tokens: 1\n  tool_preview_bytes: 32\n",
+    )
+    .unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--text",
+            "this external result is intentionally long",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.history().iter().last(),
+        Some(phi::message::PhiMessage::ToolResult(phi::message::PhiToolResultMessage { result, .. }))
+            if result.as_str().is_some_and(|value| value.contains("truncated"))
+    ));
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn tool_result_can_disable_output_sanitizer() {
+    let path = unique_session_path("tool-result-no-sanitize");
+    let config_path = unique_session_path("tool-result-no-sanitize-config");
+    std::fs::write(&path, request_executor_session_json(false)).unwrap();
+    std::fs::write(
+        &config_path,
+        "executor:\n  tool_threshold_tokens: 1\n  tool_preview_bytes: 8\n",
+    )
+    .unwrap();
+    let value = "this external result must remain unchanged";
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "tool-result",
+            path.to_string_lossy().as_ref(),
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--no-sanitize",
+            "--text",
+            value,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = phi::session::Session::load(&path).unwrap();
+    assert!(matches!(
+        session.history().iter().last(),
+        Some(phi::message::PhiMessage::ToolResult(phi::message::PhiToolResultMessage { result, .. }))
+            if result == &serde_json::Value::String(value.to_string())
+    ));
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(config_path).unwrap();
 }
 
 #[test]

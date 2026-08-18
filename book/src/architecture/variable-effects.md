@@ -32,7 +32,7 @@ delta.remove(RETRY_STATE);
 `PhiVariable<T>` makes the value type part of the interface. A caller cannot use
 the retry-state handle to store or retrieve another Rust type. Variable
 declarations and domain-specific helpers belong to the module that owns the
-variable; `expr.rs` does not know about model retry, loop guard, or other module
+variable; `expr.rs` does not know about model retry or other module
 state.
 
 Variable names still form a serialized string namespace. Rust cannot prevent two
