@@ -91,12 +91,19 @@ pub struct SessionNewArgs {
 }
 
 #[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("output")
+        .args(["view", "last"])
+        .multiple(false)
+))]
 pub struct SessionHistoryArgs {
     #[arg(
         long,
         help = "Render history as an echo-style transcript instead of JSON"
     )]
     pub view: bool,
+    #[arg(long, help = "Render only the last committed message as JSON")]
+    pub last: bool,
     #[arg(value_name = "SESSION", help = "Session file, or - for stdin")]
     target: SessionTarget,
 }
@@ -429,6 +436,21 @@ fn history(args: SessionHistoryArgs) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     use std::io::Write;
+    if args.last {
+        let history = session.history();
+        match history.iter().last() {
+            Some(last) => {
+                serde_json::to_writer(&mut handle, last)?;
+                handle.write_all(b"\n")?;
+                return Ok(());
+            }
+            None => {
+                serde_json::to_writer(&mut handle, &serde_json::Value::Null)?;
+                handle.write_all(b"\n")?;
+                return Ok(());
+            }
+        }
+    }
     if args.view {
         let history = render_history(&session);
         if !history.is_empty() {

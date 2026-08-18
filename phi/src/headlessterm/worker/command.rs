@@ -154,10 +154,13 @@ fn choose_container_cli(
 }
 
 fn build_shell(command: String) -> CommandBuilder {
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|error| panic!("unable to determine current working directory: {error}"));
     #[cfg(unix)]
     {
         let shell = unix_shell();
         let mut builder = CommandBuilder::new(&shell);
+        builder.cwd(&cwd);
         builder.arg("-c");
         builder.arg(
             "\"$1\" -c \"$2\"\n\
@@ -175,6 +178,7 @@ fn build_shell(command: String) -> CommandBuilder {
     #[cfg(windows)]
     {
         let mut builder = CommandBuilder::new("powershell.exe");
+        builder.cwd(&cwd);
         builder.arg("-NoLogo");
         builder.arg("-NoProfile");
         builder.arg("-Command");
@@ -201,7 +205,8 @@ fn unix_shell() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContainerCli, choose_container_cli, inspect_result};
+    use super::{ContainerCli, build, choose_container_cli, inspect_result};
+    use crate::headlessterm::TerminalCommand;
 
     #[test]
     fn real_docker_uses_docker_cli() {
@@ -235,6 +240,13 @@ mod tests {
     #[test]
     fn missing_container_clis_are_reported() {
         assert_eq!(choose_container_cli(None, false), None);
+    }
+
+    #[test]
+    fn shell_command_builder_uses_the_current_directory() {
+        let cwd = std::env::current_dir().unwrap();
+        let builder = build(TerminalCommand::shell("pwd")).unwrap();
+        assert_eq!(builder.get_cwd().and_then(|dir| dir.to_str()), cwd.to_str());
     }
 
     #[test]

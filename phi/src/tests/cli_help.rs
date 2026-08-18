@@ -338,6 +338,9 @@ fn session_help_exposes_session_transform_commands() {
             .to_string();
         assert!(help.contains("<SESSION>"));
         assert!(help.contains("- for stdin"));
+        if name == "history" {
+            assert!(help.contains("--last"));
+        }
     }
 }
 

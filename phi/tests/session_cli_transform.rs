@@ -245,6 +245,54 @@ fn history_defaults_to_json_and_view_keeps_transcript_output() {
 }
 
 #[test]
+fn history_last_serializes_only_the_last_message() {
+    let path = unique_session_path("history-last");
+    std::fs::write(&path, branched_session_json()).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "history",
+            "--last",
+            path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let last: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(last["role"], "assistant");
+    assert_eq!(last["content"]["content"], "outer");
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn history_last_returns_null_for_empty_history() {
+    let path = unique_session_path("history-last-empty");
+    std::fs::write(&path, empty_session_json()).unwrap();
+
+    let output = Command::new(PHI)
+        .args([
+            "session",
+            "history",
+            "--last",
+            path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let last: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(last, serde_json::json!(null));
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn next_provider_adds_an_empty_outer_frame() {
     let path = unique_session_path("next-provider");
     std::fs::write(&path, root_session_json()).unwrap();
@@ -473,11 +521,7 @@ fn tool_result_applies_configured_output_sanitizer() {
     let path = unique_session_path("tool-result-sanitized");
     let config_path = unique_session_path("tool-result-sanitizer-config");
     std::fs::write(&path, request_executor_session_json(false)).unwrap();
-    std::fs::write(
-        &config_path,
-        "executor:\n  tool_threshold_tokens: 1\n",
-    )
-    .unwrap();
+    std::fs::write(&config_path, "executor:\n  tool_threshold_tokens: 1\n").unwrap();
 
     let output = Command::new(PHI)
         .args([
@@ -513,11 +557,7 @@ fn tool_result_can_disable_output_sanitizer() {
     let path = unique_session_path("tool-result-no-sanitize");
     let config_path = unique_session_path("tool-result-no-sanitize-config");
     std::fs::write(&path, request_executor_session_json(false)).unwrap();
-    std::fs::write(
-        &config_path,
-        "executor:\n  tool_threshold_tokens: 1\n",
-    )
-    .unwrap();
+    std::fs::write(&config_path, "executor:\n  tool_threshold_tokens: 1\n").unwrap();
     let value = "this external result must remain unchanged";
 
     let output = Command::new(PHI)
@@ -625,6 +665,12 @@ fn branched_session_json() -> &'static str {
                 "delta": {"history": [{"role": "assistant", "content": {"content": "outer"}}]}
             }
         ]
+    }"#
+}
+
+fn empty_session_json() -> &'static str {
+    r#"{
+        "frames": []
     }"#
 }
 
