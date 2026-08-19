@@ -13,10 +13,24 @@ provider:
 
 runtime:
   # system: ""
-  max_steps: 1000000
-  context_tokens: 262144
+  # max_steps: 1000000
+  # context_tokens: 262144
 
 executor:
   # tool_threshold_tokens: 8192
 
 tools: []
+
+# Custom tools are advertised to the model with a JSON Schema definition.
+# Uncomment and edit this example to add one:
+# tools:
+#   - name: lookup
+#     description: Look up information by query.
+#     parameters:
+#       type: object
+#       properties:
+#         query:
+#           type: string
+#           description: The information to look up.
+#       required:
+#         - query
