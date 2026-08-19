@@ -251,7 +251,7 @@ impl PreparedPhiAgentBuilder {
             crate::module::module_tools(&mut modules, &self.context, &mut tools);
         }
         let output_limits =
-            ToolOutputLimits::new(self.context.config.executor().tool_threshold_tokens);
+            ToolOutputLimits::new(self.context.config.executor().tool_output_token_limit);
         let executor = PhiExecutor::from_tools(tools, output_limits)?;
 
         let model_defaults = if let Some(model_defaults) = self.model_defaults.take() {

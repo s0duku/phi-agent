@@ -517,11 +517,11 @@ fn tool_result_text_file_preserves_the_complete_text() {
 }
 
 #[test]
-fn tool_result_applies_configured_output_sanitizer() {
-    let path = unique_session_path("tool-result-sanitized");
-    let config_path = unique_session_path("tool-result-sanitizer-config");
+fn tool_result_applies_configured_output_truncation() {
+    let path = unique_session_path("tool-result-truncated");
+    let config_path = unique_session_path("tool-result-truncation-config");
     std::fs::write(&path, request_executor_session_json(false)).unwrap();
-    std::fs::write(&config_path, "executor:\n  tool_threshold_tokens: 1\n").unwrap();
+    std::fs::write(&config_path, "executor:\n  tool_output_token_limit: 1\n").unwrap();
 
     let output = Command::new(PHI)
         .args([
@@ -553,11 +553,11 @@ fn tool_result_applies_configured_output_sanitizer() {
 }
 
 #[test]
-fn tool_result_can_disable_output_sanitizer() {
-    let path = unique_session_path("tool-result-no-sanitize");
-    let config_path = unique_session_path("tool-result-no-sanitize-config");
+fn tool_result_can_disable_output_truncation() {
+    let path = unique_session_path("tool-result-no-truncate");
+    let config_path = unique_session_path("tool-result-no-truncate-config");
     std::fs::write(&path, request_executor_session_json(false)).unwrap();
-    std::fs::write(&config_path, "executor:\n  tool_threshold_tokens: 1\n").unwrap();
+    std::fs::write(&config_path, "executor:\n  tool_output_token_limit: 1\n").unwrap();
     let value = "this external result must remain unchanged";
 
     let output = Command::new(PHI)
@@ -567,7 +567,7 @@ fn tool_result_can_disable_output_sanitizer() {
             path.to_string_lossy().as_ref(),
             "--config",
             config_path.to_string_lossy().as_ref(),
-            "--no-sanitize",
+            "--no-truncate",
             "--text",
             value,
         ])

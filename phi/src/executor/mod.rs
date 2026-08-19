@@ -1,6 +1,6 @@
 pub mod builtins;
-pub mod sanitizer;
 pub mod tools;
+pub mod truncation;
 
 use std::sync::Arc;
 
@@ -202,7 +202,7 @@ impl PhiExecutor {
                 request: request.clone(),
             }
         })?;
-        response.output = sanitizer::sanitize_tool_call_output(response.output, self.output_limits);
+        response.output = truncation::truncate_tool_output(response.output, self.output_limits);
         Ok((request, response))
     }
 }

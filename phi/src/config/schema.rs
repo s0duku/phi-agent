@@ -12,7 +12,7 @@ pub enum PhiConfigEnv {
     System,
     MaxSteps,
     ContextTokens,
-    ToolThresholdTokens,
+    ToolOutputTokenLimit,
     Tools,
 }
 
@@ -30,7 +30,7 @@ impl PhiConfigEnv {
         Self::System,
         Self::MaxSteps,
         Self::ContextTokens,
-        Self::ToolThresholdTokens,
+        Self::ToolOutputTokenLimit,
         Self::Tools,
     ];
 
@@ -48,7 +48,7 @@ impl PhiConfigEnv {
             Self::System => "PHI_SYSTEM",
             Self::MaxSteps => "PHI_MAX_STEPS",
             Self::ContextTokens => "PHI_CONTEXT_TOKENS",
-            Self::ToolThresholdTokens => "PHI_TOOL_THRESHOLD_TOKENS",
+            Self::ToolOutputTokenLimit => "PHI_TOOL_OUTPUT_TOKEN_LIMIT",
             Self::Tools => "PHI_TOOLS",
         }
     }
@@ -68,7 +68,7 @@ pub(super) mod defaults {
     pub const MAX_STEPS: usize = 1_000_000;
     pub const CONTEXT_TOKENS: usize = 256 * 1024;
 
-    pub const TOOL_THRESHOLD_TOKENS: usize = 8192;
+    pub const TOOL_OUTPUT_TOKEN_LIMIT: usize = 8192;
 }
 
 #[cfg(test)]

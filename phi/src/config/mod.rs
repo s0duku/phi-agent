@@ -155,7 +155,7 @@ tools:
 
     #[test]
     fn tool_output_limits_are_derived_from_typed_config() {
-        let config = PhiConfig::from_yaml(b"executor:\n  tool_threshold_tokens: 1234\n").unwrap();
-        assert_eq!(config.executor().tool_threshold_tokens, 1234);
+        let config = PhiConfig::from_yaml(b"executor:\n  tool_output_token_limit: 1234\n").unwrap();
+        assert_eq!(config.executor().tool_output_token_limit, 1234);
     }
 }

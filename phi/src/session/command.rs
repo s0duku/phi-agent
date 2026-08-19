@@ -185,8 +185,8 @@ pub struct SessionToolResultArgs {
     pub json_file: Option<PathBuf>,
     #[arg(long = "text-file", value_name = "FILE")]
     pub text_file: Option<PathBuf>,
-    #[arg(long = "no-sanitize")]
-    pub no_sanitize: bool,
+    #[arg(long = "no-truncate")]
+    pub no_truncate: bool,
 }
 
 #[derive(Args)]
@@ -323,12 +323,12 @@ fn tool_result(
         }
         _ => unreachable!("clap requires exactly one tool result input"),
     };
-    let result = if args.no_sanitize {
+    let result = if args.no_truncate {
         result
     } else {
-        crate::executor::sanitizer::sanitize_json_string_leaves(
+        crate::executor::truncation::truncate_tool_output_value(
             result,
-            config.executor().tool_threshold_tokens,
+            config.executor().tool_output_token_limit,
         )
     };
     let resume_call = provider_call(home_spec, config_path)?;

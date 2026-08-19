@@ -44,9 +44,9 @@ written Session. Pipeline mode continues to emit only the final Session JSON.
 
 `tool-result` is valid only when `state` reports that the current frame is
 `RequestExecutor`. It consumes the first pending call and derives its call ID
-from the Session. Its JSON/text result is sanitized with the configured
-executor output threshold and preview-byte limit before it is persisted. Pass
-`--no-sanitize` to preserve the external value unchanged:
+from the Session. Its JSON/text result is truncated with the configured
+executor tool-output token limit before it is persisted. Pass `--no-truncate`
+to preserve the external value unchanged:
 
 ```bash
 phi session tool-result work.session --text "external tool output"

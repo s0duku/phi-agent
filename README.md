@@ -152,8 +152,9 @@ Session either to the same file or to stdout.
 - `session next` and `session replace` reproduce the corresponding step-frame
   transitions without running the agent.
 - `session tool-result` resolves the current executor request with an externally
-  supplied result and applies the configured executor output sanitizer. Pass
-  `--no-sanitize` only for an already-bounded result that must remain unchanged.
+  supplied result and applies the configured executor tool-output truncation.
+  Pass `--no-truncate` only for an already-bounded result that must remain
+  unchanged.
 - `session state`, `history`, `rollback`, and `delete` inspect or manage state;
   `rollback --to STEP` can retain the nearest frame of a selected step kind.
 

@@ -26,7 +26,7 @@ runtime:
   max_steps: 1000000
   context_tokens: 262144
 executor:
-  tool_threshold_tokens: 8192
+  tool_output_token_limit: 8192
 tools: []
 ```
 

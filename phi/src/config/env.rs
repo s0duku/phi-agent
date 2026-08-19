@@ -79,9 +79,9 @@ impl PhiEnvOverrides {
             context_tokens: parse(values, PhiConfigEnv::ContextTokens, "an unsigned integer")?,
         };
         let executor = ExecutorConfigPatch {
-            tool_threshold_tokens: parse(
+            tool_output_token_limit: parse(
                 values,
-                PhiConfigEnv::ToolThresholdTokens,
+                PhiConfigEnv::ToolOutputTokenLimit,
                 "an unsigned integer",
             )?,
         };
