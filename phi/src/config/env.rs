@@ -71,6 +71,7 @@ impl PhiEnvOverrides {
             kind: nonempty(values.get(&PhiConfigEnv::Provider)),
             api_base: nonempty(values.get(&PhiConfigEnv::ApiBase)),
             api_key: values.get(&PhiConfigEnv::ApiKey).cloned(),
+            tls_insecure: parse_bool(values, PhiConfigEnv::TlsInsecure)?,
             fake_profile: nonempty(values.get(&PhiConfigEnv::FakeProfile)),
         };
         let runtime = RuntimeConfigPatch {

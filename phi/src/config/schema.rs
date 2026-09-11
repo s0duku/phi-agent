@@ -8,6 +8,7 @@ pub enum PhiConfigEnv {
     Provider,
     ApiBase,
     ApiKey,
+    TlsInsecure,
     FakeProfile,
     System,
     MaxSteps,
@@ -17,7 +18,7 @@ pub enum PhiConfigEnv {
 }
 
 impl PhiConfigEnv {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Model,
         Self::Temperature,
         Self::MaxTokens,
@@ -26,6 +27,7 @@ impl PhiConfigEnv {
         Self::Provider,
         Self::ApiBase,
         Self::ApiKey,
+        Self::TlsInsecure,
         Self::FakeProfile,
         Self::System,
         Self::MaxSteps,
@@ -44,6 +46,7 @@ impl PhiConfigEnv {
             Self::Provider => "PHI_PROVIDER",
             Self::ApiBase => "PHI_API",
             Self::ApiKey => "PHI_KEY",
+            Self::TlsInsecure => "PHI_TLS_INSECURE",
             Self::FakeProfile => "PHI_FAKE_PROFILE",
             Self::System => "PHI_SYSTEM",
             Self::MaxSteps => "PHI_MAX_STEPS",

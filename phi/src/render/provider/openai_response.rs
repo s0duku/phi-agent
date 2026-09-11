@@ -23,7 +23,10 @@ pub struct ResponsesClient {
 impl ResponsesClient {
     pub fn new(config: ProviderConfig) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .danger_accept_invalid_certs(config.tls_insecure)
+                .build()
+                .expect("openai_response HTTP client should build"),
             config,
         }
     }

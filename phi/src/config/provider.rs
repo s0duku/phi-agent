@@ -7,6 +7,7 @@ pub struct ProviderConfig {
     pub kind: String,
     pub api_base: String,
     pub api_key: String,
+    pub tls_insecure: bool,
     pub fake_profile: String,
 }
 
@@ -16,6 +17,7 @@ pub(super) struct ProviderConfigPatch {
     pub kind: Option<String>,
     pub api_base: Option<String>,
     pub api_key: Option<String>,
+    pub tls_insecure: Option<bool>,
     pub fake_profile: Option<String>,
 }
 
@@ -30,6 +32,9 @@ impl ProviderConfig {
         if let Some(value) = patch.api_key {
             self.api_key = value;
         }
+        if let Some(value) = patch.tls_insecure {
+            self.tls_insecure = value;
+        }
         if let Some(value) = patch.fake_profile {
             self.fake_profile = value;
         }
@@ -42,6 +47,7 @@ impl Default for ProviderConfig {
             kind: defaults::PROVIDER.to_string(),
             api_base: defaults::OPENAI_BASE_URL.to_string(),
             api_key: defaults::API_KEY.to_string(),
+            tls_insecure: true,
             fake_profile: defaults::FAKE_PROFILE.to_string(),
         }
     }

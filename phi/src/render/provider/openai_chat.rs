@@ -23,7 +23,10 @@ pub struct OpenAiCompatClient {
 impl OpenAiCompatClient {
     pub fn new(config: ProviderConfig) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .danger_accept_invalid_certs(config.tls_insecure)
+                .build()
+                .expect("openai_chat HTTP client should build"),
             config,
         }
     }
@@ -464,6 +467,7 @@ mod tests {
             kind: "openai_chat".to_string(),
             api_base: "https://example.test/v1".to_string(),
             api_key: "test-key".to_string(),
+            tls_insecure: true,
             fake_profile: "assistant_text".to_string(),
         }
     }

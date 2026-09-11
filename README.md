@@ -84,6 +84,8 @@ not put keys in a Session file, harness source, or git repository:
 export PHI_PROVIDER=openai_chat
 export PHI_MODEL=gpt-5
 export PHI_KEY='your_api_key'
+# Optional: defaults to true for compatibility with self-signed HTTPS endpoints.
+export PHI_TLS_INSECURE=true
 ```
 
 Use the provider and model appropriate for your account. `phi doctor` reports

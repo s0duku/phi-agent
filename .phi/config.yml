@@ -9,6 +9,9 @@ model:
 provider:
   kind: openai_chat
   api_base: https://your-endpoint.example.com/v1
+  # TLS certificate verification is disabled by default for compatibility with self-signed endpoints.
+  # Set this to false when the endpoint uses a trusted certificate.
+  tls_insecure: true
   api_key: your_api_key
 
 runtime:

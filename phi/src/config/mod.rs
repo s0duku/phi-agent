@@ -154,6 +154,20 @@ tools:
     }
 
     #[test]
+    fn provider_tls_verification_is_disabled_by_default_and_can_be_enabled() {
+        assert!(PhiConfig::default().provider().tls_insecure);
+
+        let overrides = PhiEnvOverrides::from_values(&BTreeMap::from([(
+            "PHI_TLS_INSECURE".into(),
+            "false".into(),
+        )]))
+        .unwrap();
+        let config = PhiConfig::default().apply_env(overrides);
+
+        assert!(!config.provider().tls_insecure);
+    }
+
+    #[test]
     fn tool_output_limits_are_derived_from_typed_config() {
         let config = PhiConfig::from_yaml(b"executor:\n  tool_output_token_limit: 1234\n").unwrap();
         assert_eq!(config.executor().tool_output_token_limit, 1234);
