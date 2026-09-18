@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use super::interaction::{self, InteractionBoundary, InteractionState};
+use super::protocol::Response;
 use super::protocol::{ProcessStatus, Status};
 use super::pty::PtySession;
 use crate::headlessterm::job::{ReturnWhen, TerminalCommand};
@@ -54,6 +55,22 @@ impl RunningJob {
 
     pub(super) fn has_exited(&self) -> bool {
         self.exited_at.is_some()
+    }
+
+    pub(super) fn finalize_exit(&mut self) -> Result<Response, String> {
+        let code = self
+            .pty
+            .exit_status()
+            .ok_or_else(|| "exited job has no exit status".to_owned())?;
+        self.observe_after_exit()?;
+        let pending = self.pending_response();
+        let (output, truncated, _delivery) = pending.into_parts();
+        Ok(Response::Terminal {
+            status: Status::Exited(code),
+            output,
+            truncated,
+            waited_ms: 0,
+        })
     }
 
     pub(super) fn release_exited_resources(&mut self) {
@@ -219,6 +236,7 @@ impl CompletedInteraction {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn exited_job_releases_pty_resources_but_keeps_terminal_state() {
         let mut job = RunningJob::spawn(TerminalCommand::Shell {

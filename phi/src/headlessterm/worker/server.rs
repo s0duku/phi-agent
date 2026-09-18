@@ -11,6 +11,7 @@ use crate::headlessterm::job::{HeadlessTermError, JobAccess, TerminalCommand, Wo
 use super::lease::ActivityExpiration;
 use super::process::RunningJob;
 use super::protocol::{ProcessStatus, Request, Response, Status};
+use super::spool;
 use super::startup::WorkerLaunchReport;
 use super::state::PendingTerminalResponse;
 use super::{interaction, rpc};
@@ -60,6 +61,7 @@ async fn run_worker_async(
 }
 
 struct PreparedWorker {
+    handle: String,
     listener: Listener,
     job: RunningJob,
     expiration: Duration,
@@ -81,6 +83,7 @@ impl PreparedWorker {
             })?
             .map_err(|error| WorkerLaunchReport::failed(WorkerLaunchStage::SpawnCommand, error))?;
         Ok(Self {
+            handle: handle.to_owned(),
             listener,
             job,
             expiration,
@@ -88,6 +91,7 @@ impl PreparedWorker {
     }
 
     async fn run(self) -> Result<(), String> {
+        let handle = self.handle;
         let listener = self.listener;
         let mut job = self.job;
         let mut activity = ActivityExpiration::new(self.expiration, CLIENT_IO_GRACE);
@@ -100,7 +104,12 @@ impl PreparedWorker {
                 activity.observe_exit();
             }
             if job.has_exited() && job.reached_eof() {
+                let response = job.finalize_exit()?;
                 job.release_exited_resources();
+                spool::store(&handle, &response).map_err(|error| {
+                    format!("unable to persist completed job response: {error}")
+                })?;
+                return Ok(());
             }
             let accepted = match pending_request.take() {
                 Some(request) => Some(request),

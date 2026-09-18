@@ -9,6 +9,7 @@ use crate::headlessterm::job::{
 use super::launcher;
 use super::protocol::{ProcessStatus, Request, Response, Status};
 use super::rpc;
+use super::spool;
 
 const WORKER_CONNECT_WAIT: Duration = Duration::from_secs(1);
 const WORKER_CONNECT_RETRY: Duration = Duration::from_millis(10);
@@ -88,7 +89,9 @@ async fn send_interaction(
     let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let mut stream = connect(handle, missing_endpoint).await?;
     let Some(stream) = stream.as_mut() else {
-        return Ok(None);
+        return Ok(spool::take(handle).map_err(|error| {
+            HeadlessTermError::transport("read completed job", error.to_string())
+        })?);
     };
     rpc::write_frame_async(
         stream,
@@ -114,7 +117,8 @@ async fn send_interaction(
             cancel.armed = false;
             Ok(Some(response))
         }
-        Err(error) if is_disconnected_endpoint(&error) => Ok(None),
+        Err(error) if is_disconnected_endpoint(&error) => spool::take(handle)
+            .map_err(|error| HeadlessTermError::transport("read completed job", error.to_string())),
         Err(error) => Err(HeadlessTermError::transport("read", error.to_string())),
     }
 }

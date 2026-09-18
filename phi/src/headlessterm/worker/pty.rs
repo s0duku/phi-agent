@@ -199,7 +199,6 @@ impl PtySession {
         self.resources.is_none()
     }
 
-    #[cfg(test)]
     pub(crate) fn exit_status(&self) -> Option<i8> {
         self.exit_status
     }

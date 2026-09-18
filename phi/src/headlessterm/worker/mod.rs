@@ -9,6 +9,7 @@ pub(crate) mod protocol;
 mod pty;
 pub(crate) mod rpc;
 mod server;
+pub(crate) mod spool;
 mod startup;
 pub(crate) mod state;
 
