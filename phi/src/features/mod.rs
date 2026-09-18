@@ -56,7 +56,9 @@ pub(crate) fn build_runtime_modules(context: &PhiAgentBuildContext) -> PhiModule
     let mut modules = PhiModuleLayout::default();
     if command_verbose(&context.command) {
         if std::io::stderr().is_terminal() {
-            modules.push_observer(Box::new(observers::spinner::SpinnerModule::new()));
+            modules.push_observer(Box::new(observers::spinner::SpinnerModule::new(
+                context.config().runtime().context_tokens,
+            )));
         }
         modules.push_observer(Box::new(observers::echo::EchoModule::new()));
     }

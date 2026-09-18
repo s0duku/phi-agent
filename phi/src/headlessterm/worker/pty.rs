@@ -12,13 +12,17 @@ use super::state::{
 use super::{command, platform};
 
 pub(crate) struct PtySession {
+    resources: Option<PtyResources>,
+    terminal: TerminalState,
+    eof: bool,
+    exit_status: Option<i8>,
+}
+
+struct PtyResources {
     _master: Box<dyn portable_pty::MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
-    terminal: TerminalState,
-    eof: bool,
-    exit_status: Option<i8>,
     #[cfg(unix)]
     process_group_leader: Option<libc::pid_t>,
 }
@@ -70,22 +74,27 @@ impl PtySession {
         });
 
         Ok(Self {
-            _master: pair.master,
-            child,
-            writer,
-            output_rx,
+            resources: Some(PtyResources {
+                _master: pair.master,
+                child,
+                writer,
+                output_rx,
+                #[cfg(unix)]
+                process_group_leader,
+            }),
             terminal: TerminalState::new(),
             eof: false,
             exit_status: None,
-            #[cfg(unix)]
-            process_group_leader,
         })
     }
 
     pub(crate) fn capture(&mut self) -> Result<TerminalObservation, String> {
         let mut activity = TerminalActivity::default();
+        let Some(resources) = self.resources.as_mut() else {
+            return Ok(self.terminal.observe(activity));
+        };
         loop {
-            match self.output_rx.try_recv() {
+            match resources.output_rx.try_recv() {
                 Ok(chunk) => {
                     let update = self.terminal.process(&chunk);
                     for reply in update.replies {
@@ -93,7 +102,7 @@ impl PtySession {
                         // handle reports the final status. The reply is best
                         // effort and must not turn a successful command into
                         // an RPC failure.
-                        let _ = self.writer.write_all(&reply);
+                        let _ = resources.writer.write_all(&reply);
                     }
                     activity.merge(update.activity);
                 }
@@ -107,7 +116,10 @@ impl PtySession {
     }
 
     pub(crate) fn write_all(&mut self, data: &[u8]) -> Result<(), String> {
-        self.writer
+        self.resources
+            .as_mut()
+            .ok_or_else(|| "job process resources have been released".to_owned())?
+            .writer
             .write_all(data)
             .map_err(|error| error.to_string())
     }
@@ -116,9 +128,12 @@ impl PtySession {
         if self.exit_status.is_some() {
             return Ok(self.exit_status);
         }
+        let Some(resources) = self.resources.as_mut() else {
+            return Ok(None);
+        };
         #[cfg(unix)]
         {
-            if let Some(code) = platform::poll_process_status(self.child.process_id())
+            if let Some(code) = platform::poll_process_status(resources.child.process_id())
                 .map_err(|error| error.to_string())?
             {
                 self.exit_status = Some(code);
@@ -127,7 +142,7 @@ impl PtySession {
         }
         #[cfg(windows)]
         {
-            if let Some(code) = platform::poll_process_status(&mut *self.child)
+            if let Some(code) = platform::poll_process_status(&mut *resources.child)
                 .map_err(|error| error.to_string())?
             {
                 self.exit_status = Some(code);
@@ -136,6 +151,9 @@ impl PtySession {
         }
 
         let status = self
+            .resources
+            .as_mut()
+            .expect("job resources are required before checking an unknown exit status")
             .child
             .try_wait()
             .map_err(|error| error.to_string())
@@ -147,10 +165,13 @@ impl PtySession {
     }
 
     pub(crate) fn terminate(&mut self, force: bool) -> Result<(), String> {
+        let Some(resources) = self.resources.as_mut() else {
+            return Ok(());
+        };
         #[cfg(unix)]
         {
-            let _ = platform::kill_process(self.process_group_leader, force);
-            match self.child.kill() {
+            let _ = platform::kill_process(resources.process_group_leader, force);
+            match resources.child.kill() {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
                 Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
@@ -159,12 +180,28 @@ impl PtySession {
         }
         #[cfg(windows)]
         {
-            platform::kill_process(&mut *self.child, force).map_err(|error| error.to_string())
+            platform::kill_process(&mut *resources.child, force).map_err(|error| error.to_string())
         }
     }
 
     pub(crate) fn reached_eof(&self) -> bool {
         self.eof
+    }
+
+    pub(crate) fn release_resources(&mut self) {
+        debug_assert!(self.exit_status.is_some());
+        debug_assert!(self.eof);
+        self.resources = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resources_released(&self) -> bool {
+        self.resources.is_none()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exit_status(&self) -> Option<i8> {
+        self.exit_status
     }
 
     pub(crate) fn pending_response(

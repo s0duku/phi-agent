@@ -91,7 +91,6 @@ impl PreparedWorker {
         let listener = self.listener;
         let mut job = self.job;
         let mut activity = ActivityExpiration::new(self.expiration, CLIENT_IO_GRACE);
-        let mut terminal_flushed = false;
         let mut pending_request = None;
 
         loop {
@@ -100,10 +99,9 @@ impl PreparedWorker {
             if !was_exited && job.has_exited() {
                 activity.observe_exit();
             }
-            if terminal_flushed && job.reached_eof() {
-                return Ok(());
+            if job.has_exited() && job.reached_eof() {
+                job.release_exited_resources();
             }
-
             let accepted = match pending_request.take() {
                 Some(request) => Some(request),
                 None => match tokio::time::timeout(interaction::POLL_INTERVAL, listener.accept())
@@ -122,7 +120,6 @@ impl PreparedWorker {
                 if outcome.handled {
                     activity.observe_interaction();
                 }
-                terminal_flushed |= outcome.terminal_flushed;
                 if outcome.should_exit {
                     return Ok(());
                 }
@@ -160,7 +157,6 @@ fn write_launch_report(report: &WorkerLaunchReport) -> Result<(), String> {
 struct ServeOutcome {
     handled: bool,
     should_exit: bool,
-    terminal_flushed: bool,
 }
 
 enum OperationResult {
@@ -188,7 +184,6 @@ async fn serve(
                     ServeOutcome {
                         handled: false,
                         should_exit: false,
-                        terminal_flushed: false,
                     },
                     None,
                 ));
@@ -221,7 +216,6 @@ async fn serve(
                         ServeOutcome {
                             handled: true,
                             should_exit: false,
-                            terminal_flushed: false,
                         },
                         pending.map(|(stream, request)| (stream, Some(request))),
                     ));
@@ -243,7 +237,6 @@ async fn serve(
                         ServeOutcome {
                             handled: true,
                             should_exit: false,
-                            terminal_flushed: false,
                         },
                         pending.map(|(stream, request)| (stream, Some(request))),
                     ));
@@ -256,7 +249,6 @@ async fn serve(
                 ServeOutcome {
                     handled: false,
                     should_exit: false,
-                    terminal_flushed: false,
                 },
                 None,
             ));
@@ -417,7 +409,6 @@ async fn write_response(
     terminal_finished: bool,
     mut job: RunningJob,
 ) -> Result<(RunningJob, ServeOutcome, Option<(Stream, Option<Request>)>), String> {
-    let terminal_flushed = delivery.is_some();
     if rpc::write_frame_async(&mut stream, &response)
         .await
         .is_err()
@@ -427,7 +418,6 @@ async fn write_response(
             ServeOutcome {
                 handled: true,
                 should_exit: close_requested,
-                terminal_flushed: false,
             },
             None,
         ));
@@ -450,7 +440,6 @@ async fn write_response(
         ServeOutcome {
             handled: true,
             should_exit: close_requested || terminal_finished,
-            terminal_flushed,
         },
         None,
     ))

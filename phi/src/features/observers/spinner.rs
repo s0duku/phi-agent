@@ -12,7 +12,9 @@ use tokio::{task::JoinHandle, time::sleep};
 
 use crate::{
     error::PhiAgentRuntimeResult,
+    message::PhiHistory,
     module::{PhiAgentCommitEvent, PhiAgentStepEvent, PhiModule},
+    render::approx_history_token_count,
 };
 
 const LABEL_ROTATE_SECS: u64 = 3;
@@ -139,6 +141,7 @@ const ASCII_STYLES: &[SpinnerStyle] = &[SpinnerStyle {
 
 pub struct SpinnerModule {
     active: Option<ActiveSpinner>,
+    context_limit: usize,
 }
 
 struct ActiveSpinner {
@@ -152,11 +155,14 @@ struct SpinnerStyle {
 }
 
 impl SpinnerModule {
-    pub fn new() -> Self {
-        Self { active: None }
+    pub fn new(context_limit: usize) -> Self {
+        Self {
+            active: None,
+            context_limit,
+        }
     }
 
-    fn start(&mut self, label: String) {
+    fn start(&mut self, label: String, context: Option<ContextUsage>) {
         self.stop();
 
         if !io::stderr().is_terminal() {
@@ -183,6 +189,7 @@ impl SpinnerModule {
                 render_frame(
                     style.frames[frame_index % style.frames.len()],
                     display_label(&label, label_index_seed, started_at.elapsed()),
+                    context,
                     started_at.elapsed(),
                 );
                 frame_index = frame_index.wrapping_add(1);
@@ -210,6 +217,13 @@ impl SpinnerModule {
             let _ = io::stderr().lock().flush();
         }
     }
+
+    fn context_usage(&self, history: &PhiHistory) -> ContextUsage {
+        ContextUsage {
+            used: approx_history_token_count(history),
+            limit: self.context_limit,
+        }
+    }
 }
 
 impl Drop for SpinnerModule {
@@ -221,14 +235,17 @@ impl Drop for SpinnerModule {
 impl PhiModule for SpinnerModule {
     fn handle(&mut self, event: &mut PhiAgentStepEvent<'_>) -> PhiAgentRuntimeResult<()> {
         match event {
-            PhiAgentStepEvent::BeforeCompactRequest { .. } => {
-                self.start("compacting history".to_string());
+            PhiAgentStepEvent::BeforeCompactRequest { history, .. } => {
+                self.start(
+                    "compacting history".to_string(),
+                    Some(self.context_usage(history)),
+                );
             }
             PhiAgentStepEvent::AfterCompactResponse { .. } => {
                 self.stop();
             }
-            PhiAgentStepEvent::BeforeModelRequest { .. } => {
-                self.start("thinking".to_string());
+            PhiAgentStepEvent::BeforeModelRequest { history, .. } => {
+                self.start("thinking".to_string(), Some(self.context_usage(history)));
             }
             PhiAgentStepEvent::AfterModelResponseParsed { .. } => {}
             PhiAgentStepEvent::AfterModelResponse { .. }
@@ -236,7 +253,7 @@ impl PhiModule for SpinnerModule {
                 self.stop();
             }
             PhiAgentStepEvent::BeforeToolCall { request, .. } => {
-                self.start(format!("running {}", request.name));
+                self.start(format!("running {}", request.name), None);
             }
             PhiAgentStepEvent::BeforeCreateNextStep { .. }
             | PhiAgentStepEvent::BeforeReplaceBaseStep { .. } => {}
@@ -255,7 +272,13 @@ impl PhiModule for SpinnerModule {
     }
 }
 
-fn render_frame(frame: &str, label: &str, elapsed: Duration) {
+#[derive(Clone, Copy)]
+struct ContextUsage {
+    used: usize,
+    limit: usize,
+}
+
+fn render_frame(frame: &str, label: &str, context: Option<ContextUsage>, elapsed: Duration) {
     let spinner = frame
         .if_supports_color(Stream::Stderr, |text| {
             text.style(Style::new().green().bold())
@@ -269,9 +292,36 @@ fn render_frame(frame: &str, label: &str, elapsed: Duration) {
             text.style(Style::new().bright_black())
         })
         .to_string();
+    let context = context.map(format_context_usage).unwrap_or_default();
 
-    let _ = write!(io::stderr().lock(), "\r\x1b[2K{spinner} {label} {elapsed}");
+    let _ = write!(
+        io::stderr().lock(),
+        "\r\x1b[2K{spinner} {label}{context} {elapsed}"
+    );
     let _ = io::stderr().lock().flush();
+}
+
+fn format_context_usage(context: ContextUsage) -> String {
+    if context.limit == 0 {
+        return " context ?".to_string();
+    }
+    let percent = context.used.saturating_mul(100) / context.limit;
+    format!(
+        " context {}% ({}/{})",
+        percent.min(100),
+        format_compact_count(context.used),
+        format_compact_count(context.limit)
+    )
+}
+
+fn format_compact_count(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        return format!("{:.1}M", tokens as f64 / 1_000_000.0);
+    }
+    if tokens >= 1_000 {
+        return format!("{:.1}k", tokens as f64 / 1_000.0);
+    }
+    tokens.to_string()
 }
 
 fn clear_line() {

@@ -56,6 +56,12 @@ impl RunningJob {
         self.exited_at.is_some()
     }
 
+    pub(super) fn release_exited_resources(&mut self) {
+        if self.has_exited() && self.reached_eof() {
+            self.pty.release_resources();
+        }
+    }
+
     pub(super) fn expire(&mut self) -> Result<(), String> {
         if !self.pty.reached_eof() {
             self.pty.terminate(true)?;
@@ -206,5 +212,34 @@ impl RunningJob {
 impl CompletedInteraction {
     pub(super) fn into_parts(self) -> (Status, Duration, PendingTerminalResponse) {
         (self.status, self.waited, self.pending)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exited_job_releases_pty_resources_but_keeps_terminal_state() {
+        let mut job = RunningJob::spawn(TerminalCommand::Shell {
+            command: "printf done; exit 23".to_owned(),
+        })
+        .expect("job should spawn");
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        loop {
+            job.observe_terminal().expect("terminal should be readable");
+            job.refresh_status().expect("status should be readable");
+            if job.has_exited() && job.reached_eof() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "job did not reach exit and EOF");
+            std::thread::sleep(POLL_INTERVAL);
+        }
+
+        job.release_exited_resources();
+        assert!(job.pty.resources_released());
+        assert_eq!(job.pty.exit_status(), Some(23));
+        assert!(job.pty.reached_eof());
     }
 }

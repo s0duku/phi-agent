@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::headlessterm::job::{JobAccess, JobHandle, JobStatus, ReturnWhen};
@@ -94,6 +95,26 @@ fn maximum_wait_value_still_returns_when_the_shell_exits() {
         panic!("interact did not return the expected exit status");
     };
     assert!(waited_ms >= 1_500);
+}
+
+#[test]
+fn settled_output_keeps_worker_alive_until_late_exit_output_is_read() {
+    let (handle, initial) = exec_job(
+        "printf 'first\\n'; sleep 3.2; printf 'second\\n'; exit 17",
+        Duration::from_secs(5),
+        EXPIRATION,
+    )
+    .unwrap();
+    assert!(matches!(initial.status(), JobStatus::RunningOutputSettled));
+    assert!(initial.outputs().contains("first"));
+
+    // Let the process exit after the settled snapshot was delivered. The
+    // worker must retain the handle so the next interaction can drain the
+    // bytes written just before exit and report the final status.
+    thread::sleep(Duration::from_millis(500));
+    let final_info = job_interact(handle.unwrap(), "", Duration::from_secs(2)).unwrap();
+    assert!(matches!(final_info.status(), JobStatus::Exited(17)));
+    assert!(final_info.outputs().contains("second"));
 }
 
 #[test]

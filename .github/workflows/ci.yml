@@ -68,15 +68,15 @@ jobs:
       - name: Package archive
         shell: bash
         run: |
-          mkdir -p dist/phi/assets dist/phi/skills
-          cp target/x86_64-unknown-linux-musl/release/phi dist/phi/phi
-          cp README.md dist/phi/README.md
-          cp assets/phi-logo.svg dist/phi/assets/phi-logo.svg
-          cp -R skills/phi-agent-runtime dist/phi/skills/phi-agent-runtime
+          mkdir -p dist/phi-agent/assets dist/phi-agent/skills
+          cp target/x86_64-unknown-linux-musl/release/phi dist/phi-agent/phi
+          cp README.md dist/phi-agent/README.md
+          cp assets/phi-logo.svg dist/phi-agent/assets/phi-logo.svg
+          cp -R skills/phi-agent-runtime dist/phi-agent/skills/phi-agent-runtime
           if [[ -d .phi ]]; then
-            cp -R .phi dist/phi/.phi
+            cp -R .phi dist/phi-agent/.phi
           fi
-          tar -C dist -czf dist/phi-agent-linux-x64.tar.gz phi
+          tar -C dist -czf dist/phi-agent-linux-x64.tar.gz phi-agent
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -122,16 +122,16 @@ jobs:
       - name: Package archive
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "dist/phi/assets" | Out-Null
-          New-Item -ItemType Directory -Force -Path "dist/phi/skills" | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/phi.exe" "dist/phi/phi.exe"
-          Copy-Item "README.md" "dist/phi/README.md"
-          Copy-Item "assets/phi-logo.svg" "dist/phi/assets/phi-logo.svg"
-          Copy-Item "skills/phi-agent-runtime" "dist/phi/skills/phi-agent-runtime" -Recurse
+          New-Item -ItemType Directory -Force -Path "dist/phi-agent/assets" | Out-Null
+          New-Item -ItemType Directory -Force -Path "dist/phi-agent/skills" | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/phi.exe" "dist/phi-agent/phi.exe"
+          Copy-Item "README.md" "dist/phi-agent/README.md"
+          Copy-Item "assets/phi-logo.svg" "dist/phi-agent/assets/phi-logo.svg"
+          Copy-Item "skills/phi-agent-runtime" "dist/phi-agent/skills/phi-agent-runtime" -Recurse
           if (Test-Path ".phi") {
-            Copy-Item ".phi" "dist/phi/.phi" -Recurse -Force
+            Copy-Item ".phi" "dist/phi-agent/.phi" -Recurse -Force
           }
-          Compress-Archive -Path @("dist/phi") -DestinationPath "dist/phi-agent-windows-x64.zip" -Force
+          Compress-Archive -Path @("dist/phi-agent") -DestinationPath "dist/phi-agent-windows-x64.zip" -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -177,15 +177,15 @@ jobs:
       - name: Package archive
         shell: bash
         run: |
-          mkdir -p dist/phi/assets dist/phi/skills
-          cp target/aarch64-apple-darwin/release/phi dist/phi/phi
-          cp README.md dist/phi/README.md
-          cp assets/phi-logo.svg dist/phi/assets/phi-logo.svg
-          cp -R skills/phi-agent-runtime dist/phi/skills/phi-agent-runtime
+          mkdir -p dist/phi-agent/assets dist/phi-agent/skills
+          cp target/aarch64-apple-darwin/release/phi dist/phi-agent/phi
+          cp README.md dist/phi-agent/README.md
+          cp assets/phi-logo.svg dist/phi-agent/assets/phi-logo.svg
+          cp -R skills/phi-agent-runtime dist/phi-agent/skills/phi-agent-runtime
           if [[ -d .phi ]]; then
-            cp -R .phi dist/phi/.phi
+            cp -R .phi dist/phi-agent/.phi
           fi
-          tar -C dist -czf dist/phi-agent-macos-arm64.tar.gz phi
+          tar -C dist -czf dist/phi-agent-macos-arm64.tar.gz phi-agent
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
